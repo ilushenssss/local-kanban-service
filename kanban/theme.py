@@ -41,6 +41,7 @@ def label_icon(name):
 def stylesheet():
     t = TOKENS
     return '''
+QWidget#BoardCanvas { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %(canvas)s,stop:1 %(selection)s); }
 QWidget { color: %(text)s; font-size: 10pt; }
 QMainWindow, QDialog, QWidget#content, QWidget#scrollBody, QWidget#BoardCanvas { background: %(canvas)s; }
 QWidget#side { background: %(sidebar)s; }
@@ -53,11 +54,11 @@ QLabel#fieldLabel { font-weight: 600; }
 QWidget#ColumnPanel { background: %(hover)s; border: 1px solid %(border)s; border-radius: 10px; }
 QWidget#ColumnPanel QLabel { background: transparent; border: none; }
 QLabel#ColumnTitle { padding: 7px 6px; border-radius: 5px; color: #202c40; }
-QLabel#ColumnTitle[tone="0"] { background: #dce9fb; border-left: 4px solid #568bd7; }
-QLabel#ColumnTitle[tone="1"] { background: #e7e0f8; border-left: 4px solid #9270cd; }
-QLabel#ColumnTitle[tone="2"] { background: #fff0cd; border-left: 4px solid #d5a033; }
-QLabel#ColumnTitle[tone="3"] { background: #fbe0d9; border-left: 4px solid #d17c66; }
-QLabel#ColumnTitle[tone="4"] { background: #daf0e3; border-left: 4px solid #59a479; }
+QLabel#ColumnTitle[tone="0"] { background: #dce9fb; border-top: 5px solid #568bd7; }
+QLabel#ColumnTitle[tone="1"] { background: #e7e0f8; border-top: 5px solid #9270cd; }
+QLabel#ColumnTitle[tone="2"] { background: #fff0cd; border-top: 5px solid #d5a033; }
+QLabel#ColumnTitle[tone="3"] { background: #fbe0d9; border-top: 5px solid #d17c66; }
+QLabel#ColumnTitle[tone="4"] { background: #daf0e3; border-top: 5px solid #59a479; }
 QPushButton { background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 10px; }
 QPushButton:hover { border-color: %(accent)s; background: %(hover)s; }
 QPushButton:focus { border: 2px solid %(accent)s; }
