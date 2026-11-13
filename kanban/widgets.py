@@ -1,126 +1,152 @@
 """Shared native Qt form controls; no network or external resources."""
-from PyQt5.QtCore import Qt, QDate, QLocale, QEvent, pyqtSignal
-from PyQt5.QtGui import QStandardItem, QStandardItemModel, QIcon
+from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
-    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QToolButton)
+    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel)
 
 
-class CheckComboBox(QComboBox):
-    """Multi-select dropdown. Space/Enter toggles; Escape closes the popup."""
+class RegistrySelection(QWidget):
+    """Native combo adds values; a separate native list shows/removes selections."""
     selectionChanged = pyqtSignal()
 
     def __init__(self, placeholder, selected=(), parent=None):
         super().__init__(parent)
         self.placeholder = placeholder
-        self.setEditable(True)
-        self.lineEdit().setReadOnly(True)
-        self.lineEdit().setPlaceholderText(placeholder)
-        self.setModel(QStandardItemModel(self))
-        self.setMaxVisibleItems(12)
-        self.view().setMinimumWidth(280)
-        self.view().viewport().installEventFilter(self)
-        self.view().installEventFilter(self)
-        self.model().itemChanged.connect(self.update_summary)
-        self.currentIndexChanged.connect(self.update_summary)
+        self.options = None
+        self.chosen = set(selected)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(6)
+        self.combo = QComboBox()
+        self.combo.setAccessibleName(placeholder)
+        self.combo.activated[int].connect(self.add_current)
+        layout.addWidget(self.combo)
+        self.selected_row = QWidget()
+        row = QHBoxLayout(self.selected_row)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.list = QListWidget()
+        self.list.setAccessibleName('Выбранные значения: ' + placeholder)
+        self.list.setMinimumHeight(42)
+        self.list.setMaximumHeight(96)
+        self.remove_button = QPushButton('Убрать')
+        self.remove_button.setAutoDefault(False)
+        self.remove_button.clicked.connect(self.remove_current)
+        self.list.itemSelectionChanged.connect(lambda: self.remove_button.setEnabled(bool(self.list.selectedItems())))
+        row.addWidget(self.list, 1)
+        row.addWidget(self.remove_button)
+        layout.addWidget(self.selected_row)
         self.set_options([], selected)
 
+    def values(self):
+        return sorted(self.chosen)
+
+    def set_values(self, values):
+        self.chosen = set(values)
+        self.render()
+
     def set_options(self, options, selected=None):
-        chosen = set(self.values() if selected is None else selected)
+        chosen = self.chosen if selected is None else set(selected)
         options = list(options)
         known = {value for value, label in options}
         options.extend((value, value) for value in sorted(chosen - known))
-        current = [(self.itemData(i, Qt.UserRole), self.itemText(i)) for i in range(self.count())]
-        if current == options and chosen == set(self.values()):
-            self.update_summary()
+        if self.options == options and self.chosen == chosen:
             return
-        self.model().blockSignals(True)
-        self.clear()
-        for value, label in options:
-            item = QStandardItem(label)
-            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable | Qt.ItemIsSelectable)
-            item.setData(value, Qt.UserRole)
-            item.setData(Qt.Checked if value in chosen else Qt.Unchecked, Qt.CheckStateRole)
-            self.model().appendRow(item)
-        self.model().blockSignals(False)
-        self.update_summary()
+        self.options = options
+        self.chosen = set(chosen)
+        self.render()
 
-    def values(self):
-        return sorted(self.itemData(i, Qt.UserRole) for i in range(self.count()) if self.itemData(i, Qt.CheckStateRole) == Qt.Checked)
-
-    def set_values(self, values):
-        values = set(values)
-        for i in range(self.count()):
-            self.model().item(i).setCheckState(Qt.Checked if self.itemData(i, Qt.UserRole) in values else Qt.Unchecked)
-        self.update_summary()
-
-    def update_summary(self, *args):
-        names = [self.itemText(i) for i in range(self.count()) if self.itemData(i, Qt.CheckStateRole) == Qt.Checked]
-        self.lineEdit().setText(', '.join(names))
-        self.setToolTip(', '.join(names) or self.placeholder)
+    def render(self):
+        # Block only combo signals; model row insertion/removal signals remain intact.
+        self.combo.blockSignals(True)
+        self.combo.clear()
+        available = [(value, label) for value, label in self.options if value not in self.chosen]
+        hint = self.placeholder if available else ('Все значения выбраны' if self.options else 'Список пуст — откройте справочник')
+        self.combo.addItem(hint, None)
+        for value, label in self.options:
+            if value not in self.chosen:
+                self.combo.addItem(label, value)
+        self.combo.setCurrentIndex(0)
+        self.combo.blockSignals(False)
+        selected = self.list.currentItem()
+        current = selected.data(Qt.UserRole) if selected else None
+        self.list.clear()
+        for value, label in self.options:
+            if value in self.chosen:
+                item = QListWidgetItem(label)
+                item.setData(Qt.UserRole, value)
+                self.list.addItem(item)
+                if value == current:
+                    self.list.setCurrentItem(item)
+        self.list.setFixedHeight(min(96, max(42, self.list.count() * 27 + 12)))
+        self.selected_row.setVisible(bool(self.chosen))
+        self.remove_button.setEnabled(bool(self.list.selectedItems()))
         self.selectionChanged.emit()
 
-    def toggle_index(self, index):
-        if index.isValid():
-            item = self.model().item(index.row())
-            item.setCheckState(Qt.Unchecked if item.checkState() == Qt.Checked else Qt.Checked)
+    def add_current(self, index):
+        value = self.combo.itemData(index)
+        if value is not None:
+            self.chosen.add(value)
+            self.render()
 
-    def eventFilter(self, obj, event):
-        if obj is self.view().viewport() and event.type() == QEvent.MouseButtonRelease and event.button() == Qt.LeftButton:
-            self.toggle_index(self.view().indexAt(event.pos()))
-            return True
-        if obj is self.view() and event.type() == QEvent.KeyPress and event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
-            self.toggle_index(self.view().currentIndex())
-            return True
-        return super().eventFilter(obj, event)
+    def remove_current(self):
+        item = self.list.currentItem()
+        if item and item.isSelected():
+            self.chosen.discard(item.data(Qt.UserRole))
+            self.render()
 
-    def hidePopup(self):
-        super().hidePopup()
-        self.update_summary()
 
-    def wheelEvent(self, event):
-        event.ignore()
+class DeadlineCalendar(QCalendarWidget):
+    def __init__(self, editor):
+        super().__init__()
+        self.editor = editor
+        self.setLocale(QLocale('ru_RU'))
+        self.setFirstDayOfWeek(Qt.Monday)
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.editor.date() == self.editor.minimumDate():
+            today = QDate.currentDate()
+            blocked = self.blockSignals(True)
+            self.setSelectedDate(today)
+            self.setCurrentPage(today.year(), today.month())
+            self.blockSignals(blocked)
 
 
 class DateField(QWidget):
     changed = pyqtSignal()
 
-    def __init__(self, value=None, caption='Указать срок', parent=None):
+    def __init__(self, value=None, caption=None, parent=None):
         super().__init__(parent)
         layout = QHBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        self.enabled = QCheckBox(caption)
-        self.editor = QDateEdit()
+        layout.setSpacing(8)
+        if caption:
+            layout.addWidget(QLabel(caption))
+        self.editor = QDateEdit(QDate.currentDate())
         self.editor.setCalendarPopup(True)
         self.editor.setDisplayFormat('dd.MM.yyyy')
+        self.editor.setFixedWidth(160)
         self.editor.setMinimumDate(QDate(1, 1, 1))
         self.editor.setMaximumDate(QDate(9999, 12, 31))
+        self.editor.setSpecialValueText('Без срока')
         self.editor.setLocale(QLocale('ru_RU'))
-        calendar = QCalendarWidget()
-        calendar.setLocale(QLocale('ru_RU'))
-        calendar.setFirstDayOfWeek(Qt.Monday)
-        calendar.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
-        for name, arrow in [('qt_calendar_prevmonth', Qt.LeftArrow), ('qt_calendar_nextmonth', Qt.RightArrow)]:
-            control = calendar.findChild(QToolButton, name)
-            if control:
-                control.setIcon(QIcon())
-                control.setArrowType(arrow)
-        self.editor.setCalendarWidget(calendar)
-        self.editor.setAccessibleName(caption)
-        layout.addWidget(self.enabled)
-        layout.addWidget(self.editor, 1)
-        self.enabled.toggled.connect(self.editor.setEnabled)
-        self.enabled.toggled.connect(self.changed)
+        self.editor.setCalendarWidget(DeadlineCalendar(self.editor))
+        self.editor.setAccessibleName(caption or 'Срок выполнения')
+        layout.addWidget(self.editor)
+        self.clear_button = QPushButton('Сбросить')
+        self.clear_button.setObjectName('link')
+        self.clear_button.setAutoDefault(False)
+        self.clear_button.clicked.connect(lambda: self.set_value(None))
+        layout.addWidget(self.clear_button)
+        layout.addStretch(1)
         self.editor.dateChanged.connect(self.changed)
         self.set_value(value)
 
     def set_value(self, value):
         date = QDate.fromString(value or '', Qt.ISODate)
-        self.enabled.setChecked(date.isValid())
-        self.editor.setDate(date if date.isValid() else QDate.currentDate())
-        self.editor.setEnabled(date.isValid())
+        self.editor.setDate(date if date.isValid() else self.editor.minimumDate())
 
     def value(self):
-        return self.editor.date().toString(Qt.ISODate) if self.enabled.isChecked() else None
+        return None if self.editor.date() == self.editor.minimumDate() else self.editor.date().toString(Qt.ISODate)
 
     def text(self):
         return self.value() or ''

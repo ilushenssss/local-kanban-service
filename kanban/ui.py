@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView)
 from .store import Store, Conflict
-from .widgets import CheckComboBox, DateField, ChecklistEditor, PriorityCombo
+from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo
 from .presentation import history_html, date_text
 from .cards import CardDelegate
 
@@ -57,8 +57,19 @@ def button(text, fn, parent_layout, variant=None):
     b.setCursor(Qt.PointingHandCursor)
     if variant:
         b.setProperty('variant', variant)
+        if variant == 'primary':
+            b.setObjectName('primary')
     parent_layout.addWidget(b)
     return b
+
+
+def style_form(form):
+    form.setRowWrapPolicy(QFormLayout.WrapAllRows)
+    form.setVerticalSpacing(8)
+    for row in range(form.rowCount()):
+        item = form.itemAt(row, QFormLayout.LabelRole)
+        if item and item.widget():
+            item.widget().setObjectName('fieldLabel')
 
 
 def error_text(error):
@@ -107,6 +118,7 @@ class CatalogDialog(QDialog, Async):
         self.list = QListWidget()
         root.addWidget(self.list, 1)
         form = QFormLayout()
+        form.setRowWrapPolicy(QFormLayout.WrapAllRows)
         self.login = QLineEdit()
         self.login.setPlaceholderText('Например, ivanov')
         self.name = QLineEdit()
@@ -114,6 +126,7 @@ class CatalogDialog(QDialog, Async):
         if kind == 'users':
             form.addRow('Пользователь Windows', self.login)
         form.addRow('Имя сотрудника' if kind == 'users' else 'Название метки', self.name)
+        style_form(form)
         root.addLayout(form)
         actions = QHBoxLayout()
         self.save_button = button('Добавить', self.save_entry, actions, 'primary')
@@ -228,12 +241,13 @@ class TaskDialog(QDialog, Async):
         self.tabs = QTabWidget()
         root.addWidget(self.tabs)
         page = QWidget()
+        page.setObjectName('scrollBody')
         form = QFormLayout(page)
         form.setContentsMargins(4, 20, 12, 16)
-        form.setVerticalSpacing(14)
+        form.setVerticalSpacing(8)
+        form.setRowWrapPolicy(QFormLayout.WrapAllRows)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.title = QLineEdit(data.get('title', ''))
-        self.title.setObjectName('TaskTitle')
         self.title.setPlaceholderText('Что нужно сделать?')
         self.description = QTextEdit()
         self.description.setPlaceholderText('Подробности, контекст и ожидаемый результат…')
@@ -244,8 +258,8 @@ class TaskDialog(QDialog, Async):
         self.catalog_data = {'users': [], 'labels': []}
         self.catalog_pending = False
         self.catalog_ready = False
-        self.assignees = CheckComboBox('Выберите исполнителей', data.get('assignees', []))
-        self.labels = CheckComboBox('Выберите метки', data.get('labels', []))
+        self.assignees = RegistrySelection('Выберите исполнителей', data.get('assignees', []))
+        self.labels = RegistrySelection('Выберите метки', data.get('labels', []))
         self.priority = PriorityCombo()
         self.priority.setCurrentText(data.get('priority', 'Обычный'))
         self.due = DateField(data.get('due_date'))
@@ -277,6 +291,7 @@ class TaskDialog(QDialog, Async):
         self.dates = dates
         if data.get('id'):
             form.addRow('Даты (UTC)', dates)
+        style_form(form)
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
         form_scroll.setWidget(page)
@@ -716,13 +731,14 @@ class MainWindow(QMainWindow, Async):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         sidebar = QWidget()
-        sidebar.setObjectName('Sidebar')
-        sidebar.setFixedWidth(220)
+        sidebar.setObjectName('side')
+        sidebar.setAttribute(Qt.WA_StyledBackground, True)
+        sidebar.setFixedWidth(230)
         side = QVBoxLayout(sidebar)
-        side.setContentsMargins(16, 20, 16, 16)
-        side.setSpacing(7)
+        side.setContentsMargins(14, 18, 14, 14)
+        side.setSpacing(4)
         heading = QLabel('Канбан')
-        heading.setObjectName('Heading')
+        heading.setObjectName('appName')
         side.addWidget(heading)
         user = QLabel('Пользователь: ' + getpass.getuser())
         user.setTextFormat(Qt.PlainText)
@@ -746,6 +762,7 @@ class MainWindow(QMainWindow, Async):
         button('Резервная копия…', self.backup, side, 'quiet')
         root.addWidget(sidebar)
         surface = QWidget()
+        surface.setObjectName('content')
         content = QVBoxLayout(surface)
         content.setContentsMargins(24, 18, 24, 16)
         content.setSpacing(12)
@@ -786,9 +803,15 @@ class MainWindow(QMainWindow, Async):
         self.label_filter.setAccessibleName('Фильтр по метке')
         self.due_from = DateField(caption='Срок с')
         self.due_to = DateField(caption='по')
-        for field in [self.assignee_filter, self.label_filter, self.due_from, self.due_to]:
+        for field in [self.assignee_filter, self.label_filter]:
             advanced.addWidget(field)
+        advanced.addStretch(1)
         content.addLayout(advanced)
+        deadline_filters = QHBoxLayout()
+        deadline_filters.addWidget(self.due_from)
+        deadline_filters.addWidget(self.due_to)
+        deadline_filters.addStretch(1)
+        content.addLayout(deadline_filters)
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         content.addWidget(self.scroll, 1)
