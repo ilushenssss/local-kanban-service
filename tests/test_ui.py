@@ -86,6 +86,58 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_refresh_during_drag_and_inflight_response(self):
+        from kanban.ui import QDrag
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and len(w.card_lists) == 5)
+        w.timer.stop()
+        source = w.card_lists[0]
+        source.setCurrentRow(0)
+        old_board = w.scroll.widget()
+        pending = []
+        with patch.object(w, 'work', side_effect=lambda read, done: pending.append((read, done))):
+            w.refresh()
+        read, done = pending[0]
+        stale = read()
+        def drag_loop(*args):
+            self.assertTrue(w.drag_active)
+            w.refresh()
+            done(stale, None)
+            APP.processEvents()
+            self.assertIs(w.scroll.widget(), old_board)
+            self.assertFalse(sip.isdeleted(source))
+            w.move_task(self.result['id'], self.columns[1]['id'])
+            wait_for(lambda: not w.mutating)
+            self.assertIs(w.scroll.widget(), old_board)
+            self.assertEqual(source.count(), 1)
+            return Qt.MoveAction
+        with patch.object(QDrag, 'exec_', side_effect=drag_loop):
+            source.startDrag(Qt.MoveAction)
+        wait_for(lambda: not w.loading and not w.debounce.isActive() and w.card_lists[1].count() == 1)
+        self.assertFalse(w.drag_active)
+        self.assertEqual(self.store.detail(self.result['id'])['column_id'], self.columns[1]['id'])
+
+    def test_unchanged_refresh_preserves_widgets_and_cancelled_drag(self):
+        from kanban.ui import QDrag
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and len(w.card_lists) == 5)
+        source = w.card_lists[0]
+        source.setCurrentRow(0)
+        board = w.scroll.widget()
+        w.refresh()
+        wait_for(lambda: not w.loading)
+        self.assertIs(w.scroll.widget(), board)
+        with patch.object(QDrag, 'exec_', side_effect=lambda *args: (w.refresh(), Qt.IgnoreAction)[1]):
+            source.startDrag(Qt.MoveAction)
+        wait_for(lambda: not w.loading and not w.debounce.isActive())
+        self.assertIs(w.scroll.widget(), board)
+        self.assertEqual(source.count(), 1)
+        self.assertFalse(w.drag_active)
+
     def test_statistics_theme_and_labels(self):
         from kanban.statistics import summarize
         from kanban.theme import apply_theme, label_colors, theme_settings, TOKENS

@@ -6,7 +6,7 @@ from pathlib import Path
 import tempfile
 import uuid
 from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl
-from PyQt5.QtGui import QDesktopServices
+from PyQt5.QtGui import QDesktopServices, QDrag
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
@@ -756,6 +756,7 @@ class ColumnsDialog(QDialog):
 
 class Cards(QListWidget):
     moved = pyqtSignal(int, int, object)
+    dragging = pyqtSignal(bool)
     def __init__(self, column_id):
         super().__init__()
         self.column_id = column_id
@@ -770,6 +771,19 @@ class Cards(QListWidget):
         self.setWordWrap(True)
         self.setMinimumWidth(250)
         self.setAccessibleName('Задачи колонки')
+    def startDrag(self, supported_actions):
+        if not self.selectedIndexes():
+            return
+        # Own QDrag lifecycle: QListWidget.startDrag may delete source rows after
+        # MoveAction, although persistence and repaint are handled asynchronously.
+        self.dragging.emit(True)
+        try:
+            drag = QDrag(self)
+            drag.setMimeData(self.model().mimeData(self.selectedIndexes()))
+            drag.exec_(Qt.MoveAction, Qt.MoveAction)
+        finally:
+            self.dragging.emit(False)
+
     def dropEvent(self, event):
         source = event.source()
         if not isinstance(source, Cards) or not source.currentItem():
@@ -795,6 +809,9 @@ class MainWindow(QMainWindow, Async):
         self.mutating = False
         self.pending_action = None
         self.generation = 0
+        self.drag_active = False
+        self.refresh_deferred = False
+        self.last_snapshot = None
         self.setWindowTitle('Канбан')
         self.resize(1400, 850)
         self.setMinimumSize(900, 600)
@@ -985,7 +1002,17 @@ class MainWindow(QMainWindow, Async):
         quick = self.quick.currentIndex()
         return {'query': self.search.text(), 'priority': self.priority_filter.currentText() if self.priority_filter.currentIndex() else '', 'archived': self.archive_filter.isChecked(), 'assignee': getpass.getuser() if quick == 1 else (self.assignee_filter.currentData() or ''), 'overdue': quick == 2, 'unassigned': quick == 3, 'label': self.label_filter.currentData() or '', 'due_from': self.due_from.text().strip(), 'due_to': self.due_to.text().strip()}
 
+    def drag_state_changed(self, active):
+        self.drag_active = active
+        if not active and self.refresh_deferred:
+            self.refresh_deferred = False
+            # Run after startDrag/dropEvent have returned to Qt.
+            self.debounce.start(0)
+
     def refresh(self):
+        if self.drag_active:
+            self.refresh_deferred = True
+            return
         if self.loading or self.mutating or self.pending_action:
             return
         if not self.store:
@@ -1008,12 +1035,21 @@ class MainWindow(QMainWindow, Async):
             return boards, selected, self.store.columns(selected) if selected else [], self.store.tasks(selected, f) if selected else [], self.store.tasks(selected) if selected else [], self.store.catalogs(selected)
         def done(result, error):
             self.loading = False
+            if self.drag_active:
+                self.refresh_deferred = True
+                return
+            if self.mutating or self.pending_action:
+                return
             if generation != self.generation:
                 self.debounce.start(1)
                 return
             if error:
                 self.status.setText('Обновление не выполнено: ' + error_text(error) + '. Можно повторить. Открытые формы сохранены.')
                 return
+            snapshot = (result, dt.date.today().isoformat())
+            if snapshot == self.last_snapshot:
+                return
+            self.last_snapshot = copy.deepcopy(snapshot)
             boards, selected, columns, tasks, all_tasks, catalogs = result
             self.update_catalog_filters(catalogs)
             self.board_id = selected
@@ -1063,6 +1099,7 @@ class MainWindow(QMainWindow, Async):
                 cards.itemDoubleClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
                 cards.moved.connect(self.move_task)
+                cards.dragging.connect(self.drag_state_changed)
                 for task in tasks:
                     if task['column_id'] != column['id']:
                         continue
@@ -1157,6 +1194,7 @@ class MainWindow(QMainWindow, Async):
         if not retry:
             self.pending_action = (fn, success, uuid.uuid4().hex)
         rid = self.pending_action[2]
+        self.generation += 1
         self.mutating = True
         self.status.setText('Сохранение…')
         def done(result, error):
