@@ -10,12 +10,13 @@ from PyQt5.QtGui import QDesktopServices, QDrag
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
-    QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu)
+    QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar)
 from .store import Store, Conflict
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo
 from .presentation import history_html, date_text, comments_html
 from .cards import CardDelegate
 from .statistics import StatisticsPage
+from .my_tasks import MyTasksPage
 from .theme import apply_theme, theme_settings, label_icon
 
 
@@ -239,7 +240,7 @@ class TaskDialog(QDialog, Async):
         self.data = copy.deepcopy(data)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle('Задача №' + str(data['number']) if data.get('id') else 'Новая задача')
-        self.resize(760, 740)
+        self.resize(960, 690)
         self.setMinimumSize(640, 480)
         self.pending = False
         self.retry = None
@@ -256,7 +257,13 @@ class TaskDialog(QDialog, Async):
         root.addWidget(self.tabs)
         page = QWidget()
         page.setObjectName('scrollBody')
-        form = QFormLayout(page)
+        form_columns = QHBoxLayout(page)
+        form = QFormLayout()
+        properties = QFormLayout()
+        properties.setRowWrapPolicy(QFormLayout.WrapAllRows)
+        properties.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form_columns.addLayout(form, 3)
+        form_columns.addLayout(properties, 2)
         form.setContentsMargins(4, 20, 12, 16)
         form.setVerticalSpacing(8)
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
@@ -265,8 +272,8 @@ class TaskDialog(QDialog, Async):
         self.title.setPlaceholderText('Что нужно сделать?')
         self.description = QTextEdit()
         self.description.setPlaceholderText('Подробности, контекст и ожидаемый результат…')
-        self.description.setMinimumHeight(110)
-        self.description.setMaximumHeight(170)
+        self.description.setMinimumHeight(200)
+        self.description.setMaximumHeight(280)
         self.description.setAcceptRichText(False)
         self.description.setPlainText(data.get('description', ''))
         self.catalog_data = {'users': [], 'labels': []}
@@ -291,20 +298,21 @@ class TaskDialog(QDialog, Async):
             line.setContentsMargins(0, 0, 0, 0)
             line.addWidget(field, 1)
             button('Справочник…', lambda checked=False, kind=kind: self.open_catalog(kind), line)
-            form.addRow(caption, wrapper)
-        form.addRow('Приоритет', self.priority)
-        form.addRow('Срок', self.due)
+            properties.addRow(caption, wrapper)
+        properties.addRow('Приоритет', self.priority)
+        properties.addRow('Срок', self.due)
         self.column.hide()
         if data.get('id'):
-            form.addRow('Архивирование', self.archived)
+            properties.addRow('Архивирование', self.archived)
         self.checklist = ChecklistEditor(data.get('checklist', []))
         form.addRow('Чек-лист', self.checklist)
         dates = QLabel('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(data.get('created_at', '—'), data.get('updated_at', '—'), data.get('completed_at') or '—'))
         dates.setTextFormat(Qt.PlainText)
         self.dates = dates
         if data.get('id'):
-            form.addRow('Даты (UTC)', dates)
+            properties.addRow('Даты (UTC)', dates)
         style_form(form)
+        style_form(properties)
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
         form_scroll.setWidget(page)
@@ -851,14 +859,17 @@ class MainWindow(QMainWindow, Async):
         user.setWordWrap(True)
         user.setObjectName('Muted')
         side.addWidget(user)
-        section = QLabel('ДОСКИ')
+        section = QLabel('РАБОЧЕЕ ПРОСТРАНСТВО')
         section.setObjectName('Muted')
         side.addSpacing(24)
         side.addWidget(section)
         self.boards_list = QListWidget()
         self.boards_list.setObjectName('Boards')
         self.boards_list.currentItemChanged.connect(self.select_board)
-        side.addWidget(self.boards_list)
+        self.boards_list.hide()
+        button('Мои задачи', lambda: self.pages.setCurrentWidget(self.my_tasks), side, 'quiet')
+        button('Доска', lambda: self.pages.setCurrentIndex(0), side, 'quiet')
+        side.addStretch()
         button('+  Создать доску', lambda: self.board_action('create'), side, 'quiet')
         button('Переименовать доску', lambda: self.board_action('rename'), side, 'quiet')
         button('Архивировать доску', lambda: self.board_action('archive'), side, 'quiet')
@@ -878,6 +889,12 @@ class MainWindow(QMainWindow, Async):
         content.setContentsMargins(24, 18, 24, 16)
         content.setSpacing(12)
         root.addWidget(surface, 1)
+        self.board_tabs = QTabBar()
+        self.board_tabs.setExpanding(False)
+        self.board_tabs.setUsesScrollButtons(True)
+        self.board_tabs.setAccessibleName('Доски')
+        self.board_tabs.currentChanged.connect(self.select_board_tab)
+        content.addWidget(self.board_tabs)
         top = QHBoxLayout()
         self.board_title = QLabel('Выберите или создайте доску')
         self.board_title.setTextFormat(Qt.PlainText)
@@ -895,6 +912,9 @@ class MainWindow(QMainWindow, Async):
         self.pages.addTab(board_page, 'Доска')
         self.statistics = StatisticsPage()
         self.pages.addTab(self.statistics, 'Статистика')
+        self.my_tasks = MyTasksPage()
+        self.my_tasks.opened.connect(self.open_personal_task)
+        self.pages.addTab(self.my_tasks, 'Мои задачи')
         content = QVBoxLayout(board_page)
         content.setContentsMargins(0, 12, 0, 0)
         content.setSpacing(10)
@@ -1007,6 +1027,26 @@ class MainWindow(QMainWindow, Async):
         self.generation += 1
         self.debounce.start(300)
 
+    def select_board_tab(self, index):
+        if index < 0:
+            return
+        self.board_id = self.board_tabs.tabData(index)
+        self.generation += 1
+        self.pages.setCurrentIndex(0)
+        self.refresh()
+
+    def open_personal_task(self, task):
+        def done(columns, error):
+            if error:
+                self.status.setText(error_text(error))
+                return
+            d = TaskDialog(self.store, columns, task, self)
+            self.dialogs.add(d)
+            d.changed.connect(self.refresh)
+            d.destroyed.connect(lambda: self.dialogs.discard(d))
+            d.show()
+        self.work(lambda: self.store.columns(task['board_id']), done)
+
     def select_board(self, current, previous):
         self.board_id = current.data(Qt.UserRole) if current else None
         self.generation += 1
@@ -1046,7 +1086,13 @@ class MainWindow(QMainWindow, Async):
         def read():
             boards = self.store.boards()
             selected = bid if any(b['id'] == bid for b in boards) else (boards[0]['id'] if boards else None)
-            return boards, selected, self.store.columns(selected) if selected else [], self.store.tasks(selected, f) if selected else [], self.store.tasks(selected) if selected else [], self.store.catalogs(selected)
+            personal = []
+            for board in boards:
+                columns = {c['id']: c['name'] for c in self.store.columns(board['id'])}
+                for task in self.store.tasks(board['id'], {'assignee': self.store.login}):
+                    task.update(board_name=board['name'], column_name=columns.get(task['column_id'], ''))
+                    personal.append(task)
+            return boards, selected, self.store.columns(selected) if selected else [], self.store.tasks(selected, f) if selected else [], self.store.tasks(selected) if selected else [], self.store.catalogs(selected), personal
         def done(result, error):
             self.loading = False
             if self.drag_active:
@@ -1064,7 +1110,19 @@ class MainWindow(QMainWindow, Async):
             if snapshot == self.last_snapshot:
                 return
             self.last_snapshot = copy.deepcopy(snapshot)
-            boards, selected, columns, tasks, all_tasks, catalogs = result
+            boards, selected, columns, tasks, all_tasks, catalogs, personal = result
+            self.my_tasks.update_data(personal)
+            wanted = [(b['id'], b['name']) for b in boards]
+            current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
+            self.board_tabs.blockSignals(True)
+            if wanted != current:
+                while self.board_tabs.count():
+                    self.board_tabs.removeTab(0)
+                for board_id, name in wanted:
+                    index = self.board_tabs.addTab(name)
+                    self.board_tabs.setTabData(index, board_id)
+            self.board_tabs.setCurrentIndex(next((i for i in range(self.board_tabs.count()) if self.board_tabs.tabData(i) == selected), -1))
+            self.board_tabs.blockSignals(False)
             self.update_catalog_filters(catalogs)
             self.board_id = selected
             self.boards_list.blockSignals(True)
@@ -1097,7 +1155,7 @@ class MainWindow(QMainWindow, Async):
                 panel = QWidget()
                 panel.setObjectName('ColumnPanel')
                 panel.setAttribute(Qt.WA_StyledBackground, True)
-                panel.setMinimumWidth(244)
+                panel.setFixedWidth(300)
                 layout = QVBoxLayout(panel)
                 layout.setContentsMargins(6, 4, 6, 6)
                 layout.setSpacing(10)
@@ -1109,6 +1167,7 @@ class MainWindow(QMainWindow, Async):
                 label.setObjectName('ColumnTitle')
                 label.setProperty('tone', column_index % 5)
                 layout.addWidget(label)
+                button('+ Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
                 cards = Cards(column['id'])
                 cards.itemDoubleClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
@@ -1130,9 +1189,9 @@ class MainWindow(QMainWindow, Async):
                         cards.setCurrentItem(item)
                         if focused:
                             QTimer.singleShot(0, cards.setFocus)
+                cards.setFixedHeight(min(550, max(60, sum(136 if cards.item(i).data(Qt.UserRole).get('checklist') else 116 for i in range(cards.count())) + cards.count()*8 + 8)))
                 layout.addWidget(cards)
-                button('+ Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
-                row.addWidget(panel)
+                row.addWidget(panel, 0, Qt.AlignTop)
                 self.card_lists.append(cards)
                 cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))
             if not columns:

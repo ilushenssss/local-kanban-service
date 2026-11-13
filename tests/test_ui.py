@@ -86,6 +86,39 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_top_board_tabs_and_personal_tasks_across_boards(self):
+        import getpass
+        login = getpass.getuser()
+        second = self.store.board_action('Вторая доска')
+        second_columns = self.store.columns(second)
+        own = self.store.save_task(dict(board_id=second, column_id=second_columns[0]['id'], title='Личная задача', assignees=[login]))
+        self.store.save_task(dict(board_id=second, column_id=second_columns[0]['id'], title='Чужая задача', assignees=['another']))
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and w.board_tabs.count() == 2)
+        self.assertFalse(w.boards_list.isVisible())
+        self.assertEqual(len(w.my_tasks.tasks), 1)
+        self.assertEqual(w.my_tasks.tasks[0]['id'], own['id'])
+        w.pages.setCurrentWidget(w.my_tasks)
+        self.assertTrue(w.my_tasks.isVisible())
+        w.my_tasks.search.setText('Чужая')
+        self.assertEqual(w.my_tasks.table.rowCount(), 0)
+        w.my_tasks.search.clear()
+        w.open_personal_task(w.my_tasks.tasks[0])
+        wait_for(lambda: bool(w.dialogs) and not w.jobs)
+        dialog = next(iter(w.dialogs))
+        wait_for(lambda: not dialog.jobs)
+        self.assertEqual(dialog.data['board_id'], second)
+        self.assertEqual(dialog.columns[0]['id'], second_columns[0]['id'])
+        dialog.close()
+        w.board_tabs.setCurrentIndex(1)
+        wait_for(lambda: not w.loading and w.columns_data[0]['board_id'] == second)
+        self.assertEqual(w.board_id, second)
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        w.pages.setCurrentWidget(w.my_tasks)
+        w.grab().save(str(evidence / 'my-tasks-linux.png'))
+
     def test_refined_task_history_and_chat(self):
         from kanban.presentation import comments_html, history_html
         from PyQt5.QtWidgets import QLabel
