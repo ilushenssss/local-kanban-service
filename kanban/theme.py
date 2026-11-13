@@ -43,7 +43,7 @@ def stylesheet():
     return '''
 QWidget#BoardCanvas { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %(canvas)s,stop:1 %(selection)s); }
 QWidget { color: %(text)s; font-size: 10pt; }
-QMainWindow, QDialog, QWidget#content, QWidget#scrollBody, QWidget#BoardCanvas { background: %(canvas)s; }
+QMainWindow, QDialog, QWidget#content, QWidget#scrollBody { background: %(canvas)s; }
 QWidget#side { background: %(sidebar)s; }
 QWidget#side QLabel { color: #c9d1e3; }
 QLabel#appName { color: #ffffff; font-size: 17pt; font-weight: 600; }
