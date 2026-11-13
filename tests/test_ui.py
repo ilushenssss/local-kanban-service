@@ -73,7 +73,7 @@ class UITest(unittest.TestCase):
                 w.timer.stop()
             if hasattr(w, 'refresh_timer'):
                 w.refresh_timer.stop()
-            wait_for(lambda: not w.jobs)
+            wait_for(lambda: not getattr(w, 'jobs', ()))
             if not sip.isdeleted(w):
                 with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
                     w.close()
@@ -86,6 +86,45 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_statistics_charts_segments_empty_and_themes(self):
+        from kanban.statistics import StatisticsPage
+        from kanban.theme import apply_theme
+        page = StatisticsPage()
+        self.windows.append(page)
+        page.resize(980, 900)
+        tasks = []
+        for index in range(12):
+            tasks.append(dict(column_id=self.columns[index % 5]['id'],
+                completed_at='2026-01-01' if index < 4 else None,
+                due_date='2000-01-01' if index < 7 else None,
+                assignees=['ivanov'] if index % 2 else ['petrov'],
+                assignee_names=['Иванов Иван' if index % 2 else 'Петров Пётр']))
+        page.update_data(tasks, self.columns)
+        segments = page.completion_chart.rows
+        self.assertEqual([row[1][0][0] for row in segments], [4, 5, 3])
+        self.assertEqual(page.completion_chart.center, '33%')
+        self.assertEqual(sum(row[1][0][0] for row in page.column_chart.rows), 12)
+        for row in page.member_chart.rows:
+            self.assertTrue(all(v >= 0 for v, color in row[1]))
+            self.assertEqual(sum(v for v, color in row[1]), 6)
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        page.show()
+        try:
+            for dark in (False, True):
+                apply_theme(APP, dark)
+                APP.processEvents()
+                page.grab().save(str(evidence / ('charts-dark-linux.png' if dark else 'charts-light-linux.png')))
+                self.assertTrue(page.member_chart.grab().save(str(evidence / ('load-dark-linux.png' if dark else 'load-light-linux.png'))))
+            page.update_data([], self.columns)
+            self.assertEqual(page.completion_chart.center, '0%')
+            self.assertFalse(page.member_chart.rows)
+            page.resize(650, 650)
+            APP.processEvents()
+            page.grab().save(str(evidence / 'charts-empty-linux.png'))
+        finally:
+            apply_theme(APP, False)
+
     def test_refresh_during_drag_and_inflight_response(self):
         from kanban.ui import QDrag
         w = MainWindow(str(self.store.folder))
