@@ -42,23 +42,23 @@ def stylesheet():
     t = TOKENS
     return '''
 QWidget#BoardCanvas { background: %(canvas)s; }
-QWidget { color: %(text)s; font-size: 10pt; }
+QWidget { color: %(text)s; font-family: "Arial", "Liberation Sans", sans-serif; font-size: 14px; }
 QMainWindow, QDialog, QWidget#content, QWidget#scrollBody { background: %(canvas)s; }
 QWidget#side { background: %(sidebar)s; }
 QWidget#side QLabel { color: %(muted)s; }
-QLabel#appName { color: %(accent)s; font-size: 17pt; font-weight: 600; }
-QLabel#Heading, QLabel#title { font-size: 16pt; font-weight: 600; }
-QLabel#SectionTitle, QLabel#ColumnTitle { font-size: 11pt; font-weight: 600; }
+QLabel#appName { color: %(text)s; font-size: 22px; font-weight: 600; }
+QLabel#Heading, QLabel#title { font-size: 20px; font-weight: 600; }
+QLabel#SectionTitle, QLabel#ColumnTitle { font-size: 14px; font-weight: 600; }
 QLabel#Muted, QLabel#muted, QLabel#Status, QLabel#hint { color: %(muted)s; }
 QLabel#fieldLabel { font-weight: 600; }
-QWidget#ColumnPanel { background: %(canvas)s; border: 1px solid %(border)s; border-radius: 10px; }
+QWidget#ColumnPanel { background: %(canvas)s; border: none; border-radius: 8px; }
 QWidget#ColumnPanel QLabel { background: transparent; border: none; }
-QLabel#ColumnTitle { padding: 7px 6px; border-radius: 5px; color: #202c40; }
-QLabel#ColumnTitle[tone="0"] { background: #dce9fb; border-top: 3px solid #568bd7; }
-QLabel#ColumnTitle[tone="1"] { background: #e7e0f8; border-top: 3px solid #9270cd; }
-QLabel#ColumnTitle[tone="2"] { background: #fff0cd; border-top: 3px solid #d5a033; }
-QLabel#ColumnTitle[tone="3"] { background: #fbe0d9; border-top: 3px solid #d17c66; }
-QLabel#ColumnTitle[tone="4"] { background: #daf0e3; border-top: 3px solid #59a479; }
+QLabel#ColumnTitle { padding: 12px 4px; border-radius: 5px; color: #202c40; }
+QWidget#ColumnPanel[tone="0"] { background: transparent; border-top: 3px solid #568bd7; }
+QWidget#ColumnPanel[tone="1"] { background: transparent; border-top: 3px solid #9270cd; }
+QWidget#ColumnPanel[tone="2"] { background: transparent; border-top: 3px solid #d5a033; }
+QWidget#ColumnPanel[tone="3"] { background: transparent; border-top: 3px solid #d17c66; }
+QWidget#ColumnPanel[tone="4"] { background: transparent; border-top: 3px solid #59a479; }
 QPushButton { background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 10px; }
 QPushButton:hover { border-color: %(accent)s; background: %(hover)s; }
 QPushButton:focus { border: 2px solid %(accent)s; }
@@ -94,10 +94,21 @@ QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QProgressBar { background: %(hover)s; border: 1px solid %(border)s; border-radius: 5px; text-align: center; }
 QProgressBar::chunk { background: %(accent)s; }
 QTreeWidget { background: %(sidebar)s; color: %(text)s; border: none; padding: 4px; }
+QTreeWidget::branch:selected { background: %(selection)s; }
 QTreeWidget::item { padding: 7px 4px; border-radius: 4px; }
 QTreeWidget::item:selected { background: %(selection)s; color: %(accent)s; }
 QWidget#Header { background: %(background)s; border-bottom: 1px solid %(border)s; }
 QSplitter::handle { background: %(border)s; }
+QWidget#side QPushButton:checked { color: %(accent)s; background: %(selection)s; }
+QLabel#ChatHeading { font-size: 14px; font-weight: 600; padding: 8px 12px; border-bottom: 1px solid %(border)s; }
+QWidget#side QLabel#appName { color: %(text)s; }
+QLabel#BoardName { font-size: 16px; font-weight: 600; }
+QLabel#Eyebrow { font-size: 11px; color: %(muted)s; letter-spacing: 1px; }
+QLabel#Profile { border-top: 1px solid %(border)s; padding-top: 16px; font-size: 12px; }
+QLabel#CountBadge { background: %(hover)s; color: %(muted)s; border-radius: 9px; padding: 2px 6px; font-size: 12px; }
+QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 10px; }
+QTextEdit#ChatTimeline { border: none; background: %(background)s; padding: 12px; }
+QWidget#side { border-right: 1px solid %(border)s; }
 QToolTip { color: %(text)s; background: %(background)s; border: 1px solid %(border)s; padding: 6px; }
 ''' % t
 

@@ -93,12 +93,45 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_redesigned_workspace_groups_and_message_badges(self):
+        names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
+        board = self.store.board_action('Разработка / Релиз платформы', column_names=names)
+        cols = self.store.columns(board)
+        labels = ['Frontend', 'Спринт 4']
+        titles = ['Обновить форму регистрации пользователей', 'Добавить поиск по проектам',
+                  'Проверить адаптивную вёрстку отчётов', 'Подготовить документацию API']
+        tasks = []
+        for i, title in enumerate(titles):
+            tasks.append(self.store.save_task(dict(board_id=board, column_id=cols[i]['id'], title=title,
+                priority='Срочный' if i == 0 else 'Обычный', labels=labels,
+                assignees=[self.store.login], due_date='2026-12-20',
+                checklist=[dict(text='Проверка', done=1), dict(text='Согласование', done=0)])))
+        colleague = Store(self.store.folder, 'designer')
+        for i in range(4):
+            colleague.comment(tasks[0]['id'], 'Обсуждение макета {}'.format(i+1))
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and w.board_tabs.count() == 2)
+        w.board_tabs.setCurrentIndex(1)
+        wait_for(lambda: not w.loading and len(w.card_lists) == 4)
+        group = next(w.board_tree.topLevelItem(i) for i in range(w.board_tree.topLevelItemCount()) if w.board_tree.topLevelItem(i).text(0) == 'Разработка')
+        self.assertEqual(group.child(0).text(0), 'Релиз платформы')
+        self.assertTrue(w.card_lists[0].item(0).data(Qt.UserRole)['unread_count'] >= 4)
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        w.grab().save(str(evidence / 'teamsync-new-workspace.png'))
+
     def test_desktop_sidebar_views_and_split_chat(self):
         w = MainWindow(str(self.store.folder))
         self.windows.append(w)
         w.show()
         wait_for(lambda: not w.loading and bool(w.card_lists))
         self.assertEqual(w.sidebar.width(), 240)
+        self.assertFalse(w.board_tabs.isVisible())
+        self.assertFalse(w.pages.tabBar().isVisible())
+        w.view_switch.setCurrentIndex(w.pages.indexOf(w.list_view))
+        self.assertTrue(w.list_view.isVisible())
+        w.view_switch.setCurrentIndex(0)
         w.collapse_button.click()
         self.assertEqual(w.sidebar.width(), 64)
         w.collapse_button.click()

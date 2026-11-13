@@ -1,98 +1,115 @@
-"""Compact board cards, following the supplied YouGile reference."""
+"""Task surfaces with a two-line title, stickers and a quiet metadata footer."""
 import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize
 from PyQt5.QtGui import QColor, QFont, QPen
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle
 from .theme import TOKENS, PRIORITIES, label_colors
-from .presentation import date_text
 
 
 class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         task = index.data(Qt.UserRole) or {}
-        return QSize(280, 136 if task.get('checklist') else 116)
+        return QSize(292, 148 if task.get('checklist') else 132)
 
     def paint(self, p, option, index):
-        task = index.data(Qt.UserRole)
-        if not task:
+        t = index.data(Qt.UserRole)
+        if not t:
             return super().paint(p, option, index)
         p.save()
         p.setRenderHint(p.Antialiasing)
-        rect = option.rect.adjusted(2, 2, -2, -4)
+        box = option.rect.adjusted(2, 2, -2, -5)
         selected = bool(option.state & QStyle.State_Selected)
-        done = bool(task['completed_at'])
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(15, 23, 42, 12))
+        p.drawRoundedRect(box.translated(0, 2), 8, 8)
         p.setPen(QPen(QColor(TOKENS['accent'] if selected else TOKENS['border']), 1))
         p.setBrush(QColor(TOKENS['selection'] if selected else TOKENS['background']))
-        p.drawRoundedRect(rect, 8, 8)
-        p.setClipRect(rect)
+        p.drawRoundedRect(box, 8, 8)
+        p.setClipRect(box)
+        done = bool(t['completed_at'])
         if done:
-            p.setOpacity(.52)
-        x, y, width = rect.x()+10, rect.y()+9, rect.width()-20
-        def font(size=9, bold=False, strike=False):
+            p.setOpacity(.5)
+        x, y, w = box.x()+12, box.y()+11, box.width()-24
+        def font(px=12, bold=False, strike=False):
             f = QFont(option.font)
-            f.setPointSizeF(size)
+            f.setPixelSize(px)
             f.setBold(bold)
             f.setStrikeOut(strike)
             p.setFont(f)
-        font(10)
-        p.setPen(QColor('#57a882' if done else TOKENS['muted']))
-        p.drawText(QRect(x, y, 18, 19), Qt.AlignCenter, '●' if done else '○')
-        font(9.5, False, done)
+        font(14, strike=done)
         p.setPen(QColor(TOKENS['text']))
-        p.drawText(QRect(x+23, y, width-35, 34), Qt.AlignTop | Qt.TextWordWrap, task['title'])
-        font(8)
+        words = t['title'].split()
+        lines = []
+        while words and len(lines) < 2:
+            line = words.pop(0)
+            if len(lines) == 1:
+                line = ' '.join([line]+words)
+                words = []
+            else:
+                while words and p.fontMetrics().horizontalAdvance(line+' '+words[0]) < w-8:
+                    line += ' '+words.pop(0)
+            lines.append(p.fontMetrics().elidedText(line, Qt.ElideRight, w-8))
+        p.drawText(QRect(x, y, w, 38), Qt.AlignTop, '\n'.join(lines))
+        font(12)
         cursor = x
-        def chip(text, foreground, background, max_width):
+        def chip(text, fg, bg, limit):
             nonlocal cursor
-            w = min(max_width, p.fontMetrics().horizontalAdvance(text)+14)
-            box = QRect(cursor, y+54, w, 22)
+            width = min(limit, p.fontMetrics().horizontalAdvance(text)+20)
+            r = QRect(cursor, y+45, width, 21)
             p.setPen(Qt.NoPen)
-            p.setBrush(QColor(background))
-            p.drawRoundedRect(box, 5, 5)
-            p.setPen(QColor(foreground))
-            p.drawText(box.adjusted(6, 0, -6, 0), Qt.AlignVCenter, p.fontMetrics().elidedText(text, Qt.ElideRight, w-12))
-            cursor += w+5
-        priority = task.get('priority', 'Обычный')
+            p.setBrush(QColor(bg))
+            p.drawRoundedRect(r, 5, 5)
+            p.setPen(QColor(fg))
+            p.drawText(r.adjusted(6, 0, -6, 0), Qt.AlignVCenter, p.fontMetrics().elidedText(text, Qt.ElideRight, width-12))
+            cursor += width+5
+        priority = t.get('priority', 'Обычный')
         fg, bg = PRIORITIES.get(priority, PRIORITIES['Обычный'])
-        chip('▥ '+priority, fg, bg, 94)
-        if task.get('due_date'):
-            overdue = task['due_date'] < dt.date.today().isoformat() and not done
-            chip(('! ' if overdue else '▣ ')+date_text(task['due_date']), TOKENS['danger'] if overdue else TOKENS['muted'], TOKENS['hover'], 96)
-        labels = task.get('labels', [])
-        if labels and cursor < x+width-38:
-            fg, bg = label_colors(labels[0])
-            chip(labels[0], fg, bg, max(28, x+width-cursor-30))
-        names = task.get('assignee_names') or task.get('assignees', [])
+        chip(priority, fg, bg, 94)
+        labels = t.get('labels', [])
+        for name in labels[:2]:
+            room = x+w-cursor
+            if room < 40:
+                break
+            fg, bg = label_colors(name)
+            chip(name, fg, bg, min(112, room))
+        footer = y+79
+        font(12)
+        p.setPen(QColor(TOKENS['muted']))
+        checks = t.get('checklist', [])
+        checked = sum(bool(c['done']) for c in checks)
+        if checks:
+            p.drawText(QRect(x, footer, 58, 22), Qt.AlignVCenter, '✓ {}/{}'.format(checked, len(checks)))
+        unread = t.get('unread_count', 0)
+        if unread:
+            cx = x+(64 if checks else 0)
+            p.setPen(QColor(TOKENS['accent']))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRect(cx, footer+5, 14, 10), 3, 3)
+            p.drawLine(cx+3, footer+15, cx+3, footer+18)
+            p.drawText(QRect(cx+19, footer, 30, 22), Qt.AlignVCenter, str(unread))
+        due = t.get('due_date')
+        if due:
+            date = dt.date.fromisoformat(due)
+            late = due < dt.date.today().isoformat() and not done
+            p.setPen(QColor(TOKENS['danger'] if late else TOKENS['muted']))
+            text = ('! ' if late else '')+date.strftime('%d.%m')
+            p.drawText(QRect(box.right()-113, footer, 70, 22), Qt.AlignRight | Qt.AlignVCenter, text)
+        names = t.get('assignee_names') or t.get('assignees', [])
         if names:
-            name = names[0]
-            initials = ''.join(part[0] for part in name.split()[:2]).upper()
-            avatar = QRect(rect.right()-33, y+55, 23, 23)
+            avatar = QRect(box.right()-35, footer, 24, 24)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(TOKENS['selection']))
             p.drawEllipse(avatar)
-            p.setPen(QColor(TOKENS['text']))
-            font(7, True)
-            p.drawText(avatar, Qt.AlignCenter, initials)
-        checks = task.get('checklist', [])
-        unread = task.get('unread_count', 0)
-        if unread:
-            font(8, True)
             p.setPen(QColor(TOKENS['accent']))
-            p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(QRect(x, y+87, 15, 10), 3, 3)
-            p.drawLine(x+3, y+97, x+3, y+101)
-            p.drawLine(x+3, y+101, x+7, y+97)
-            p.drawText(QRect(x+22, y+82, 38, 22), Qt.AlignVCenter, str(unread))
+            font(10, True)
+            initials = ''.join(part[0] for part in names[0].split()[:2]).upper()
+            p.drawText(avatar, Qt.AlignCenter, initials)
         if checks:
-            count = sum(bool(c['done']) for c in checks)
-            track = QRectF(x+(62 if unread else 0), y+94, width-45-(62 if unread else 0), 6)
+            track = QRectF(x, y+115, w, 4)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(TOKENS['hover']))
-            p.drawRoundedRect(track, 3, 3)
-            if count:
-                p.setBrush(QColor('#79ad79' if done else '#9ca8bc'))
-                p.drawRoundedRect(QRectF(track.x(), track.y(), track.width()*count/len(checks), 6), 3, 3)
-            font(8)
-            p.setPen(QColor(TOKENS['muted']))
-            p.drawText(QRect(rect.right()-48, y+87, 38, 20), Qt.AlignRight | Qt.AlignVCenter, '{}/{}'.format(count, len(checks)))
+            p.drawRoundedRect(track, 2, 2)
+            if checked:
+                p.setBrush(QColor('#78b895' if done else '#a8b3c5'))
+                p.drawRoundedRect(QRectF(x, track.y(), w*checked/len(checks), 4), 2, 2)
         p.restore()
