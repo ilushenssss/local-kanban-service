@@ -4,7 +4,7 @@ from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter
 
 LIGHT = dict(background='#ffffff', canvas='#F4F5F7', sidebar='#FFFFFF',
-             text='#1E293B', muted='#64748B', border='#E2E8F0', accent='#2563EB',
+             text='#1E293B', muted='#64748B', border='#C8D2DF', accent='#2563EB',
              hover='#e9eef7', selection='#dce7ff', danger='#b42318',
              scroll='#96a6bc', accent_hover='#1d4ed8')
 DARK = dict(background='#202b3c', canvas='#151d2b', sidebar='#111827',
@@ -51,14 +51,14 @@ QLabel#Heading, QLabel#title { font-size: 20px; font-weight: 600; }
 QLabel#SectionTitle, QLabel#ColumnTitle { font-size: 14px; font-weight: 600; }
 QLabel#Muted, QLabel#muted, QLabel#Status, QLabel#hint { color: %(muted)s; }
 QLabel#fieldLabel { font-weight: 600; }
-QWidget#ColumnPanel { background: %(canvas)s; border: none; border-radius: 8px; }
+QWidget#ColumnPanel { background: %(hover)s; border: 1px solid %(border)s; border-radius: 8px; }
 QWidget#ColumnPanel QLabel { background: transparent; border: none; }
-QLabel#ColumnTitle { padding: 12px 4px; border-radius: 5px; color: #202c40; }
-QWidget#ColumnPanel[tone="0"] { background: transparent; border-top: 3px solid #568bd7; }
-QWidget#ColumnPanel[tone="1"] { background: transparent; border-top: 3px solid #9270cd; }
-QWidget#ColumnPanel[tone="2"] { background: transparent; border-top: 3px solid #d5a033; }
-QWidget#ColumnPanel[tone="3"] { background: transparent; border-top: 3px solid #d17c66; }
-QWidget#ColumnPanel[tone="4"] { background: transparent; border-top: 3px solid #59a479; }
+QLabel#ColumnTitle { padding: 12px 4px; border-radius: 5px; color: %(text)s; }
+QWidget#ColumnPanel[tone="0"] { background: %(hover)s; border-top: 3px solid #568bd7; }
+QWidget#ColumnPanel[tone="1"] { background: %(hover)s; border-top: 3px solid #9270cd; }
+QWidget#ColumnPanel[tone="2"] { background: %(hover)s; border-top: 3px solid #d5a033; }
+QWidget#ColumnPanel[tone="3"] { background: %(hover)s; border-top: 3px solid #d17c66; }
+QWidget#ColumnPanel[tone="4"] { background: %(hover)s; border-top: 3px solid #59a479; }
 QPushButton { background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 10px; }
 QPushButton:hover { border-color: %(accent)s; background: %(hover)s; }
 QPushButton:focus { border: 2px solid %(accent)s; }
@@ -109,6 +109,7 @@ QLabel#CountBadge { background: %(hover)s; color: %(muted)s; border-radius: 9px;
 QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 10px; }
 QTextEdit#ChatTimeline { border: none; background: %(background)s; padding: 12px; }
 QWidget#side { border-right: 1px solid %(border)s; }
+QWidget#Messenger { background: %(background)s; border: 1px solid %(border)s; border-radius: 12px; }
 QToolTip { color: %(text)s; background: %(background)s; border: 1px solid %(border)s; padding: 6px; }
 ''' % t
 
@@ -128,6 +129,10 @@ def apply_theme(app, dark=False):
     app.setStyleSheet(stylesheet())
     for widget in app.topLevelWidgets():
         widget.update()
+        if hasattr(widget, 'messenger'):
+            widget.messenger.markup = None
+            widget.messenger.render()
+            widget.messenger.bubble.update()
         if hasattr(widget, 'render_history'):
             widget.render_history()
             widget.render_comments()

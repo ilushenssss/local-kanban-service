@@ -99,6 +99,40 @@ class StoreTest(unittest.TestCase):
             self.s.mark_read(another['id'], foreign)
         self.assertEqual(self.s.detail(task['id'])['version'], task['version'])
 
+    def test_team_chat_retry_read_cursor_and_backup(self):
+        first = self.s.team_send('Первое', 'same-message')
+        self.assertEqual(first, self.s.team_send('Первое', 'same-message'))
+        bob = Store(self.s.folder, 'bob')
+        second = bob.team_send('Ответ')
+        self.assertEqual(self.s.team_chat()['unread'], 1)
+        self.assertEqual(bob.team_chat()['unread'], 1)
+        self.s.team_mark_read(second)
+        self.s.team_mark_read(first)
+        self.assertEqual(self.s.team_chat()['unread'], 0)
+        self.assertEqual(len(self.s.team_chat(first)['messages']), 1)
+        with self.assertRaises(ValueError):
+            self.s.team_send('Другой текст', 'same-message')
+        self.assertEqual(len(self.s.team_chat()['messages']), 2)
+        backup = self.s.backup(self.root / 'chat-backups')
+        restore(backup, self.root / 'chat-restored')
+        restored = Store(self.root / 'chat-restored', 'alice')
+        self.assertEqual(len(restored.team_chat()['messages']), 2)
+        self.assertEqual(restored.team_chat()['unread'], 0)
+
+    def test_schema_one_migrates_without_losing_existing_tasks(self):
+        task = self.create()
+        with self.s.connection() as c:
+            c.execute('DROP TABLE team_messages')
+            c.execute('DELETE FROM schema_migrations WHERE version=2')
+            c.execute('PRAGMA user_version=1')
+            c.commit()
+        upgraded = Store(self.s.folder, 'alice')
+        self.assertEqual(upgraded.detail(task['id'])['title'], task['title'])
+        upgraded.team_send('После обновления')
+        with upgraded.connection() as c:
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 2)
+            self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
+
     def test_create_and_history(self):
         d = self.create()
         self.assertEqual(d['number'], 1)
