@@ -6,3 +6,4 @@
 *.png binary
 *.zip binary
 *.whl binary
+*.vbs -text
