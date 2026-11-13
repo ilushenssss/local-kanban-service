@@ -18,6 +18,7 @@ from .cards import CardDelegate
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
+from .messenger import Messenger
 from .theme import apply_theme, theme_settings, label_icon
 
 
@@ -275,13 +276,13 @@ class TaskDialog(QDialog, Async):
         self.task_splitter.addWidget(self.tabs)
         page = QWidget()
         page.setObjectName('scrollBody')
-        form_columns = QVBoxLayout(page)
+        form_columns = QHBoxLayout(page)
         form = QFormLayout()
         properties = QFormLayout()
         properties.setRowWrapPolicy(QFormLayout.WrapAllRows)
         properties.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        form_columns.addLayout(form)
-        form_columns.addLayout(properties)
+        form_columns.addLayout(form, 3)
+        form_columns.addLayout(properties, 2)
         form.setContentsMargins(4, 20, 12, 16)
         form.setVerticalSpacing(8)
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
@@ -326,10 +327,9 @@ class TaskDialog(QDialog, Async):
         if data.get('id'):
             properties.addRow('Архивирование', self.archived)
         self.checklist = ChecklistEditor(data.get('checklist', []))
-        checklist_form = QFormLayout()
-        checklist_form.addRow('Чек-лист', self.checklist)
-        style_form(checklist_form)
-        form_columns.addLayout(checklist_form)
+        form.addRow('Чек-лист', self.checklist)
+        self.checklist.list.setMinimumHeight(64)
+        self.checklist.list.setMaximumHeight(100)
         dates = QLabel('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(data.get('created_at', '—'), data.get('updated_at', '—'), data.get('completed_at') or '—'))
         dates.setTextFormat(Qt.PlainText)
         self.dates = dates
@@ -338,10 +338,8 @@ class TaskDialog(QDialog, Async):
             dates.setToolTip('Время событий в UTC')
         style_form(form)
         style_form(properties)
-        form_scroll = QScrollArea()
-        form_scroll.setWidgetResizable(True)
-        form_scroll.setWidget(page)
-        self.tabs.addTab(form_scroll, 'Задача')
+        self.task_page = page
+        self.tabs.addTab(page, 'Задача')
         comments_page = QWidget()
         comments_layout = QVBoxLayout(comments_page)
         chat_heading = QLabel('Обсуждение')
@@ -398,6 +396,7 @@ class TaskDialog(QDialog, Async):
         self.save_button.setDefault(False)
         button('Закрыть', self.close, actions).setFixedWidth(100)
         root.addLayout(actions)
+        self.chat_initial_scroll = True
         self.last_read_comment = 0
         self.read_pending = False
         self.render_extras(data)
@@ -439,6 +438,17 @@ class TaskDialog(QDialog, Async):
         if hasattr(self, 'task_splitter'):
             self.task_splitter.setOrientation(Qt.Vertical if self.width() < 1000 else Qt.Horizontal)
 
+    def showEvent(self, event):
+        super().showEvent(event)
+        QTimer.singleShot(0, self.scroll_chat_to_end)
+
+    def scroll_chat_to_end(self):
+        self.comments.document().adjustSize()
+        bar = self.comments.verticalScrollBar()
+        bar.setValue(bar.maximum())
+        self.chat_initial_scroll = False
+        self.acknowledge_comments()
+
     def acknowledge_comments(self):
         if not self.isVisible() or not self.chat_page.isVisible() or self.read_pending or not self.data.get('id'):
             return
@@ -460,11 +470,13 @@ class TaskDialog(QDialog, Async):
         markup = conversation_html(self.comment_entries, self.history_entries, self.store.login, self.columns)
         if markup != getattr(self, 'comments_markup', None):
             bar = self.comments.verticalScrollBar()
-            at_bottom = bar.value() >= bar.maximum() - 4
+            at_bottom = getattr(self, 'chat_initial_scroll', True) or bar.value() >= bar.maximum() - 4
             position = bar.value()
             self.comments.setHtml(markup)
             bar.setValue(bar.maximum() if at_bottom else position)
             self.comments_markup = markup
+            if at_bottom:
+                QTimer.singleShot(0, self.scroll_chat_to_end)
 
     def render_history(self):
         markup = history_html(self.history_entries, self.columns, self.catalog_data['users'])
@@ -920,7 +932,7 @@ class MainWindow(QMainWindow, Async):
         brand = QLabel('▦  TeamSync')
         brand.setObjectName('appName')
         brand_row.addWidget(brand, 1)
-        self.collapse_button = button('‹', self.collapse_sidebar, brand_row, 'quiet')
+        self.collapse_button = button('☰', self.collapse_sidebar, brand_row, 'quiet')
         self.collapse_button.setToolTip('Свернуть навигацию')
         side.addLayout(brand_row)
         side.addSpacing(22)
@@ -1081,12 +1093,15 @@ class MainWindow(QMainWindow, Async):
         self.timer.timeout.connect(self.refresh)
         self.timer.start(5000)
         self.card_lists = []
+        self.messenger = Messenger(self)
         self.connect_store()
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if not hasattr(self, 'search'):
             return
+        if hasattr(self, 'messenger'):
+            self.messenger.reposition()
         wide = self.width() >= 1200
         if wide != getattr(self, '_search_in_header', False):
             self._search_in_header = wide
@@ -1130,25 +1145,29 @@ class MainWindow(QMainWindow, Async):
     def collapse_sidebar(self):
         collapsed = self.sidebar.width() > 100
         self.sidebar.setFixedWidth(64 if collapsed else 240)
-        self.board_tree.setVisible(not collapsed)
-        for label in self.sidebar.findChildren(QLabel):
-            label.setVisible(not collapsed)
-        for b in self.sidebar.findChildren(QPushButton):
-            if b is self.collapse_button:
-                b.setText('›' if collapsed else '‹')
+        for widget in self.sidebar.findChildren(QWidget):
+            if widget is self.collapse_button:
                 continue
-            if collapsed:
-                b.setAccessibleName(b.text())
-                b.setProperty('fullText', b.text())
-                b.setToolTip(b.text())
-                b.setText(b.text()[:1])
-            else:
-                b.setText(b.property('fullText') or b.text())
+            # Only direct layout children; child controls follow their parents.
+            if widget.parentWidget() is self.sidebar:
+                widget.setVisible(not collapsed)
+        self.boards_list.hide()
+        self.board_tabs.hide()
+        self.collapse_button.setText('☰')
+        self.collapse_button.setToolTip('Развернуть меню' if collapsed else 'Свернуть меню')
+        self.sidebar.layout().setAlignment(Qt.AlignTop if collapsed else Qt.Alignment(0))
+        self.sidebar.layout().invalidate()
+        self.sidebar.layout().activate()
 
     def select_tree_board(self, item, column):
         board_id = item.data(0, Qt.UserRole)
         if board_id is not None:
-            self.board_tabs.setCurrentIndex(next((i for i in range(self.board_tabs.count()) if self.board_tabs.tabData(i) == board_id), -1))
+            index = next((i for i in range(self.board_tabs.count()) if self.board_tabs.tabData(i) == board_id), -1)
+            if index == self.board_tabs.currentIndex():
+                self.pages.setCurrentIndex(0)
+                self.refresh()
+            else:
+                self.board_tabs.setCurrentIndex(index)
 
     def toggle_theme(self):
         dark = self.theme_button.isChecked()
@@ -1186,6 +1205,7 @@ class MainWindow(QMainWindow, Async):
                 self.status.setText('Общая папка недоступна: ' + error_text(error) + '. Проверьте kanban.ini и нажмите «Обновить».')
                 return
             self.store = store
+            self.messenger.poll()
             self.refresh()
         self.work(lambda: Store(self.folder), done)
 
@@ -1603,9 +1623,13 @@ class MainWindow(QMainWindow, Async):
         if self.pending_action and QMessageBox.question(self, 'Незавершённая запись', 'Результат записи неизвестен. Перед выходом рекомендуется повторить запись. Всё равно выйти?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             event.ignore()
             return
+        if (self.messenger.input.toPlainText().strip() or self.messenger.retry) and QMessageBox.question(self, 'Неотправленное сообщение', 'Закрыть TeamSync без отправки сообщения общего чата?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            event.ignore()
+            return
         for dialog in list(self.dialogs):
             if not dialog.close():
                 event.ignore()
                 return
         self.timer.stop()
+        self.messenger.timer.stop()
         event.accept()

@@ -66,11 +66,15 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 1:
+                if version > 2:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
+                c.execute('BEGIN IMMEDIATE')
                 c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(1,?)', (now(),))
-                c.execute('PRAGMA user_version=1')
+                if version < 2:
+                    c.execute('CREATE TABLE IF NOT EXISTS team_messages(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created_at TEXT NOT NULL)')
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(2,?)', (now(),))
+                    c.execute('PRAGMA user_version=2')
                 self.user(c, self.login)
                 c.commit()
 
@@ -167,6 +171,34 @@ class Store:
                 return existing[0]
             return c.execute('INSERT INTO labels(board_id,name) VALUES(?,?)', (board_id, name)).lastrowid
         return self.write('label', [board_id, name], apply, request_id)
+
+    def team_chat(self, after=0):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            key = 'team_read:' + self.login
+            row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            last = int(row[0]) if row else 0
+            unread = c.execute('SELECT COUNT(*) FROM team_messages m JOIN users u ON u.id=m.user_id WHERE m.id>? AND u.login<>?', (last, self.login)).fetchone()[0]
+            messages = [dict(r) for r in c.execute('SELECT m.*,u.login,u.display_name AS author FROM team_messages m JOIN users u ON u.id=m.user_id WHERE m.id>? ORDER BY m.id', (after,))]
+            return {'messages': messages, 'unread': unread}
+
+    def team_send(self, text, request_id=None):
+        if not text.strip():
+            raise ValueError('Введите сообщение')
+        def apply(c, uid):
+            return c.execute('INSERT INTO team_messages(user_id,body,created_at) VALUES(?,?,?)', (uid, text.strip(), now())).lastrowid
+        return self.write('team_message', text, apply, request_id)
+
+    def team_mark_read(self, message_id):
+        def apply(c, uid):
+            if not c.execute('SELECT 1 FROM team_messages WHERE id=?', (message_id,)).fetchone():
+                raise ValueError('Сообщение не найдено')
+            key = 'team_read:' + self.login
+            old = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            value = max(message_id, int(old[0]) if old else 0)
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, str(value)))
+            return value
+        return self.write('team_read', message_id, apply)
 
     def boards(self):
         with self.connection() as c:

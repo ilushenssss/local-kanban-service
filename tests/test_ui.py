@@ -93,6 +93,79 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_chat_opens_at_end_and_same_board_returns_from_my_tasks(self):
+        from PyQt5.QtWidgets import QScrollArea, QPushButton
+        colleague = Store(self.store.folder, 'colleague')
+        for i in range(35):
+            colleague.comment(self.result['id'], 'Длинная переписка номер {}'.format(i))
+        d = self.dialog()
+        wait_for(lambda: d.comments.verticalScrollBar().maximum() > 0)
+        wait_for(lambda: d.comments.verticalScrollBar().value() == d.comments.verticalScrollBar().maximum())
+        self.assertFalse(d.task_page.findChildren(QScrollArea))
+        self.assertIsInstance(d.tabs.widget(0), type(d.task_page))
+        # Updates preserve deliberate reading of earlier messages.
+        d.comments.verticalScrollBar().setValue(0)
+        colleague.comment(self.result['id'], 'Новое сообщение после открытия')
+        d.refresh_extras()
+        wait_for(lambda: not d.jobs)
+        self.assertEqual(d.comments.verticalScrollBar().value(), 0)
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and w.board_id is not None)
+        current = w.board_tree.topLevelItem(0).child(0)
+        w.pages.setCurrentWidget(w.my_tasks)
+        w.select_tree_board(current, 0)
+        self.assertEqual(w.pages.currentIndex(), 0)
+        w.collapse_sidebar()
+        visible = [b for b in w.sidebar.findChildren(QPushButton) if b.isVisible()]
+        self.assertEqual(visible, [w.collapse_button])
+        self.assertEqual(w.collapse_button.text(), '☰')
+        APP.processEvents()
+        self.assertTrue(w.sidebar.rect().contains(w.collapse_button.geometry().center()))
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        w.grab().save(str(evidence / 'collapsed-menu-linux.png'))
+        w.collapse_sidebar()
+        self.assertTrue(w.board_tree.isVisible())
+
+    def test_team_messenger_badge_and_retry_preserves_draft(self):
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: w.store is not None and not w.loading and not w.jobs)
+        colleague = Store(self.store.folder, 'colleague')
+        colleague.team_send('Общее сообщение')
+        colleague.team_send('Ещё одно')
+        m = w.messenger
+        m.poll()
+        wait_for(lambda: not m.loading and m.bubble.unread == 2)
+        self.assertTrue(m.bubble.isVisible())
+        self.assertFalse(m.isVisible())
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        w.grab().save(str(evidence / 'messenger-badge-linux.png'))
+        m.bubble.click()
+        wait_for(lambda: not w.jobs and m.bubble.unread == 0)
+        self.assertTrue(m.isVisible())
+        self.assertFalse(m.bubble.isVisible())
+        m.input.setPlainText('Моё сообщение')
+        original = w.store.team_send
+        def uncertain(text, rid=None):
+            original(text, rid)
+            raise OSError('Connection lost after commit')
+        with patch.object(w.store, 'team_send', side_effect=uncertain):
+            m.send()
+            wait_for(lambda: not m.sending)
+        self.assertEqual(m.input.toPlainText(), 'Моё сообщение')
+        m.input.setPlainText('Новый черновик')
+        m.send()
+        wait_for(lambda: not m.sending and not w.jobs)
+        self.assertEqual(m.input.toPlainText(), 'Новый черновик')
+        self.assertEqual(len(w.store.team_chat()['messages']), 3)
+        w.grab().save(str(evidence / 'messenger-open-linux.png'))
+        m.hide()
+        self.assertTrue(m.bubble.isVisible())
+        self.assertEqual(m.input.toPlainText(), 'Новый черновик')
+
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
         board = self.store.board_action('Разработка / Релиз платформы', column_names=names)
