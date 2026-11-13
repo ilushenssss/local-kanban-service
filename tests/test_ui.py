@@ -9,7 +9,7 @@ from unittest.mock import patch
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QDate, QPoint, QSettings
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QMessageBox
+from PyQt5.QtWidgets import QApplication, QMessageBox, QScrollArea
 from kanban.store import Store
 from kanban.theme import stylesheet
 from kanban.ui import MainWindow, TaskDialog, CatalogDialog
@@ -35,7 +35,14 @@ def wait_for(predicate, timeout=8):
 
 
 def choose_option(combo, value, mouse=False):
+    ancestor = combo.parentWidget()
+    while ancestor is not None:
+        if isinstance(ancestor, QScrollArea):
+            ancestor.ensureWidgetVisible(combo)
+        ancestor = ancestor.parentWidget()
+    APP.processEvents()
     # Click the field body, as a user does; native combo owns the whole hit area.
+    QTest.mouseMove(combo, combo.rect().center())
     QTest.mouseClick(combo, Qt.LeftButton, pos=combo.rect().center())
     QTest.qWait(30)
     wait_for(lambda: combo.view().isVisible())
@@ -86,6 +93,47 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_desktop_sidebar_views_and_split_chat(self):
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and bool(w.card_lists))
+        self.assertEqual(w.sidebar.width(), 240)
+        w.collapse_button.click()
+        self.assertEqual(w.sidebar.width(), 64)
+        w.collapse_button.click()
+        self.assertEqual(w.sidebar.width(), 240)
+        self.assertEqual(w.board_tree.topLevelItem(0).childCount(), 1)
+        self.assertEqual(w.list_view.table.rowCount(), 1)
+        self.assertEqual(w.gantt_view.table.rowCount(), 1)
+        colleague = Store(self.store.folder, 'colleague')
+        colleague.comment(self.result['id'], 'Непрочитанное сообщение')
+        d = self.dialog()
+        self.assertTrue(d.chat_page.isVisible())
+        self.assertTrue(d.tabs.isVisible())
+        wait_for(lambda: self.store.detail(self.result['id'])['unread_count'] == 0)
+        self.assertIn('Создание', d.comments.toPlainText())
+        self.assertIn('Непрочитанное сообщение', d.comments.toPlainText())
+        d.title.setText('Черновик')
+        d.comment_text.setPlainText('Неотправленное')
+        d.refresh_extras()
+        wait_for(lambda: not d.jobs)
+        self.assertEqual(d.title.text(), 'Черновик')
+        self.assertEqual(d.comment_text.toPlainText(), 'Неотправленное')
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        d.tabs.setCurrentIndex(0)
+        d.grab().save(str(evidence / 'desktop-split-chat-linux.png'))
+        d.resize(900, 750)
+        APP.processEvents()
+        self.assertEqual(d.task_splitter.orientation(), Qt.Vertical)
+        d.grab().save(str(evidence / 'desktop-chat-narrow-linux.png'))
+        w.pages.setCurrentWidget(w.gantt_view)
+        w.grab().save(str(evidence / 'desktop-gantt-linux.png'))
+        boundary = self.store.tasks(self.bid)
+        boundary[0]['due_date'] = '9999-12-31'
+        w.gantt_view.update_data(boundary, self.columns)
+        self.assertEqual(w.gantt_view.table.rowCount(), 1)
+
     def test_top_board_tabs_and_personal_tasks_across_boards(self):
         import getpass
         login = getpass.getuser()
@@ -137,7 +185,7 @@ class UITest(unittest.TestCase):
                    dict(id=1, created_at='2026-01-01T12:00:00Z', author='Первый', operation='Комментарий', changes='{}')]
         history = history_html(entries)
         self.assertLess(history.index('Первый'), history.index('Второй'))
-        d.tabs.setCurrentIndex(1)
+        d.tabs.setCurrentIndex(0)
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
         d.grab().save(str(evidence / 'chat-linux.png'))
 
@@ -243,7 +291,7 @@ class UITest(unittest.TestCase):
         w.search.setText('нет совпадений')
         wait_for(lambda: not w.loading and not w.debounce.isActive() and not any(c.count() for c in w.card_lists))
         self.assertIn('Всего: 1', w.statistics.summary.text())
-        w.pages.setCurrentIndex(1)
+        w.pages.setCurrentWidget(w.statistics)
         self.assertTrue(w.statistics.isVisible())
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
         evidence.mkdir(parents=True, exist_ok=True)
@@ -316,7 +364,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(self.store.detail(self.result['id'])['title'], 'Новая редакция')
         self.assertTrue(sip.isdeleted(d) or not d.isVisible())
         d = self.dialog()
-        d.tabs.setCurrentIndex(1)
+        d.tabs.setCurrentIndex(0)
         d.comment_text.setPlainText('Проверено')
         QTest.mouseClick(d.comment_button, Qt.LeftButton)
         wait_for(lambda: not d.pending and not d.jobs)
@@ -563,7 +611,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(len({v[0] for v in PRIORITIES.values()}), 4)
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
         evidence.mkdir(parents=True, exist_ok=True)
-        d.tabs.setCurrentIndex(3)
+        d.tabs.setCurrentIndex(2)
         APP.processEvents()
         d.grab().save(str(evidence / 'history-linux.png'))
         d.tabs.setCurrentIndex(0)

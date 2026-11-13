@@ -10,13 +10,14 @@ from PyQt5.QtGui import QDesktopServices, QDrag
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
-    QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar)
+    QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
 from .store import Store, Conflict
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo
 from .presentation import history_html, date_text, comments_html
 from .cards import CardDelegate
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
+from .board_views import BoardView
 from .theme import apply_theme, theme_settings, label_icon
 
 
@@ -240,7 +241,7 @@ class TaskDialog(QDialog, Async):
         self.data = copy.deepcopy(data)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle('Задача №' + str(data['number']) if data.get('id') else 'Новая задача')
-        self.resize(960, 690)
+        self.resize(1180, 740)
         self.setMinimumSize(640, 480)
         self.pending = False
         self.retry = None
@@ -254,16 +255,18 @@ class TaskDialog(QDialog, Async):
         heading.setObjectName('Heading')
         root.addWidget(heading)
         self.tabs = QTabWidget()
-        root.addWidget(self.tabs)
+        self.task_splitter = QSplitter(Qt.Horizontal)
+        root.addWidget(self.task_splitter, 1)
+        self.task_splitter.addWidget(self.tabs)
         page = QWidget()
         page.setObjectName('scrollBody')
-        form_columns = QHBoxLayout(page)
+        form_columns = QVBoxLayout(page)
         form = QFormLayout()
         properties = QFormLayout()
         properties.setRowWrapPolicy(QFormLayout.WrapAllRows)
         properties.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        form_columns.addLayout(form, 3)
-        form_columns.addLayout(properties, 2)
+        form_columns.addLayout(form)
+        form_columns.addLayout(properties)
         form.setContentsMargins(4, 20, 12, 16)
         form.setVerticalSpacing(8)
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
@@ -272,8 +275,8 @@ class TaskDialog(QDialog, Async):
         self.title.setPlaceholderText('Что нужно сделать?')
         self.description = QTextEdit()
         self.description.setPlaceholderText('Подробности, контекст и ожидаемый результат…')
-        self.description.setMinimumHeight(200)
-        self.description.setMaximumHeight(280)
+        self.description.setMinimumHeight(110)
+        self.description.setMaximumHeight(160)
         self.description.setAcceptRichText(False)
         self.description.setPlainText(data.get('description', ''))
         self.catalog_data = {'users': [], 'labels': []}
@@ -305,7 +308,10 @@ class TaskDialog(QDialog, Async):
         if data.get('id'):
             properties.addRow('Архивирование', self.archived)
         self.checklist = ChecklistEditor(data.get('checklist', []))
-        form.addRow('Чек-лист', self.checklist)
+        checklist_form = QFormLayout()
+        checklist_form.addRow('Чек-лист', self.checklist)
+        style_form(checklist_form)
+        form_columns.addLayout(checklist_form)
         dates = QLabel('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(data.get('created_at', '—'), data.get('updated_at', '—'), data.get('completed_at') or '—'))
         dates.setTextFormat(Qt.PlainText)
         self.dates = dates
@@ -327,8 +333,15 @@ class TaskDialog(QDialog, Async):
         self.comment_text.setMaximumHeight(120)
         self.comment_text.setPlaceholderText('Комментарий')
         comments_layout.addWidget(self.comment_text)
-        self.comment_button = button('Добавить комментарий', self.add_comment, comments_layout)
-        self.tabs.addTab(comments_page, 'Комментарии')
+        self.comment_button = button('Отправить сообщение', self.add_comment, comments_layout, 'primary')
+        self.comments.verticalScrollBar().valueChanged.connect(lambda: QTimer.singleShot(0, self.acknowledge_comments))
+        self.chat_page = comments_page
+        self.task_splitter.addWidget(comments_page)
+        comments_page.setMinimumHeight(180)
+        self.task_splitter.setChildrenCollapsible(False)
+        self.task_splitter.setStretchFactor(0, 3)
+        self.task_splitter.setStretchFactor(1, 2)
+        self.task_splitter.setSizes([600, 380])
         attachments_page = QWidget()
         attach_layout = QVBoxLayout(attachments_page)
         self.attachments = DropFiles()
@@ -359,6 +372,8 @@ class TaskDialog(QDialog, Async):
         self.save_button.setDefault(False)
         button('Закрыть', self.close, actions)
         root.addLayout(actions)
+        self.last_read_comment = 0
+        self.read_pending = False
         self.render_extras(data)
         self.initial = self.payload()
         self.refresh_timer = QTimer(self)
@@ -375,8 +390,10 @@ class TaskDialog(QDialog, Async):
 
     def render_extras(self, d):
         self.dates.setText('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(date_text(d.get('created_at'), True), date_text(d.get('updated_at'), True), date_text(d.get('completed_at'), True)))
+        self.history_entries = d.get('history', [])
         self.comment_entries = d.get('comments', [])
         self.render_comments()
+        QTimer.singleShot(0, self.acknowledge_comments)
         selected = self.attachments.currentItem()
         selected_id = selected.data(Qt.UserRole)['id'] if selected else None
         self.attachments.clear()
@@ -391,8 +408,30 @@ class TaskDialog(QDialog, Async):
         for b in [self.comment_button, self.file_button]:
             b.setEnabled(bool(d.get('id')) and not self.pending)
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if hasattr(self, 'task_splitter'):
+            self.task_splitter.setOrientation(Qt.Vertical if self.width() < 1000 else Qt.Horizontal)
+
+    def acknowledge_comments(self):
+        if not self.isVisible() or not self.chat_page.isVisible() or self.read_pending or not self.data.get('id'):
+            return
+        if self.comments.verticalScrollBar().value() < self.comments.verticalScrollBar().maximum() - 4:
+            return
+        latest = max((x['id'] for x in self.comment_entries), default=0)
+        if latest <= self.last_read_comment:
+            return
+        self.read_pending = True
+        def done(value, error):
+            self.read_pending = False
+            if not error:
+                self.last_read_comment = value
+                self.changed.emit()
+        self.work(lambda: self.store.mark_read(self.data['id'], latest), done)
+
     def render_comments(self):
-        markup = comments_html(self.comment_entries, self.store.login)
+        from .presentation import conversation_html
+        markup = conversation_html(self.comment_entries, self.history_entries, self.store.login, self.columns)
         if markup != getattr(self, 'comments_markup', None):
             bar = self.comments.verticalScrollBar()
             at_bottom = bar.value() >= bar.maximum() - 4
@@ -847,13 +886,15 @@ class MainWindow(QMainWindow, Async):
         sidebar = QWidget()
         sidebar.setObjectName('side')
         sidebar.setAttribute(Qt.WA_StyledBackground, True)
-        sidebar.setFixedWidth(210)
+        self.sidebar = sidebar
+        sidebar.setFixedWidth(240)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(14, 18, 14, 14)
         side.setSpacing(4)
-        heading = QLabel('Канбан  /')
+        heading = QLabel('▦  Канбан')
         heading.setObjectName('appName')
         side.addWidget(heading)
+        self.collapse_button = button('‹ Свернуть', self.collapse_sidebar, side, 'quiet')
         user = QLabel('Пользователь: ' + getpass.getuser())
         user.setTextFormat(Qt.PlainText)
         user.setWordWrap(True)
@@ -869,10 +910,12 @@ class MainWindow(QMainWindow, Async):
         self.boards_list.hide()
         button('Мои задачи', lambda: self.pages.setCurrentWidget(self.my_tasks), side, 'quiet')
         button('Доска', lambda: self.pages.setCurrentIndex(0), side, 'quiet')
-        side.addStretch()
-        button('+  Создать доску', lambda: self.board_action('create'), side, 'quiet')
-        button('Переименовать доску', lambda: self.board_action('rename'), side, 'quiet')
-        button('Архивировать доску', lambda: self.board_action('archive'), side, 'quiet')
+        self.board_tree = QTreeWidget()
+        self.board_tree.setHeaderHidden(True)
+        self.board_tree.itemClicked.connect(self.select_tree_board)
+        side.addWidget(self.board_tree, 1)
+        button('Отчёты', lambda: self.pages.setCurrentWidget(self.statistics), side, 'quiet')
+        button('Настройки доски…', self.board_settings_menu, side, 'quiet')
         side.addSpacing(18)
         button('Сотрудники…', lambda: self.open_catalog('users'), side, 'quiet')
         button('Метки доски…', lambda: self.open_catalog('labels'), side, 'quiet')
@@ -882,11 +925,13 @@ class MainWindow(QMainWindow, Async):
         self.theme_button.setCheckable(True)
         self.theme_button.setChecked(theme_settings().value('dark', False, type=bool))
         self.theme_button.setText('Светлая тема' if self.theme_button.isChecked() else 'Тёмная тема')
+        side.removeWidget(user)
+        side.addWidget(user)
         root.addWidget(sidebar)
         surface = QWidget()
         surface.setObjectName('content')
         content = QVBoxLayout(surface)
-        content.setContentsMargins(24, 18, 24, 16)
+        content.setContentsMargins(16, 8, 16, 12)
         content.setSpacing(12)
         root.addWidget(surface, 1)
         self.board_tabs = QTabBar()
@@ -899,26 +944,42 @@ class MainWindow(QMainWindow, Async):
         self.board_title = QLabel('Выберите или создайте доску')
         self.board_title.setTextFormat(Qt.PlainText)
         self.board_title.setObjectName('Heading')
+        self.board_title.setMaximumWidth(280)
+        self.board_title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         top.addWidget(self.board_title, 1)
         button('Колонки…', self.edit_columns, top)
         button('+  Новая задача', self.new_task, top, 'primary')
         button('Обновить', self.refresh, top)
         self.retry_button = button('Повторить запись', self.retry_mutation, top)
         self.retry_button.hide()
-        content.addLayout(top)
+        self.header_layout = top
+        header = QWidget()
+        header.setObjectName('Header')
+        header.setAttribute(Qt.WA_StyledBackground, True)
+        header.setFixedHeight(56)
+        header.setLayout(top)
+        content.addWidget(header)
         self.pages = QTabWidget()
         content.addWidget(self.pages, 1)
         board_page = QWidget()
-        self.pages.addTab(board_page, 'Доска')
+        self.pages.addTab(board_page, 'Канбан')
         self.statistics = StatisticsPage()
-        self.pages.addTab(self.statistics, 'Статистика')
+        self.pages.addTab(self.statistics, 'Сводка')
         self.my_tasks = MyTasksPage()
         self.my_tasks.opened.connect(self.open_personal_task)
         self.pages.addTab(self.my_tasks, 'Мои задачи')
+        self.list_view = BoardView()
+        self.gantt_view = BoardView(timeline=True)
+        for view, caption in [(self.list_view, 'Список'), (self.gantt_view, 'Диаграмма Ганта')]:
+            view.opened.connect(self.open_task)
+            self.pages.addTab(view, caption)
+        self.pages.tabBar().moveTab(3, 1)
+        self.pages.tabBar().moveTab(4, 2)
         content = QVBoxLayout(board_page)
         content.setContentsMargins(0, 12, 0, 0)
         content.setSpacing(10)
         filters = QHBoxLayout()
+        self.filter_row = filters
         self.search = QLineEdit()
         self.search.setPlaceholderText('Поиск по названию и описанию')
         self.search.setAccessibleName('Поиск задач')
@@ -988,11 +1049,63 @@ class MainWindow(QMainWindow, Async):
         self.card_lists = []
         self.connect_store()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if not hasattr(self, 'search'):
+            return
+        wide = self.width() >= 1200
+        if wide != getattr(self, '_search_in_header', False):
+            self._search_in_header = wide
+            if wide:
+                self.filter_row.removeWidget(self.search)
+                self.search.setMaximumWidth(460)
+                self.header_layout.insertWidget(1, self.search, 2)
+            else:
+                self.header_layout.removeWidget(self.search)
+                self.search.setMaximumWidth(16777215)
+                self.filter_row.insertWidget(0, self.search, 2)
+
+    def board_settings_menu(self):
+        menu = QMenu(self)
+        menu.addAction('Создать доску', lambda: self.board_action('create'))
+        menu.addAction('Переименовать доску', lambda: self.board_action('rename'))
+        menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
+        menu.exec_(self.sidebar.mapToGlobal(self.sidebar.rect().center()))
+
+    def collapse_sidebar(self):
+        collapsed = self.sidebar.width() > 100
+        self.sidebar.setFixedWidth(64 if collapsed else 240)
+        self.board_tree.setVisible(not collapsed)
+        for label in self.sidebar.findChildren(QLabel):
+            label.setVisible(not collapsed)
+        for b in self.sidebar.findChildren(QPushButton):
+            if b is self.collapse_button:
+                b.setText('›' if collapsed else '‹ Свернуть')
+                continue
+            if collapsed:
+                b.setAccessibleName(b.text())
+                b.setProperty('fullText', b.text())
+                b.setToolTip(b.text())
+                b.setText(b.text()[:1])
+            else:
+                b.setText(b.property('fullText') or b.text())
+
+    def select_tree_board(self, item, column):
+        board_id = item.data(0, Qt.UserRole)
+        if board_id is not None:
+            self.board_tabs.setCurrentIndex(next((i for i in range(self.board_tabs.count()) if self.board_tabs.tabData(i) == board_id), -1))
+
     def toggle_theme(self):
         dark = self.theme_button.isChecked()
         theme_settings().setValue('dark', dark)
         apply_theme(QApplication.instance(), dark)
-        self.theme_button.setText('Светлая тема' if dark else 'Тёмная тема')
+        caption = 'Светлая тема' if dark else 'Тёмная тема'
+        if self.sidebar.width() < 100:
+            self.theme_button.setProperty('fullText', caption)
+            self.theme_button.setToolTip(caption)
+            self.theme_button.setText(caption[:1])
+        else:
+            self.theme_button.setText(caption)
 
     def reset_filters(self):
         self.search.clear()
@@ -1112,6 +1225,17 @@ class MainWindow(QMainWindow, Async):
             self.last_snapshot = copy.deepcopy(snapshot)
             boards, selected, columns, tasks, all_tasks, catalogs, personal = result
             self.my_tasks.update_data(personal)
+            self.list_view.update_data(tasks, columns)
+            self.gantt_view.update_data(tasks, columns)
+            structure = [(b['id'], b['name']) for b in boards]
+            if structure != getattr(self, 'tree_structure', None):
+                self.tree_structure = structure
+                self.board_tree.clear()
+                group = QTreeWidgetItem(self.board_tree, ['Рабочие доски'])
+                group.setExpanded(True)
+                for board_id, name in structure:
+                    item = QTreeWidgetItem(group, [name])
+                    item.setData(0, Qt.UserRole, board_id)
             wanted = [(b['id'], b['name']) for b in boards]
             current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
             self.board_tabs.blockSignals(True)
@@ -1167,9 +1291,8 @@ class MainWindow(QMainWindow, Async):
                 label.setObjectName('ColumnTitle')
                 label.setProperty('tone', column_index % 5)
                 layout.addWidget(label)
-                button('+ Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
                 cards = Cards(column['id'])
-                cards.itemDoubleClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
+                cards.itemClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
                 cards.moved.connect(self.move_task)
                 cards.dragging.connect(self.drag_state_changed)
@@ -1191,6 +1314,7 @@ class MainWindow(QMainWindow, Async):
                             QTimer.singleShot(0, cards.setFocus)
                 cards.setFixedHeight(min(550, max(60, sum(136 if cards.item(i).data(Qt.UserRole).get('checklist') else 116 for i in range(cards.count())) + cards.count()*8 + 8)))
                 layout.addWidget(cards)
+                button('+ Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
                 row.addWidget(panel, 0, Qt.AlignTop)
                 self.card_lists.append(cards)
                 cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))
@@ -1309,7 +1433,7 @@ class MainWindow(QMainWindow, Async):
         else:
             name, ok = QInputDialog.getText(self, 'Доска', 'Название:', text=item.text() if action == 'rename' else '')
             if ok:
-                self.mutate(lambda rid: self.store.board_action(name, bid if action == 'rename' else None, request_id=rid))
+                self.mutate(lambda rid: self.store.board_action(name, bid if action == 'rename' else None, request_id=rid, column_names=['Бэклог', 'В работе', 'На проверке', 'Готово'] if action == 'create' else None))
 
     def edit_columns(self):
         if not self.board_id:

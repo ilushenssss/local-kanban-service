@@ -77,6 +77,28 @@ class StoreTest(unittest.TestCase):
         self.s.save_columns(self.bid, updated)
         self.assertGreater(self.s.columns(self.bid)[-1]['id'], self.cols[-1]['id'])
 
+    def test_unread_comments_are_per_user_and_read_cursor_is_monotonic(self):
+        names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
+        board = self.s.board_action('Новый шаблон', column_names=names)
+        self.assertEqual([c['name'] for c in self.s.columns(board)], names)
+        self.assertTrue(self.s.columns(board)[-1]['is_done'])
+        task = self.create()
+        own = self.s.comment(task['id'], 'Свое сообщение')
+        bob = Store(self.s.folder, 'bob')
+        foreign = bob.comment(task['id'], 'Сообщение коллеги')
+        self.assertEqual(self.s.detail(task['id'])['unread_count'], 1)
+        self.assertEqual(bob.detail(task['id'])['unread_count'], 1)
+        self.s.mark_read(task['id'], foreign)
+        self.s.mark_read(task['id'], own)
+        self.assertEqual(Store(self.s.folder, 'alice').detail(task['id'])['unread_count'], 0)
+        self.assertEqual(bob.detail(task['id'])['unread_count'], 1)
+        bob.comment(task['id'], 'Новое сообщение')
+        self.assertEqual(self.s.detail(task['id'])['unread_count'], 1)
+        another = self.create()
+        with self.assertRaises(ValueError):
+            self.s.mark_read(another['id'], foreign)
+        self.assertEqual(self.s.detail(task['id'])['version'], task['version'])
+
     def test_create_and_history(self):
         d = self.create()
         self.assertEqual(d['number'], 1)
