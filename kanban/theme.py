@@ -1,4 +1,4 @@
-# Shared visual tokens. See DESIGN.md.
+# Shared visual tokens. See docs/DESIGN.md.
 TOKENS = {'background': '#ffffff', 'sidebar': '#f7f7f5', 'text': '#37352f', 'muted': '#787774', 'border': '#e6e6e3', 'accent': '#2383e2', 'hover': '#efefed'}
 
 def stylesheet():

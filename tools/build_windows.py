@@ -46,6 +46,8 @@ def build():
     subprocess.check_call([sys.executable, '-m', 'pip', 'install', '--no-index', '--no-deps', '--no-compile', '--target', str(target / 'Lib' / 'site-packages'), '--platform', 'win_amd64', '--python-version', '3.8', '--only-binary=:all:'] + [str(wheels / name) for name in WHEELS])
     (target / 'python38._pth').write_text('DLLs\nLib\n.\n..\\..\nimport site\n', encoding='ascii')
     (ROOT / 'environment' / 'SHA256SUMS').write_text('\n'.join(digest + '  ' + name for name, digest in WHEELS.items()) + '\n' + PYTHON_HASH + '  python.3.8.10.nupkg\n', encoding='ascii')
+    from trim_windows import trim
+    trim(target)
     print('Prepared isolated Windows bundle:', target)
 
 

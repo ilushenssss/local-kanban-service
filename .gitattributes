@@ -7,3 +7,4 @@
 *.zip binary
 *.whl binary
 *.vbs -text
+environment/python/** -text -diff

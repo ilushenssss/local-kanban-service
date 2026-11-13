@@ -11,8 +11,8 @@ htmlcov/
 data/
 kanban.ini
 *.log
-environment/python/
 wheelhouse/
 *.zip
 *.bundle
 *.lnk
+docs/screenshots/
