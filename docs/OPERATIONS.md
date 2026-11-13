@@ -6,9 +6,9 @@
 
 Для планировщика заданий Windows на сервере или выделенном компьютере с доступом к общей папке:
 
-- Программа: `C:\Kanban\environment\python\python.exe`
-- Аргументы: `"C:\Kanban\tools\backup.py" "\\server\Общие\Канбан\data" "D:\KanbanBackups" --retention-days 14`
-- Рабочий каталог: `C:\Kanban`
+- Программа: `C:\TeamSync\environment\python\python.exe`
+- Аргументы: `"C:\TeamSync\tools\backup.py" "\\server\Общие\TeamSync\data" "D:\TeamSyncBackups" --retention-days 14`
+- Рабочий каталог: `C:\TeamSync`
 - Расписание: ежедневно, например в 20:00; учётная запись должна иметь доступ к обеим папкам. Для UNC не полагайтесь на подключённые буквы дисков.
 - При ненулевом коде выхода проверьте вывод задания; копия без `VERIFIED` не считается успешной. Настройка задания выполняется администратором, приложение не создаёт его автоматически.
 
@@ -23,7 +23,7 @@
 3. Выполните через диагностическую консоль или администратором:
 
 ```bat
-C:\Kanban\environment\python\python.exe C:\Kanban\tools\restore.py D:\KanbanBackups\kanban-ДАТА-ID D:\KanbanRestored
+C:\TeamSync\environment\python\python.exe C:\TeamSync\tools\restore.py D:\TeamSyncBackups\kanban-ДАТА-ID D:\TeamSyncRestored
 ```
 
 Каталог назначения не должен существовать. Скрипт проверяет целостность БД, внешние ключи, соответствие манифеста и хеши всех вложений; при ошибке восстановление не выполняется.

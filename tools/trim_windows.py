@@ -1,4 +1,4 @@
-"""Retain only the Python/Qt runtime used by Kanban. Never run at application startup."""
+"""Retain only the Python/Qt runtime used by TeamSync. Never run at application startup."""
 from pathlib import Path
 import hashlib
 import json

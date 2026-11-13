@@ -1,4 +1,4 @@
-# Дизайн «Канбана»
+# Дизайн «TeamSync»
 
 Поддерживаемый визуальный контракт и значения токенов: [docs/DESIGN.md](docs/DESIGN.md).
 Поведение компонентов и форм: [docs/UX-CONTRACT.md](docs/UX-CONTRACT.md).
