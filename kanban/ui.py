@@ -15,6 +15,8 @@ from .store import Store, Conflict
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo
 from .presentation import history_html, date_text
 from .cards import CardDelegate
+from .statistics import StatisticsPage
+from .theme import apply_theme, theme_settings, label_icon
 
 
 class Signals(QObject):
@@ -152,6 +154,8 @@ class CatalogDialog(QDialog, Async):
             for row in rows:
                 title = '{} · {}'.format(row['display_name'], row['login']) if self.kind == 'users' else row['name']
                 item = QListWidgetItem(title)
+                if self.kind == 'labels':
+                    item.setIcon(label_icon(row['name']))
                 item.setData(Qt.UserRole, row)
                 self.list.addItem(item)
             self.status.setText('Записей: {}'.format(len(rows)))
@@ -259,7 +263,7 @@ class TaskDialog(QDialog, Async):
         self.catalog_pending = False
         self.catalog_ready = False
         self.assignees = RegistrySelection('Выберите исполнителей', data.get('assignees', []))
-        self.labels = RegistrySelection('Выберите метки', data.get('labels', []))
+        self.labels = RegistrySelection('Выберите метки', data.get('labels', []), colored=True)
         self.priority = PriorityCombo()
         self.priority.setCurrentText(data.get('priority', 'Обычный'))
         self.due = DateField(data.get('due_date'))
@@ -396,11 +400,28 @@ class TaskDialog(QDialog, Async):
             self.catalog_ready = True
             self.save_button.setEnabled(not self.pending)
             self.catalog_data = data
+            columns = data['columns']
+            if columns != self.columns:
+                selected, caption = self.column.currentData(), self.column.currentText()
+                self.columns = columns
+                self.column.blockSignals(True)
+                self.column.clear()
+                for column in columns:
+                    self.column.addItem(column['name'], column['id'])
+                if self.column.findData(selected) < 0:
+                    self.column.addItem(caption + ' (удалена — выберите другую)', selected)
+                    self.column.show()
+                self.column.setCurrentIndex(self.column.findData(selected))
+                self.column.blockSignals(False)
             users = sorted(data['users'], key=lambda u: u['display_name'].casefold())
             self.assignees.set_options([(u['login'], u['display_name'] + ' · ' + u['login']) for u in users])
             self.labels.set_options([(x['name'], x['name']) for x in sorted(data['labels'], key=lambda l: l['name'].casefold())])
             self.render_history()
-        self.work(lambda: self.store.catalogs(self.data['board_id']), done)
+        def read():
+            catalogs = self.store.catalogs(self.data['board_id'])
+            catalogs['columns'] = self.store.columns(self.data['board_id'])
+            return catalogs
+        self.work(read, done)
 
     def open_catalog(self, kind):
         dialog = CatalogDialog(self.store, self.data['board_id'], kind, self)
@@ -513,6 +534,8 @@ class TaskDialog(QDialog, Async):
         if QMessageBox.question(self, 'Разрешение конфликта', 'После сравнения отредактируйте свою форму. Следующее сохранение заменит текущие поля задачи вашими значениями. Продолжить?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         self.data['version'] = self.conflict_current['version']
+        if self.column.currentData() not in {c['id'] for c in self.columns}:
+            self.column.setCurrentIndex(self.column.findData(self.conflict_current['column_id']))
         self.conflict_current = None
         self.compare_button.hide()
         self.rebase_button.hide()
@@ -627,11 +650,14 @@ class ColumnsDialog(QDialog):
         self.setWindowTitle('Колонки')
         self.resize(720, 440)
         self.original = columns
+        self.removed = {}
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel('Порядок строк задаёт порядок колонок. Лимит 0 — без ограничения.'))
         self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(['Название', 'Завершение (да)', 'Лимит'])
+        self.table.setHorizontalHeaderLabels(['Название', 'Завершение', 'Лимит'])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setSelectionBehavior(QTableWidget.SelectRows)
+        self.table.setSelectionMode(QTableWidget.SingleSelection)
         layout.addWidget(self.table)
         for c in columns:
             self.add_row(c)
@@ -639,13 +665,26 @@ class ColumnsDialog(QDialog):
         button('Добавить', lambda: self.add_row({'name': 'Новая колонка', 'is_done': 0, 'wip_limit': 0}), actions)
         button('Выше', lambda: self.move(-1), actions)
         button('Ниже', lambda: self.move(1), actions)
+        button('Удалить колонку…', self.remove_column, actions)
         layout.addLayout(actions)
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         buttons.button(QDialogButtonBox.Save).setText('Сохранить')
         buttons.button(QDialogButtonBox.Cancel).setText('Отмена')
-        buttons.accepted.connect(self.accept)
+        buttons.accepted.connect(self.validate_columns)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+
+    def validate_columns(self):
+        try:
+            values = self.values()
+            if not values or any(not x['name'].strip() for x in values):
+                raise ValueError('Укажите название каждой колонки.')
+            if sum(x['is_done'] for x in values) > 1:
+                raise ValueError('Отметьте только одну колонку завершения.')
+        except ValueError as error:
+            QMessageBox.warning(self, 'Проверьте колонки', str(error))
+            return
+        self.accept()
 
     def add_row(self, c):
         row = self.table.rowCount()
@@ -654,6 +693,10 @@ class ColumnsDialog(QDialog):
             item = QTableWidgetItem(value)
             if i == 0:
                 item.setData(Qt.UserRole, c.get('id'))
+            elif i == 1:
+                item.setText('Завершение')
+                item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+                item.setCheckState(Qt.Checked if c['is_done'] else Qt.Unchecked)
             self.table.setItem(row, i, item)
 
     def move(self, delta):
@@ -668,16 +711,46 @@ class ColumnsDialog(QDialog):
             self.table.setItem(target, col, a)
         self.table.setCurrentCell(target, 0)
 
+    def remove_column(self):
+        row = self.table.currentRow()
+        if row < 0:
+            QMessageBox.information(self, 'Выберите колонку', 'Сначала выберите строку колонки.')
+            return
+        if self.table.rowCount() <= 1:
+            QMessageBox.information(self, 'Последняя колонка', 'На доске должна остаться хотя бы одна колонка.')
+            return
+        source = self.table.item(row, 0).data(Qt.UserRole)
+        if source:
+            candidates = [(self.table.item(i, 0).data(Qt.UserRole), self.table.item(i, 0).text())
+                          for i in range(self.table.rowCount()) if i != row and self.table.item(i, 0).data(Qt.UserRole)]
+            if not candidates:
+                QMessageBox.information(self, 'Сначала сохраните колонки', 'Сохраните новую колонку, чтобы перенести в неё задачи.')
+                return
+            names = ['{} · №{}'.format(name, cid) for cid, name in candidates]
+            choice, ok = QInputDialog.getItem(self, 'Удаление колонки',
+                'Все задачи, включая архивные, будут перенесены. Выберите колонку:', names, 0, False)
+            if not ok:
+                return
+            target = candidates[names.index(choice)][0]
+            if QMessageBox.question(self, 'Удалить колонку?',
+                    'Колонка «{}» будет удалена после сохранения. Задачи перейдут в «{}».'.format(
+                        self.table.item(row, 0).text(), candidates[names.index(choice)][1]),
+                    QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+                return
+            self.removed[source] = target
+            for old, dest in list(self.removed.items()):
+                if dest == source:
+                    self.removed[old] = target
+        self.table.removeRow(row)
+
     def values(self):
         values = []
         for row in range(self.table.rowCount()):
             limit = int(self.table.item(row, 2).text())
             if limit < 0:
                 raise ValueError('Лимит не может быть отрицательным')
-            done = self.table.item(row, 1).text().strip().casefold()
-            if done not in ['', 'да']:
-                raise ValueError('В колонке завершения укажите «да» либо оставьте пусто')
-            values.append({'id': self.table.item(row, 0).data(Qt.UserRole), 'name': self.table.item(row, 0).text(), 'is_done': done == 'да', 'wip_limit': limit or None})
+            done = self.table.item(row, 1).checkState() == Qt.Checked
+            values.append({'id': self.table.item(row, 0).data(Qt.UserRole), 'name': self.table.item(row, 0).text(), 'is_done': done, 'wip_limit': limit or None})
         return values
 
 
@@ -733,11 +806,11 @@ class MainWindow(QMainWindow, Async):
         sidebar = QWidget()
         sidebar.setObjectName('side')
         sidebar.setAttribute(Qt.WA_StyledBackground, True)
-        sidebar.setFixedWidth(230)
+        sidebar.setFixedWidth(210)
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(14, 18, 14, 14)
         side.setSpacing(4)
-        heading = QLabel('Канбан')
+        heading = QLabel('Канбан  /')
         heading.setObjectName('appName')
         side.addWidget(heading)
         user = QLabel('Пользователь: ' + getpass.getuser())
@@ -760,6 +833,11 @@ class MainWindow(QMainWindow, Async):
         button('Сотрудники…', lambda: self.open_catalog('users'), side, 'quiet')
         button('Метки доски…', lambda: self.open_catalog('labels'), side, 'quiet')
         button('Резервная копия…', self.backup, side, 'quiet')
+        side.addSpacing(18)
+        self.theme_button = button('Тёмная тема', self.toggle_theme, side, 'quiet')
+        self.theme_button.setCheckable(True)
+        self.theme_button.setChecked(theme_settings().value('dark', False, type=bool))
+        self.theme_button.setText('Светлая тема' if self.theme_button.isChecked() else 'Тёмная тема')
         root.addWidget(sidebar)
         surface = QWidget()
         surface.setObjectName('content')
@@ -778,6 +856,15 @@ class MainWindow(QMainWindow, Async):
         self.retry_button = button('Повторить запись', self.retry_mutation, top)
         self.retry_button.hide()
         content.addLayout(top)
+        self.pages = QTabWidget()
+        content.addWidget(self.pages, 1)
+        board_page = QWidget()
+        self.pages.addTab(board_page, 'Доска')
+        self.statistics = StatisticsPage()
+        self.pages.addTab(self.statistics, 'Статистика')
+        content = QVBoxLayout(board_page)
+        content.setContentsMargins(0, 12, 0, 0)
+        content.setSpacing(10)
         filters = QHBoxLayout()
         self.search = QLineEdit()
         self.search.setPlaceholderText('Поиск по названию и описанию')
@@ -793,7 +880,11 @@ class MainWindow(QMainWindow, Async):
         filters.addWidget(self.priority_filter)
         self.archive_filter = QCheckBox('Архив')
         filters.addWidget(self.archive_filter)
+        self.filter_toggle = button('Фильтры ▾', lambda: self.advanced_filters.setVisible(not self.advanced_filters.isVisible()), filters)
         content.addLayout(filters)
+        self.advanced_filters = QWidget()
+        advanced_layout = QVBoxLayout(self.advanced_filters)
+        advanced_layout.setContentsMargins(0, 0, 0, 0)
         advanced = QHBoxLayout()
         self.assignee_filter = QComboBox()
         self.assignee_filter.addItem('Все исполнители', '')
@@ -806,12 +897,15 @@ class MainWindow(QMainWindow, Async):
         for field in [self.assignee_filter, self.label_filter]:
             advanced.addWidget(field)
         advanced.addStretch(1)
-        content.addLayout(advanced)
+        advanced_layout.addLayout(advanced)
         deadline_filters = QHBoxLayout()
         deadline_filters.addWidget(self.due_from)
         deadline_filters.addWidget(self.due_to)
         deadline_filters.addStretch(1)
-        content.addLayout(deadline_filters)
+        advanced_layout.addLayout(deadline_filters)
+        button('Сбросить все фильтры', self.reset_filters, advanced)
+        content.addWidget(self.advanced_filters)
+        self.advanced_filters.hide()
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         content.addWidget(self.scroll, 1)
@@ -819,7 +913,7 @@ class MainWindow(QMainWindow, Async):
         self.status.setObjectName('Status')
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.PlainText)
-        content.addWidget(self.status)
+        surface.layout().addWidget(self.status)
         bottom = QHBoxLayout()
         button('Открыть карточку', self.open_selected, bottom)
         button('Переместить в…', self.move_selected, bottom)
@@ -843,6 +937,26 @@ class MainWindow(QMainWindow, Async):
         self.card_lists = []
         self.connect_store()
 
+    def toggle_theme(self):
+        dark = self.theme_button.isChecked()
+        theme_settings().setValue('dark', dark)
+        apply_theme(QApplication.instance(), dark)
+        self.theme_button.setText('Светлая тема' if dark else 'Тёмная тема')
+
+    def reset_filters(self):
+        self.search.clear()
+        for combo in (self.quick, self.priority_filter, self.assignee_filter, self.label_filter):
+            combo.setCurrentIndex(0)
+        self.archive_filter.setChecked(False)
+        self.due_from.set_value(None)
+        self.due_to.set_value(None)
+        self.filters_changed()
+
+    def new_task_in_column(self, column_id):
+        if not self.store or not self.board_id:
+            return
+        self.open_task({'board_id': self.board_id, 'column_id': column_id, 'title': ''})
+
     def connect_store(self):
         if self.loading:
             return
@@ -857,6 +971,8 @@ class MainWindow(QMainWindow, Async):
         self.work(lambda: Store(self.folder), done)
 
     def filters_changed(self, *args):
+        count = sum(bool(v) for v in (self.assignee_filter.currentData(), self.label_filter.currentData(), self.due_from.value(), self.due_to.value()))
+        self.filter_toggle.setText('Фильтры ({}) ▾'.format(count) if count else 'Фильтры ▾')
         self.generation += 1
         self.debounce.start(300)
 
@@ -915,6 +1031,7 @@ class MainWindow(QMainWindow, Async):
             if not selected:
                 self.board_title.setText('Создайте первую доску')
             self.columns_data = columns
+            self.statistics.update_data(all_tasks, columns)
             selected_task = self.selected_task()
             horizontal_position = self.scroll.horizontalScrollBar().value()
             vertical_positions = {c.column_id: c.verticalScrollBar().value() for c in self.card_lists}
@@ -926,12 +1043,13 @@ class MainWindow(QMainWindow, Async):
             row.setContentsMargins(12, 14, 12, 12)
             row.setSpacing(12)
             self.card_lists = []
-            for column in columns:
+            for column_index, column in enumerate(columns):
                 panel = QWidget()
                 panel.setObjectName('ColumnPanel')
+                panel.setAttribute(Qt.WA_StyledBackground, True)
                 panel.setMinimumWidth(292)
                 layout = QVBoxLayout(panel)
-                layout.setContentsMargins(3, 0, 3, 0)
+                layout.setContentsMargins(10, 6, 10, 10)
                 layout.setSpacing(10)
                 count = sum(t['column_id'] == column['id'] for t in all_tasks)
                 warning = bool(column['wip_limit'] and count > column['wip_limit'])
@@ -939,6 +1057,7 @@ class MainWindow(QMainWindow, Async):
                 label.setTextFormat(Qt.PlainText)
                 label.setWordWrap(True)
                 label.setObjectName('ColumnTitle')
+                label.setProperty('tone', column_index % 5)
                 layout.addWidget(label)
                 cards = Cards(column['id'])
                 cards.itemDoubleClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
@@ -959,6 +1078,7 @@ class MainWindow(QMainWindow, Async):
                         if focused:
                             QTimer.singleShot(0, cards.setFocus)
                 layout.addWidget(cards)
+                button('+ Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
                 row.addWidget(panel)
                 self.card_lists.append(cards)
                 cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))
@@ -982,7 +1102,7 @@ class MainWindow(QMainWindow, Async):
             combo.clear()
             combo.addItem(placeholder, '')
             for value, label in options:
-                combo.addItem(label, value)
+                combo.addItem(label_icon(value), label, value) if combo is self.label_filter else combo.addItem(label, value)
             combo.setCurrentIndex(max(0, combo.findData(selected)))
             combo.blockSignals(False)
 
@@ -1089,7 +1209,7 @@ class MainWindow(QMainWindow, Async):
                 self.status.setText(str(e))
                 return
             bid = self.board_id
-            self.mutate(lambda rid: self.store.save_columns(bid, values, rid))
+            self.mutate(lambda rid: self.store.save_columns(bid, values, rid, removed=d.removed))
 
     def move_task(self, task_id, column_id, before_id=None):
         # Use the version shown on screen, so a stale drag cannot overwrite a colleague's edit.

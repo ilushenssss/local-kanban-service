@@ -172,6 +172,13 @@ class Store:
         with self.connection() as c:
             return [dict(r) for r in c.execute('SELECT * FROM boards WHERE archived=0 ORDER BY id')]
 
+    def next_column_id(self, c):
+        maximum = c.execute('SELECT COALESCE(MAX(id),0) FROM columns').fetchone()[0]
+        saved = c.execute("SELECT value FROM settings WHERE key='column_sequence'").fetchone()
+        value = max(maximum, int(saved[0]) if saved else 0) + 1
+        c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('column_sequence',?)", (str(value),))
+        return value
+
     def board_action(self, name, board_id=None, archive=False, request_id=None):
         if not name.strip() and not archive:
             raise ValueError('Введите название доски')
@@ -179,7 +186,7 @@ class Store:
             if board_id is None:
                 bid = c.execute('INSERT INTO boards(name,created_at) VALUES(?,?)', (name.strip(), now())).lastrowid
                 for i, title in enumerate(['Входящие', 'Запланировано', 'В работе', 'На проверке', 'Завершено']):
-                    c.execute('INSERT INTO columns(board_id,name,position,is_done) VALUES(?,?,?,?)', (bid, title, i, int(i == 4)))
+                    c.execute('INSERT INTO columns(id,board_id,name,position,is_done) VALUES(?,?,?,?,?)', (self.next_column_id(c), bid, title, i, int(i == 4)))
                 return bid
             if not c.execute('SELECT id FROM boards WHERE id=? AND archived=0', (board_id,)).fetchone():
                 raise ValueError('Доска недоступна')
@@ -191,7 +198,8 @@ class Store:
         with self.connection() as c:
             return [dict(r) for r in c.execute('SELECT * FROM columns WHERE board_id=? ORDER BY position,id', (board_id,))]
 
-    def save_columns(self, board_id, columns, request_id=None):
+    def save_columns(self, board_id, columns, request_id=None, removed=None):
+        removed = {int(k): int(v) for k, v in (removed or {}).items()}
         if not columns or any(not x['name'].strip() for x in columns):
             raise ValueError('Укажите названия колонок')
         if sum(bool(x['is_done']) for x in columns) > 1:
@@ -200,13 +208,28 @@ class Store:
             self.active_board(c, board_id)
             existing = {r['id'] for r in c.execute('SELECT id FROM columns WHERE board_id=?', (board_id,))}
             supplied = [x['id'] for x in columns if x.get('id')]
-            if set(supplied) != existing or len(supplied) != len(existing):
-                raise ValueError('Набор колонок изменился. Откройте настройки заново. Удаление колонок не поддерживается.')
+            if (set(supplied) | set(removed)) != existing or len(supplied) != len(set(supplied)) or set(supplied) & set(removed):
+                raise ValueError('Набор колонок изменился. Откройте настройки заново.')
+            if any(target not in supplied for target in removed.values()):
+                raise ValueError('Выберите оставшуюся колонку для переноса задач')
+            if removed:
+                # Preserve the high-water mark before deleting IDs; stale forms must
+                # never point to a different newly created column with a reused ID.
+                self.next_column_id(c)
+            for source, target in removed.items():
+                source_name = c.execute('SELECT name FROM columns WHERE id=?', (source,)).fetchone()[0]
+                target_name = next(x['name'] for x in columns if x.get('id') == target)
+                position = c.execute('SELECT COALESCE(MAX(position),0) FROM tasks WHERE column_id=?', (target,)).fetchone()[0]
+                for row in c.execute('SELECT id FROM tasks WHERE column_id=? ORDER BY position,id', (source,)).fetchall():
+                    position += 1
+                    c.execute('UPDATE tasks SET column_id=?,position=?,updated_at=?,version=version+1 WHERE id=?', (target, position, now(), row['id']))
+                    self.history(c, row['id'], uid, 'Удаление колонки и перенос задач', {'column_name': [source_name, target_name]})
+                c.execute('DELETE FROM columns WHERE id=?', (source,))
             for i, x in enumerate(columns):
                 if x.get('id'):
                     c.execute('UPDATE columns SET name=?,position=?,is_done=?,wip_limit=? WHERE id=?', (x['name'].strip(), i, int(x['is_done']), x.get('wip_limit'), x['id']))
                 else:
-                    c.execute('INSERT INTO columns(board_id,name,position,is_done,wip_limit) VALUES(?,?,?,?,?)', (board_id, x['name'].strip(), i, int(x['is_done']), x.get('wip_limit')))
+                    c.execute('INSERT INTO columns(id,board_id,name,position,is_done,wip_limit) VALUES(?,?,?,?,?,?)', (self.next_column_id(c), board_id, x['name'].strip(), i, int(x['is_done']), x.get('wip_limit')))
             # Completion semantics also apply when the completion column is reconfigured.
             for row in c.execute('SELECT t.*, col.is_done FROM tasks t JOIN columns col ON col.id=t.column_id WHERE t.board_id=?', (board_id,)).fetchall():
                 completed = row['completed_at'] or now() if row['is_done'] else None
@@ -214,7 +237,7 @@ class Store:
                     c.execute('UPDATE tasks SET completed_at=?,updated_at=?,version=version+1 WHERE id=?', (completed, now(), row['id']))
                     self.history(c, row['id'], uid, 'Изменение колонки завершения', {'completed_at': [row['completed_at'], completed]})
             return True
-        return self.write('columns', [board_id, columns], apply, request_id)
+        return self.write('columns', [board_id, columns, removed], apply, request_id)
 
     def active_board(self, c, board_id):
         if not c.execute('SELECT 1 FROM boards WHERE id=? AND archived=0', (board_id,)).fetchone():

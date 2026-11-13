@@ -1,7 +1,7 @@
 from PyQt5.QtCore import Qt, QRect, QSize
 from PyQt5.QtGui import QColor, QFont, QPen
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle
-from .theme import TOKENS, PRIORITIES
+from .theme import TOKENS, PRIORITIES, label_colors
 from .presentation import date_text
 import datetime as dt
 
@@ -55,13 +55,20 @@ class CardDelegate(QStyledItemDelegate):
         painter.drawText(QRect(x, y + 106, width, 18), Qt.AlignVCenter, due)
         labels = task.get('labels', [])
         if labels:
-            tag = QRect(x, y + 138, min(155, width - 55), 24)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(TOKENS['hover']))
-            painter.drawRoundedRect(tag, 5, 5)
-            painter.setPen(QColor(TOKENS['muted']))
-            name = labels[0] + ('  +{}'.format(len(labels) - 1) if len(labels) > 1 else '')
-            painter.drawText(tag.adjusted(7, 0, -7, 0), Qt.AlignVCenter, painter.fontMetrics().elidedText(name, Qt.ElideRight, tag.width() - 14))
+            available = width - (60 if task.get('checklist') else 0)
+            cursor = x
+            visible = labels[:2]
+            for name in visible:
+                chip_width = min((available - 6) // len(visible), painter.fontMetrics().horizontalAdvance(name) + 22)
+                tag = QRect(cursor, y + 138, chip_width, 24)
+                foreground, background = label_colors(name)
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(background))
+                painter.drawRoundedRect(tag, 5, 5)
+                painter.setPen(QColor(foreground))
+                text = name + (' +{}'.format(len(labels) - 2) if name == visible[-1] and len(labels) > 2 else '')
+                painter.drawText(tag.adjusted(7, 0, -7, 0), Qt.AlignVCenter, painter.fontMetrics().elidedText(text, Qt.ElideRight, tag.width() - 14))
+                cursor += chip_width + 6
         checks = task.get('checklist', [])
         if checks:
             painter.setPen(QColor(TOKENS['muted']))

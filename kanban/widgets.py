@@ -2,15 +2,17 @@
 from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
     QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel)
+from .theme import label_icon
 
 
 class RegistrySelection(QWidget):
     """Native combo adds values; a separate native list shows/removes selections."""
     selectionChanged = pyqtSignal()
 
-    def __init__(self, placeholder, selected=(), parent=None):
+    def __init__(self, placeholder, selected=(), parent=None, colored=False):
         super().__init__(parent)
         self.placeholder = placeholder
+        self.colored = colored
         self.options = None
         self.chosen = set(selected)
         layout = QVBoxLayout(self)
@@ -63,7 +65,7 @@ class RegistrySelection(QWidget):
         self.combo.addItem(hint, None)
         for value, label in self.options:
             if value not in self.chosen:
-                self.combo.addItem(label, value)
+                self.combo.addItem(label_icon(str(value)), label, value) if self.colored else self.combo.addItem(label, value)
         self.combo.setCurrentIndex(0)
         self.combo.blockSignals(False)
         selected = self.list.currentItem()
@@ -72,6 +74,8 @@ class RegistrySelection(QWidget):
         for value, label in self.options:
             if value in self.chosen:
                 item = QListWidgetItem(label)
+                if self.colored:
+                    item.setIcon(label_icon(str(value)))
                 item.setData(Qt.UserRole, value)
                 self.list.addItem(item)
                 if value == current:

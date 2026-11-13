@@ -6,7 +6,7 @@ import tempfile
 from PyQt5.QtWidgets import QApplication
 from PyQt5.QtCore import QLocale, QTranslator, QLibraryInfo
 from .ui import MainWindow
-from .theme import stylesheet
+from .theme import apply_theme, theme_settings
 
 
 def main():
@@ -29,7 +29,7 @@ def main():
     app.setApplicationName('Канбан')
     app.setOrganizationName('LocalKanban')
     app.setStyle('Fusion')
-    app.setStyleSheet(stylesheet())
+    apply_theme(app, theme_settings().value('dark', False, type=bool))
     window = MainWindow(str(folder))
     window.show()
     return app.exec_()

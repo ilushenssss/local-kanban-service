@@ -7,7 +7,7 @@ import time
 import unittest
 from unittest.mock import patch
 from PyQt5 import sip
-from PyQt5.QtCore import Qt, QDate, QPoint
+from PyQt5.QtCore import Qt, QDate, QPoint, QSettings
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from kanban.store import Store
@@ -15,6 +15,9 @@ from kanban.theme import stylesheet
 from kanban.ui import MainWindow, TaskDialog, CatalogDialog
 from kanban.theme import PRIORITIES
 from kanban.presentation import history_text, history_html
+
+SETTINGS_DIR = tempfile.TemporaryDirectory()
+QSettings.setPath(QSettings.NativeFormat, QSettings.UserScope, SETTINGS_DIR.name)
 
 APP = QApplication.instance() or QApplication([])
 APP.setStyle('Fusion')
@@ -83,6 +86,81 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_statistics_theme_and_labels(self):
+        from kanban.statistics import summarize
+        from kanban.theme import apply_theme, label_colors, theme_settings, TOKENS
+        initial_theme = theme_settings().value('dark', False, type=bool)
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and len(w.card_lists) == 5)
+        w.search.setText('нет совпадений')
+        wait_for(lambda: not w.loading and not w.debounce.isActive() and not any(c.count() for c in w.card_lists))
+        self.assertIn('Всего: 1', w.statistics.summary.text())
+        w.pages.setCurrentIndex(1)
+        self.assertTrue(w.statistics.isVisible())
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        w.grab().save(str(evidence / 'statistics-light-linux.png'))
+        try:
+            w.theme_button.setChecked(False)
+            QTest.mouseClick(w.theme_button, Qt.LeftButton, pos=w.theme_button.rect().center())
+            self.assertTrue(theme_settings().value('dark', False, type=bool))
+            self.assertEqual(TOKENS['canvas'], '#151d2b')
+            w.grab().save(str(evidence / 'statistics-dark-linux.png'))
+            w.pages.setCurrentIndex(0)
+            w.reset_filters()
+            wait_for(lambda: not w.loading and not w.debounce.isActive() and any(c.count() for c in w.card_lists))
+            w.grab().save(str(evidence / 'board-dark-linux.png'))
+            d = self.dialog()
+            d.grab().save(str(evidence / 'task-dark-linux.png'))
+            d.due.editor.setFocus()
+            QTest.mouseClick(d.due.editor, Qt.LeftButton, pos=QPoint(d.due.editor.width() - 12, d.due.editor.height() // 2))
+            QTest.qWait(30)
+            calendar = d.due.editor.calendarWidget()
+            self.assertTrue(calendar.isVisible())
+            calendar.window().grab().save(str(evidence / 'calendar-dark-linux.png'))
+            QTest.keyClick(calendar.focusWidget(), Qt.Key_Escape)
+            self.assertEqual(d.due.value(), '2020-01-01')
+            self.assertFalse(d.labels.list.item(0).icon().isNull())
+            self.assertNotEqual(label_colors('Документы'), label_colors('Договоры'))
+            current = self.store.tasks(self.bid)
+            stats = summarize(current, self.columns, '2026-01-01')
+            self.assertEqual((stats['total'], stats['overdue'], stats['completed']), (1, 1, 0))
+            self.assertEqual(summarize([], self.columns)['total'], 0)
+        finally:
+            theme_settings().setValue('dark', initial_theme)
+            apply_theme(APP, False)
+
+    def test_columns_delete_dialog_and_new_in_column(self):
+        from kanban.ui import ColumnsDialog
+        from PyQt5.QtWidgets import QInputDialog
+        d = ColumnsDialog(self.columns)
+        d.show()
+        d.table.setCurrentCell(0, 0)
+        name = '{} · №{}'.format(self.columns[1]['name'], self.columns[1]['id'])
+        with patch.object(QInputDialog, 'getItem', return_value=(name, True)), patch.object(QMessageBox, 'question', return_value=QMessageBox.No):
+            d.remove_column()
+        self.assertEqual(d.table.rowCount(), 5)
+        with patch.object(QInputDialog, 'getItem', return_value=(name, True)), patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+            d.remove_column()
+        self.assertEqual(d.table.rowCount(), 4)
+        self.assertEqual(d.removed, {self.columns[0]['id']: self.columns[1]['id']})
+        self.store.save_columns(self.bid, d.values(), removed=d.removed)
+        d.close()
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and len(w.card_lists) == 4)
+        w.new_task_in_column(self.columns[2]['id'])
+        dialog = next(iter(w.dialogs))
+        wait_for(lambda: not dialog.jobs)
+        self.assertEqual(dialog.payload()['column_id'], self.columns[2]['id'])
+        dialog.title.setText('Из колонки')
+        dialog.save()
+        wait_for(lambda: sip.isdeleted(dialog) or not dialog.isVisible())
+        self.assertEqual(self.store.tasks(self.bid, {'query': 'Из колонки'})[0]['column_id'], self.columns[2]['id'])
+
     def test_create_save_comment_and_keyboard(self):
         d = self.dialog()
         d.title.setText('Новая редакция')

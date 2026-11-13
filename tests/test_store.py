@@ -26,6 +26,57 @@ class StoreTest(unittest.TestCase):
     def create(self):
         r = self.s.save_task(self.base)
         return self.s.detail(r['id'])
+    def test_delete_column_moves_active_and_archived_with_history_and_retry(self):
+        original = self.create()
+        archived = self.create()
+        archived['archived'] = True
+        self.s.save_task(archived)
+        remaining = self.cols[1:]
+        removed = {self.cols[0]['id']: self.cols[-1]['id']}
+        self.s.save_columns(self.bid, remaining, 'delete-columns', removed)
+        self.s.save_columns(self.bid, remaining, 'delete-columns', removed)
+        self.assertEqual(len(self.s.columns(self.bid)), 4)
+        for task in (original, archived):
+            current = self.s.detail(task['id'])
+            self.assertEqual(current['column_id'], self.cols[-1]['id'])
+            self.assertIsNotNone(current['completed_at'])
+            events = [h for h in current['history'] if h['operation'] == 'Удаление колонки и перенос задач']
+            self.assertEqual(len(events), 1)
+            self.assertIn('Входящие', events[0]['changes'])
+        self.assertTrue(self.s.detail(archived['id'])['archived'])
+        with self.assertRaises(Conflict):
+            self.s.save_task(original)
+        with self.s.connection() as c:
+            self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
+
+    def test_delete_done_column_reopens_tasks_and_rejects_invalid_plan(self):
+        task = self.create()
+        task['column_id'] = self.cols[-1]['id']
+        self.s.save_task(task)
+        self.s.save_columns(self.bid, self.cols[:-1], removed={self.cols[-1]['id']: self.cols[0]['id']})
+        self.assertIsNone(self.s.detail(task['id'])['completed_at'])
+        before = self.s.columns(self.bid)
+        with self.assertRaises(ValueError):
+            self.s.save_columns(self.bid, before[1:], removed={before[0]['id']: 99999})
+        self.assertEqual(before, self.s.columns(self.bid))
+        with self.assertRaises(ValueError):
+            self.s.save_columns(self.bid, [])
+        with self.assertRaises(ValueError):
+            self.s.save_columns(self.bid, self.cols)
+
+    def test_deleted_column_ids_are_not_reused_and_failed_delete_rolls_back(self):
+        self.create()
+        remaining = copy.deepcopy(self.cols[1:])
+        remaining[0]['wip_limit'] = -1
+        with self.assertRaises(sqlite3.IntegrityError):
+            self.s.save_columns(self.bid, remaining, removed={self.cols[0]['id']: remaining[0]['id']})
+        self.assertEqual(self.s.columns(self.bid), self.cols)
+        self.assertEqual(self.s.tasks(self.bid)[0]['column_id'], self.cols[0]['id'])
+        self.s.save_columns(self.bid, self.cols[:-1], removed={self.cols[-1]['id']: self.cols[0]['id']})
+        updated = self.s.columns(self.bid) + [{'name': 'Новая', 'is_done': False, 'wip_limit': None}]
+        self.s.save_columns(self.bid, updated)
+        self.assertGreater(self.s.columns(self.bid)[-1]['id'], self.cols[-1]['id'])
+
     def test_create_and_history(self):
         d = self.create()
         self.assertEqual(d['number'], 1)

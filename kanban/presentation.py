@@ -24,7 +24,7 @@ def history_text(entry, columns=(), users=()):
     except (ValueError, TypeError):
         return ['Запись истории в прежнем формате']
     lines = []
-    names = {'title': 'Название', 'description': 'Описание', 'priority': 'Приоритет', 'due_date': 'Срок', 'completed_at': 'Завершение', 'column_id': 'Колонка', 'assignees': 'Исполнители', 'labels': 'Метки', 'archived': 'Архив', 'checklist': 'Чек-лист'}
+    names = {'title': 'Название', 'description': 'Описание', 'priority': 'Приоритет', 'due_date': 'Срок', 'completed_at': 'Завершение', 'column_id': 'Колонка', 'column_name': 'Колонка', 'assignees': 'Исполнители', 'labels': 'Метки', 'archived': 'Архив', 'checklist': 'Чек-лист'}
     def display(key, value):
         if key == 'archived':
             return 'да' if value else 'нет'
