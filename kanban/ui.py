@@ -10,13 +10,23 @@ from PyQt5.QtGui import QDesktopServices, QDrag
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
-    QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView)
+    QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu)
 from .store import Store, Conflict
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo
-from .presentation import history_html, date_text
+from .presentation import history_html, date_text, comments_html
 from .cards import CardDelegate
 from .statistics import StatisticsPage
 from .theme import apply_theme, theme_settings, label_icon
+
+
+class QuietStatus(QLabel):
+    """Reserve space only while there is useful feedback to show."""
+    def setText(self, text):
+        super().setText(text)
+        self.setVisible(bool(text))
+
+    def clear(self):
+        self.setText('')
 
 
 class Signals(QObject):
@@ -229,7 +239,7 @@ class TaskDialog(QDialog, Async):
         self.data = copy.deepcopy(data)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle('Задача №' + str(data['number']) if data.get('id') else 'Новая задача')
-        self.resize(860, 830)
+        self.resize(760, 740)
         self.setMinimumSize(640, 480)
         self.pending = False
         self.retry = None
@@ -284,9 +294,8 @@ class TaskDialog(QDialog, Async):
             form.addRow(caption, wrapper)
         form.addRow('Приоритет', self.priority)
         form.addRow('Срок', self.due)
-        self.column.setVisible(bool(data.get('id')))
+        self.column.hide()
         if data.get('id'):
-            form.addRow('Переместить в…', self.column)
             form.addRow('Архивирование', self.archived)
         self.checklist = ChecklistEditor(data.get('checklist', []))
         form.addRow('Чек-лист', self.checklist)
@@ -358,11 +367,8 @@ class TaskDialog(QDialog, Async):
 
     def render_extras(self, d):
         self.dates.setText('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(date_text(d.get('created_at'), True), date_text(d.get('updated_at'), True), date_text(d.get('completed_at'), True)))
-        comment_text = '\n\n'.join(date_text(x['created_at'], True) + ' · ' + x['author'] + '\n' + x['body'] for x in d.get('comments', []))
-        if self.comments.toPlainText() != comment_text:
-            scroll = self.comments.verticalScrollBar().value()
-            self.comments.setPlainText(comment_text)
-            self.comments.verticalScrollBar().setValue(scroll)
+        self.comment_entries = d.get('comments', [])
+        self.render_comments()
         selected = self.attachments.currentItem()
         selected_id = selected.data(Qt.UserRole)['id'] if selected else None
         self.attachments.clear()
@@ -376,6 +382,16 @@ class TaskDialog(QDialog, Async):
         self.render_history()
         for b in [self.comment_button, self.file_button]:
             b.setEnabled(bool(d.get('id')) and not self.pending)
+
+    def render_comments(self):
+        markup = comments_html(self.comment_entries, self.store.login)
+        if markup != getattr(self, 'comments_markup', None):
+            bar = self.comments.verticalScrollBar()
+            at_bottom = bar.value() >= bar.maximum() - 4
+            position = bar.value()
+            self.comments.setHtml(markup)
+            bar.setValue(bar.maximum() if at_bottom else position)
+            self.comments_markup = markup
 
     def render_history(self):
         markup = history_html(self.history_entries, self.columns, self.catalog_data['users'])
@@ -410,7 +426,7 @@ class TaskDialog(QDialog, Async):
                     self.column.addItem(column['name'], column['id'])
                 if self.column.findData(selected) < 0:
                     self.column.addItem(caption + ' (удалена — выберите другую)', selected)
-                    self.column.show()
+                    self.column.hide()
                 self.column.setCurrentIndex(self.column.findData(selected))
                 self.column.blockSignals(False)
             users = sorted(data['users'], key=lambda u: u['display_name'].casefold())
@@ -769,7 +785,7 @@ class Cards(QListWidget):
         self.setSelectionMode(QListWidget.SingleSelection)
         self.setSpacing(4)
         self.setWordWrap(True)
-        self.setMinimumWidth(250)
+        self.setMinimumWidth(220)
         self.setAccessibleName('Задачи колонки')
     def startDrag(self, supported_actions):
         if not self.selectedIndexes():
@@ -926,15 +942,13 @@ class MainWindow(QMainWindow, Async):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         content.addWidget(self.scroll, 1)
-        self.status = QLabel('Подключение к общей папке…')
+        self.status = QuietStatus('Подключение к общей папке…')
         self.status.setObjectName('Status')
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.PlainText)
         surface.layout().addWidget(self.status)
         bottom = QHBoxLayout()
-        button('Открыть карточку', self.open_selected, bottom)
-        button('Переместить в…', self.move_selected, bottom)
-        button('Копировать', self.copy_selected, bottom)
+        bottom.addStretch()
         button('Архивировать / восстановить', self.archive_selected, bottom)
         content.addLayout(bottom)
         self.debounce = QTimer(self)
@@ -1076,16 +1090,16 @@ class MainWindow(QMainWindow, Async):
             board.setObjectName('BoardCanvas')
             row = QHBoxLayout(board)
             row.setSizeConstraint(QHBoxLayout.SetMinimumSize)
-            row.setContentsMargins(12, 14, 12, 12)
-            row.setSpacing(12)
+            row.setContentsMargins(4, 6, 4, 6)
+            row.setSpacing(8)
             self.card_lists = []
             for column_index, column in enumerate(columns):
                 panel = QWidget()
                 panel.setObjectName('ColumnPanel')
                 panel.setAttribute(Qt.WA_StyledBackground, True)
-                panel.setMinimumWidth(292)
+                panel.setMinimumWidth(244)
                 layout = QVBoxLayout(panel)
-                layout.setContentsMargins(10, 6, 10, 10)
+                layout.setContentsMargins(6, 4, 6, 6)
                 layout.setSpacing(10)
                 count = sum(t['column_id'] == column['id'] for t in all_tasks)
                 warning = bool(column['wip_limit'] and count > column['wip_limit'])
@@ -1100,6 +1114,8 @@ class MainWindow(QMainWindow, Async):
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
                 cards.moved.connect(self.move_task)
                 cards.dragging.connect(self.drag_state_changed)
+                cards.setContextMenuPolicy(Qt.CustomContextMenu)
+                cards.customContextMenuRequested.connect(lambda point, cards=cards: self.card_menu(cards, point))
                 for task in tasks:
                     if task['column_id'] != column['id']:
                         continue
@@ -1126,7 +1142,7 @@ class MainWindow(QMainWindow, Async):
                 old.deleteLater()
             self.scroll.setWidget(board)
             self.scroll.horizontalScrollBar().setValue(horizontal_position)
-            self.status.setText('Показано задач: {}. Обновление каждые 5 секунд. Двойной щелчок открывает карточку.'.format(len(tasks)) if tasks else 'Подходящих задач нет. Измените фильтры или создайте задачу.')
+            self.status.clear()
         self.work(read, done)
 
     def update_catalog_filters(self, catalogs):
@@ -1264,6 +1280,20 @@ class MainWindow(QMainWindow, Async):
         task['position'] = (low + high) / 2
         task['column_id'] = column_id
         self.mutate(lambda rid: self.store.save_task(task, rid))
+
+    def card_menu(self, cards, point):
+        item = cards.itemAt(point)
+        if not item:
+            return
+        cards.setCurrentItem(item)
+        menu = QMenu(self)
+        menu.addAction('Переместить в…', self.move_selected)
+        menu.addAction('Восстановить' if item.data(Qt.UserRole)['archived'] else 'Архивировать', self.archive_selected)
+        self.drag_state_changed(True)
+        try:
+            menu.exec_(cards.viewport().mapToGlobal(point))
+        finally:
+            self.drag_state_changed(False)
 
     def move_selected(self):
         task = self.selected_task()

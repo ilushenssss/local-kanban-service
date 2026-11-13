@@ -86,6 +86,28 @@ class UITest(unittest.TestCase):
         d.show()
         wait_for(lambda: not d.jobs)
         return d
+    def test_refined_task_history_and_chat(self):
+        from kanban.presentation import comments_html, history_html
+        from PyQt5.QtWidgets import QLabel
+        self.store.comment(self.result['id'], '<b>Первое</b>')
+        colleague = Store(self.store.folder, 'colleague')
+        colleague.comment(self.result['id'], 'Ответ коллеги')
+        d = self.dialog()
+        self.assertFalse(d.column.isVisible())
+        self.assertNotIn('Переместить в…', [label.text() for label in d.findChildren(QLabel)])
+        comments = self.store.detail(self.result['id'])['comments']
+        markup = comments_html(comments, 'tester')
+        self.assertIn('Вы', markup)
+        self.assertIn('&lt;b&gt;Первое&lt;/b&gt;', markup)
+        self.assertLess(markup.index('Первое'), markup.index('Ответ коллеги'))
+        entries = [dict(id=2, created_at='2026-01-02T12:00:00Z', author='Второй', operation='Комментарий', changes='{}'),
+                   dict(id=1, created_at='2026-01-01T12:00:00Z', author='Первый', operation='Комментарий', changes='{}')]
+        history = history_html(entries)
+        self.assertLess(history.index('Первый'), history.index('Второй'))
+        d.tabs.setCurrentIndex(1)
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        d.grab().save(str(evidence / 'chat-linux.png'))
+
     def test_statistics_charts_segments_empty_and_themes(self):
         from kanban.statistics import StatisticsPage
         from kanban.theme import apply_theme
