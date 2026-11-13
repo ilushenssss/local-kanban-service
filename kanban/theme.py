@@ -3,10 +3,10 @@ import hashlib
 from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter
 
-LIGHT = dict(background='#ffffff', canvas='#f5f6f8', sidebar='#263345',
-             text='#202c40', muted='#58677d', border='#bdc9da', accent='#315dcc',
+LIGHT = dict(background='#ffffff', canvas='#F4F5F7', sidebar='#FFFFFF',
+             text='#1E293B', muted='#64748B', border='#E2E8F0', accent='#2563EB',
              hover='#e9eef7', selection='#dce7ff', danger='#b42318',
-             scroll='#96a6bc', accent_hover='#2549a5')
+             scroll='#96a6bc', accent_hover='#1d4ed8')
 DARK = dict(background='#202b3c', canvas='#151d2b', sidebar='#111827',
             text='#edf2fa', muted='#b1bfd3', border='#50617a', accent='#8baeff',
             hover='#2c3b52', selection='#334c76', danger='#ffaba5',
@@ -41,43 +41,43 @@ def label_icon(name):
 def stylesheet():
     t = TOKENS
     return '''
-QWidget#BoardCanvas { background: qlineargradient(x1:0,y1:0,x2:1,y2:1,stop:0 %(canvas)s,stop:1 %(selection)s); }
+QWidget#BoardCanvas { background: %(canvas)s; }
 QWidget { color: %(text)s; font-size: 10pt; }
 QMainWindow, QDialog, QWidget#content, QWidget#scrollBody { background: %(canvas)s; }
 QWidget#side { background: %(sidebar)s; }
-QWidget#side QLabel { color: #c9d1e3; }
-QLabel#appName { color: #ffffff; font-size: 17pt; font-weight: 600; }
+QWidget#side QLabel { color: %(muted)s; }
+QLabel#appName { color: %(accent)s; font-size: 17pt; font-weight: 600; }
 QLabel#Heading, QLabel#title { font-size: 16pt; font-weight: 600; }
 QLabel#SectionTitle, QLabel#ColumnTitle { font-size: 11pt; font-weight: 600; }
 QLabel#Muted, QLabel#muted, QLabel#Status, QLabel#hint { color: %(muted)s; }
 QLabel#fieldLabel { font-weight: 600; }
-QWidget#ColumnPanel { background: %(hover)s; border: 1px solid %(border)s; border-radius: 10px; }
+QWidget#ColumnPanel { background: %(canvas)s; border: 1px solid %(border)s; border-radius: 10px; }
 QWidget#ColumnPanel QLabel { background: transparent; border: none; }
 QLabel#ColumnTitle { padding: 7px 6px; border-radius: 5px; color: #202c40; }
-QLabel#ColumnTitle[tone="0"] { background: #dce9fb; border-top: 5px solid #568bd7; }
-QLabel#ColumnTitle[tone="1"] { background: #e7e0f8; border-top: 5px solid #9270cd; }
-QLabel#ColumnTitle[tone="2"] { background: #fff0cd; border-top: 5px solid #d5a033; }
-QLabel#ColumnTitle[tone="3"] { background: #fbe0d9; border-top: 5px solid #d17c66; }
-QLabel#ColumnTitle[tone="4"] { background: #daf0e3; border-top: 5px solid #59a479; }
+QLabel#ColumnTitle[tone="0"] { background: #dce9fb; border-top: 3px solid #568bd7; }
+QLabel#ColumnTitle[tone="1"] { background: #e7e0f8; border-top: 3px solid #9270cd; }
+QLabel#ColumnTitle[tone="2"] { background: #fff0cd; border-top: 3px solid #d5a033; }
+QLabel#ColumnTitle[tone="3"] { background: #fbe0d9; border-top: 3px solid #d17c66; }
+QLabel#ColumnTitle[tone="4"] { background: #daf0e3; border-top: 3px solid #59a479; }
 QPushButton { background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 10px; }
 QPushButton:hover { border-color: %(accent)s; background: %(hover)s; }
 QPushButton:focus { border: 2px solid %(accent)s; }
 QPushButton:disabled { color: %(muted)s; background: %(canvas)s; }
-QPushButton#primary, QPushButton[variant="primary"] { background: #315dcc; border-color: #315dcc; color: #ffffff; font-weight: 600; }
-QPushButton#primary:hover { background: #2549a5; }
+QPushButton#primary, QPushButton[variant="primary"] { background: #2563EB; border-color: #2563EB; color: #ffffff; font-weight: 600; }
+QPushButton#primary:hover { background: #1d4ed8; }
 QPushButton#danger { color: %(danger)s; }
 QPushButton#link { background: transparent; border: none; color: %(accent)s; padding: 0; text-decoration: underline; }
-QWidget#side QPushButton[variant="quiet"] { color: #d4ddec; background: transparent; border: none; text-align: left; padding: 9px 10px; }
-QWidget#side QPushButton[variant="quiet"]:hover { background: #334563; color: white; }
+QWidget#side QPushButton[variant="quiet"] { color: %(text)s; background: transparent; border: none; text-align: left; padding: 9px 10px; }
+QWidget#side QPushButton[variant="quiet"]:hover { background: %(selection)s; color: %(accent)s; }
 QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QDateEdit, QSpinBox, QListWidget {
  background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 7px;
  selection-background-color: %(selection)s; selection-color: %(text)s; }
 QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QDateEdit:focus, QListWidget:focus { border-color: %(accent)s; }
 QComboBox QAbstractItemView { background: %(background)s; color: %(text)s; selection-background-color: %(selection)s; selection-color: %(text)s; }
-QListWidget#Boards { background: transparent; color: #d4ddec; border: none; padding: 0; }
+QListWidget#Boards { background: transparent; color: %(text)s; border: none; padding: 0; }
 QListWidget#Boards::item { padding: 11px 12px; border-radius: 6px; margin: 3px 0; }
-QListWidget#Boards::item:hover { background: #2b3858; }
-QListWidget#Boards::item:selected { background: #3a4a72; color: white; font-weight: 600; }
+QListWidget#Boards::item:hover { background: %(hover)s; }
+QListWidget#Boards::item:selected { background: %(selection)s; color: %(accent)s; font-weight: 600; }
 QListWidget#Cards { background: transparent; border: none; padding: 0; }
 QListWidget#Checklist::item { padding: 6px; }
 QTableWidget { background: %(background)s; alternate-background-color: %(hover)s; border: 1px solid %(border)s; border-radius: 6px; gridline-color: %(border)s; selection-background-color: %(selection)s; selection-color: %(text)s; }
@@ -93,6 +93,11 @@ QScrollBar::handle:hover { background: %(accent)s; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QProgressBar { background: %(hover)s; border: 1px solid %(border)s; border-radius: 5px; text-align: center; }
 QProgressBar::chunk { background: %(accent)s; }
+QTreeWidget { background: %(sidebar)s; color: %(text)s; border: none; padding: 4px; }
+QTreeWidget::item { padding: 7px 4px; border-radius: 4px; }
+QTreeWidget::item:selected { background: %(selection)s; color: %(accent)s; }
+QWidget#Header { background: %(background)s; border-bottom: 1px solid %(border)s; }
+QSplitter::handle { background: %(border)s; }
 QToolTip { color: %(text)s; background: %(background)s; border: 1px solid %(border)s; padding: 6px; }
 ''' % t
 

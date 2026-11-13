@@ -179,20 +179,23 @@ class Store:
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('column_sequence',?)", (str(value),))
         return value
 
-    def board_action(self, name, board_id=None, archive=False, request_id=None):
+    def board_action(self, name, board_id=None, archive=False, request_id=None, column_names=None):
         if not name.strip() and not archive:
             raise ValueError('Введите название доски')
+        if column_names is not None and (not column_names or any(not x.strip() for x in column_names)):
+            raise ValueError('Укажите названия колонок')
         def apply(c, uid):
             if board_id is None:
                 bid = c.execute('INSERT INTO boards(name,created_at) VALUES(?,?)', (name.strip(), now())).lastrowid
-                for i, title in enumerate(['Входящие', 'Запланировано', 'В работе', 'На проверке', 'Завершено']):
-                    c.execute('INSERT INTO columns(id,board_id,name,position,is_done) VALUES(?,?,?,?,?)', (self.next_column_id(c), bid, title, i, int(i == 4)))
+                names = column_names if column_names is not None else ['Входящие', 'Запланировано', 'В работе', 'На проверке', 'Завершено']
+                for i, title in enumerate(names):
+                    c.execute('INSERT INTO columns(id,board_id,name,position,is_done) VALUES(?,?,?,?,?)', (self.next_column_id(c), bid, title, i, int(i == len(names)-1)))
                 return bid
             if not c.execute('SELECT id FROM boards WHERE id=? AND archived=0', (board_id,)).fetchone():
                 raise ValueError('Доска недоступна')
             c.execute('UPDATE boards SET name=?,archived=? WHERE id=?', (name.strip(), int(archive), board_id))
             return board_id
-        return self.write('board', [name, board_id, archive], apply, request_id)
+        return self.write('board', [name, board_id, archive] + ([column_names] if column_names is not None else []), apply, request_id)
 
     def columns(self, board_id):
         with self.connection() as c:
@@ -254,7 +257,22 @@ class Store:
         d['checklist'] = [dict(r) for r in c.execute('SELECT text,done FROM checklist_items WHERE task_id=? ORDER BY position', (task_id,))]
         for key, query in [('comments', 'SELECT x.*,u.login AS login,u.display_name AS author FROM comments x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id'), ('history', 'SELECT x.*,u.display_name AS author FROM task_history x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id DESC'), ('attachments', 'SELECT * FROM attachments WHERE task_id=? ORDER BY id')]:
             d[key] = [dict(r) for r in c.execute(query, (task_id,))]
+        key = 'read:' + json.dumps([self.login, task_id], ensure_ascii=False)
+        cursor = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        last = int(cursor[0]) if cursor else 0
+        d['unread_count'] = sum(x['id'] > last and x['login'] != self.login for x in d['comments'])
         return d
+
+    def mark_read(self, task_id, comment_id):
+        def apply(c, uid):
+            if not c.execute('SELECT 1 FROM comments WHERE task_id=? AND id=?', (task_id, comment_id)).fetchone():
+                raise ValueError('Сообщение не принадлежит задаче')
+            key = 'read:' + json.dumps([self.login, task_id], ensure_ascii=False)
+            old = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            value = max(int(old[0]) if old else 0, comment_id)
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, str(value)))
+            return value
+        return self.write('read', [task_id, comment_id], apply)
 
     def detail(self, task_id):
         with self.connection() as c:

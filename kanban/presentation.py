@@ -88,3 +88,20 @@ def comments_html(entries, login):
         spacer = '<td width="22%"></td>'
         result.append('<table width="100%" cellspacing="0" cellpadding="9"><tr>{}</tr></table><br>'.format(spacer+bubble if own else bubble+spacer))
     return ''.join(result)
+
+
+def conversation_html(comments, events, login, columns=()):
+    timeline = [(x['created_at'], 1, x['id'], x) for x in comments]
+    timeline += [(x['created_at'], 0, x['id'], x) for x in events if x['operation'] != 'Комментарий']
+    result = []
+    for date, kind, identifier, entry in sorted(timeline, key=lambda item: item[:3]):
+        if kind:
+            result.append(comments_html([entry], login))
+        else:
+            text = entry['author'] + ' · ' + entry['operation']
+            changes = history_text(entry, columns)
+            if entry['operation'] != 'Создание':
+                text += ' · ' + '; '.join(changes)
+            result.append('<p align="center" style="color:{color};font-size:9pt">{text}<br>{date}</p>'.format(
+                color=TOKENS['muted'], text=html.escape(text), date=html.escape(date_text(date, True))))
+    return ''.join(result) or comments_html([], login)

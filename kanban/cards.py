@@ -39,7 +39,7 @@ class CardDelegate(QStyledItemDelegate):
         p.drawText(QRect(x, y, 18, 19), Qt.AlignCenter, '●' if done else '○')
         font(9.5, False, done)
         p.setPen(QColor(TOKENS['text']))
-        p.drawText(QRect(x+23, y, width-35, 48), Qt.AlignTop | Qt.TextWordWrap, task['title'])
+        p.drawText(QRect(x+23, y, width-35, 34), Qt.AlignTop | Qt.TextWordWrap, task['title'])
         font(8)
         cursor = x
         def chip(text, foreground, background, max_width):
@@ -74,9 +74,18 @@ class CardDelegate(QStyledItemDelegate):
             font(7, True)
             p.drawText(avatar, Qt.AlignCenter, initials)
         checks = task.get('checklist', [])
+        unread = task.get('unread_count', 0)
+        if unread:
+            font(8, True)
+            p.setPen(QColor(TOKENS['accent']))
+            p.setBrush(Qt.NoBrush)
+            p.drawRoundedRect(QRect(x, y+87, 15, 10), 3, 3)
+            p.drawLine(x+3, y+97, x+3, y+101)
+            p.drawLine(x+3, y+101, x+7, y+97)
+            p.drawText(QRect(x+22, y+82, 38, 22), Qt.AlignVCenter, str(unread))
         if checks:
             count = sum(bool(c['done']) for c in checks)
-            track = QRectF(x, y+94, width-45, 6)
+            track = QRectF(x+(62 if unread else 0), y+94, width-45-(62 if unread else 0), 6)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(TOKENS['hover']))
             p.drawRoundedRect(track, 3, 3)
