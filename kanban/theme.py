@@ -123,4 +123,5 @@ def apply_theme(app, dark=False):
 
 
 def theme_settings():
+    # Keep the legacy settings identity so TeamSync retains theme preferences.
     return QSettings('LocalKanban', 'Kanban')

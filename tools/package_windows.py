@@ -18,7 +18,7 @@ def package(destination):
     paths.extend(ROOT / name for name in ['main.pyw', 'Create-shortcut.vbs', 'kanban.ini.example', 'README.md'])
     with zipfile.ZipFile(str(destination), 'x', compression=zipfile.ZIP_DEFLATED) as archive:
         for path in sorted(paths):
-            archive.write(str(path), 'Kanban/' + path.relative_to(ROOT).as_posix())
+            archive.write(str(path), 'TeamSync/' + path.relative_to(ROOT).as_posix())
     with zipfile.ZipFile(str(destination)) as archive:
         bad = archive.testzip()
         if bad:

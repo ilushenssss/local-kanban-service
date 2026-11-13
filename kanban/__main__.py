@@ -26,8 +26,8 @@ def main():
     translator = QTranslator(app)
     if translator.load('qtbase_ru', QLibraryInfo.location(QLibraryInfo.TranslationsPath)):
         app.installTranslator(translator)
-    app.setApplicationName('Канбан')
-    app.setOrganizationName('LocalKanban')
+    app.setApplicationName('TeamSync')
+    app.setOrganizationName('TeamSync')
     app.setStyle('Fusion')
     apply_theme(app, theme_settings().value('dark', False, type=bool))
     window = MainWindow(str(folder))

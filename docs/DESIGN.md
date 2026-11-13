@@ -1,6 +1,6 @@
 ---
 version: alpha
-name: Канбан — доска
+name: TeamSync — доска
 colors:
   background: "#FFFFFF"
   canvas: "#F4F5F7"
@@ -22,7 +22,7 @@ spacing:
   surface: "24px"
 ---
 
-# Канбан — визуальный контракт
+# TeamSync — визуальный контракт
 
 ## Overview
 

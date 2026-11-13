@@ -875,7 +875,7 @@ class MainWindow(QMainWindow, Async):
         self.drag_active = False
         self.refresh_deferred = False
         self.last_snapshot = None
-        self.setWindowTitle('Канбан')
+        self.setWindowTitle('TeamSync')
         self.resize(1400, 850)
         self.setMinimumSize(900, 600)
         central = QWidget()
@@ -891,7 +891,7 @@ class MainWindow(QMainWindow, Async):
         side = QVBoxLayout(sidebar)
         side.setContentsMargins(14, 18, 14, 14)
         side.setSpacing(4)
-        heading = QLabel('▦  Канбан')
+        heading = QLabel('▦  TeamSync')
         heading.setObjectName('appName')
         side.addWidget(heading)
         self.collapse_button = button('‹ Свернуть', self.collapse_sidebar, side, 'quiet')

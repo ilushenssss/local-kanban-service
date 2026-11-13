@@ -14,12 +14,12 @@ def launch():
         from kanban.__main__ import main
         return main()
     except Exception:
-        logging.exception('Kanban startup failed')
+        logging.exception('TeamSync startup failed')
         if sys.platform == 'win32':
             import ctypes
             ctypes.windll.user32.MessageBoxW(None,
-                'Не удалось запустить Канбан. Проверьте комплектность папки приложения.\nЖурнал ошибок: ' + str(log),
-                'Канбан — ошибка запуска', 0x10)
+                'Не удалось запустить TeamSync. Проверьте комплектность папки приложения.\nЖурнал ошибок: ' + str(log),
+                'TeamSync — ошибка запуска', 0x10)
         elif sys.stderr is not None:
             import traceback
             traceback.print_exc()
