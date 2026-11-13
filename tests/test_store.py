@@ -156,6 +156,39 @@ class StoreTest(unittest.TestCase):
         self.s.board_action('Отдел', self.bid, True)
         with self.assertRaises(ValueError):
             self.s.save_task(self.base)
+    def test_catalogs_preserve_existing_users_and_labels(self):
+        d = self.create()
+        uid = self.s.save_user('ivanov', 'Иванов Иван', request_id='add-user')
+        self.assertEqual(uid, self.s.save_user('ivanov', 'Иванов Иван', request_id='add-user'))
+        with self.assertRaises(ValueError):
+            self.s.save_user('ivanov', 'Другой сотрудник')
+        self.s.save_user('ivanov', 'Иванов И. И.', uid)
+        with self.assertRaises(ValueError):
+            self.s.save_user('new-login', 'Иванов', uid)
+        d['assignees'] = ['ivanov']
+        self.s.save_task(d)
+        reopened = Store(self.s.folder, 'alice')
+        self.assertEqual(reopened.detail(d['id'])['assignee_names'], ['Иванов И. И.'])
+        catalog = reopened.catalogs(self.bid)
+        self.assertTrue(any(u['login'] == 'bob' for u in catalog['users']))
+        self.assertTrue(any(l['name'] == 'Документы' for l in catalog['labels']))
+        self.assertEqual(len(reopened.detail(d['id'])['history']), 2)
+
+    def test_labels_are_persistent_and_scoped_to_board(self):
+        lid = self.s.add_label(self.bid, 'На согласование', 'label-id')
+        self.assertEqual(lid, self.s.add_label(self.bid, 'На согласование', 'label-id'))
+        self.assertEqual(lid, self.s.add_label(self.bid, 'На согласование'))
+        second = self.s.board_action('Другая доска')
+        self.assertEqual(self.s.catalogs(second)['labels'], [])
+        with self.assertRaises(ValueError):
+            self.s.add_label(self.bid, '   ')
+        with self.assertRaises(ValueError):
+            self.s.save_user('', 'Имя')
+        d = self.create()
+        d['labels'] = ['На согласование']
+        self.s.save_task(d)
+        self.assertEqual(self.s.tasks(self.bid, {'label': 'На согласование'})[0]['id'], d['id'])
+
     def test_concurrent_processes(self):
         ctx = multiprocessing.get_context('spawn')
         processes = [ctx.Process(target=create_concurrent, args=(str(self.s.folder), 'user' + str(i))) for i in range(4)]

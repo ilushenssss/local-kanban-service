@@ -6,12 +6,15 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
-from PyQt5.QtCore import Qt
+from PyQt5 import sip
+from PyQt5.QtCore import Qt, QDate, QPoint
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from kanban.store import Store
 from kanban.theme import stylesheet
-from kanban.ui import MainWindow, TaskDialog
+from kanban.ui import MainWindow, TaskDialog, CatalogDialog
+from kanban.theme import PRIORITIES
+from kanban.presentation import history_text, history_html
 
 APP = QApplication.instance() or QApplication([])
 APP.setStyle('Fusion')
@@ -37,20 +40,25 @@ class UITest(unittest.TestCase):
         self.result = self.store.save_task({'board_id': self.bid, 'column_id': self.columns[0]['id'], 'title': 'Подготовить договор', 'description': 'Согласовать условия', 'due_date': '2020-01-01', 'priority': 'Высокий', 'assignees': ['tester'], 'labels': ['Документы'], 'checklist': [{'text': 'Проверить реквизиты', 'done': 1}, {'text': 'Подписать', 'done': 0}]})
         self.windows = []
     def tearDown(self):
-        for w in self.windows:
+        for w in list(self.windows):
+            if sip.isdeleted(w):
+                continue
             if hasattr(w, 'timer'):
                 w.timer.stop()
             if hasattr(w, 'refresh_timer'):
                 w.refresh_timer.stop()
             wait_for(lambda: not w.jobs)
-            with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
-                w.close()
+            if not sip.isdeleted(w):
+                with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+                    w.close()
         APP.processEvents()
         self.tmp.cleanup()
     def dialog(self):
         d = TaskDialog(self.store, self.columns, self.store.detail(self.result['id']))
         self.windows.append(d)
+        d.destroyed.connect(lambda: self.windows.remove(d) if d in self.windows else None)
         d.show()
+        wait_for(lambda: not d.jobs)
         return d
     def test_create_save_comment_and_keyboard(self):
         d = self.dialog()
@@ -59,6 +67,8 @@ class UITest(unittest.TestCase):
         QTest.keyClick(d.save_button, Qt.Key_Space)
         wait_for(lambda: not d.pending and not d.jobs)
         self.assertEqual(self.store.detail(self.result['id'])['title'], 'Новая редакция')
+        self.assertTrue(sip.isdeleted(d) or not d.isVisible())
+        d = self.dialog()
         d.tabs.setCurrentIndex(1)
         d.comment_text.setPlainText('Проверено')
         QTest.mouseClick(d.comment_button, Qt.LeftButton)
@@ -148,9 +158,148 @@ class UITest(unittest.TestCase):
         self.assertTrue(w.grab().save(str(evidence / 'board-narrow-linux.png')))
         d = self.dialog()
         self.assertTrue(d.grab().save(str(evidence / 'task-linux.png')))
+    def test_new_task_catalog_selection_calendar_and_close(self):
+        self.store.save_user('ivanov', 'Иванов Иван')
+        self.store.add_label(self.bid, 'На проверку')
+        d = TaskDialog(self.store, self.columns, {'board_id': self.bid, 'column_id': self.columns[0]['id']})
+        self.windows.append(d)
+        d.show()
+        wait_for(lambda: not d.jobs)
+        self.assertFalse(d.column.isVisible())
+        d.title.setText('Новая задача из формы')
+        self.assertTrue(any('Иванов Иван' in d.assignees.itemText(i) for i in range(d.assignees.count())))
+        # Real popup + keyboard toggles a checked row without losing other selections.
+        d.assignees.showPopup()
+        index = d.assignees.findData('ivanov')
+        d.assignees.view().setCurrentIndex(d.assignees.model().index(index, 0))
+        QTest.keyClick(d.assignees.view(), Qt.Key_Space)
+        QTest.keyClick(d.assignees.view(), Qt.Key_Escape)
+        self.assertEqual(d.assignees.values(), ['ivanov'])
+        self.assertIn('Иванов Иван', d.assignees.lineEdit().text())
+        d.assignees.showPopup()
+        row = d.assignees.model().index(d.assignees.findData('tester'), 0)
+        point = d.assignees.view().visualRect(row).center()
+        QTest.mouseClick(d.assignees.view().viewport(), Qt.LeftButton, pos=point)
+        self.assertEqual(d.assignees.values(), ['ivanov', 'tester'])
+        QTest.mouseClick(d.assignees.view().viewport(), Qt.LeftButton, pos=point)
+        self.assertEqual(d.assignees.values(), ['ivanov'])
+        QTest.keyClick(d.assignees.view(), Qt.Key_Escape)
+        d.labels.set_values(['На проверку'])
+        self.assertIsNone(d.due.value())
+        QTest.mouseClick(d.due.enabled, Qt.LeftButton)
+        d.due.editor.setDate(QDate(2027, 3, 18))
+        self.assertEqual(d.due.value(), '2027-03-18')
+        QTest.mouseClick(d.due.enabled, Qt.LeftButton)
+        self.assertIsNone(d.due.value())
+        QTest.mouseClick(d.due.enabled, Qt.LeftButton)
+        QTest.mouseClick(d.due.editor, Qt.LeftButton, pos=QPoint(d.due.editor.width() - 12, d.due.editor.height() // 2))
+        wait_for(lambda: d.due.editor.calendarWidget().isVisible())
+        self.assertEqual(d.due.editor.calendarWidget().locale().name(), 'ru_RU')
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        d.due.editor.calendarWidget().window().grab().save(str(evidence / 'calendar-linux.png'))
+        QTest.keyClick(d.due.editor.calendarWidget(), Qt.Key_Escape)
+        d.checklist.entry.setText('Первый пункт')
+        QTest.keyClick(d.checklist.entry, Qt.Key_Return)
+        self.assertEqual(d.checklist.list.count(), 1)
+        self.assertTrue(d.isVisible())
+        d.checklist.list.item(0).setCheckState(Qt.Checked)
+        # An unfinished input is included on Save rather than being silently lost.
+        d.checklist.entry.setText('Второй пункт')
+        d.priority.setCurrentText('Срочный')
+        APP.processEvents()
+        d.grab().save(str(evidence / 'task-create-linux.png'))
+        QTest.mouseClick(d.save_button, Qt.LeftButton)
+        wait_for(lambda: not d.pending and not d.jobs)
+        self.assertTrue(sip.isdeleted(d) or not d.isVisible())
+        task = self.store.tasks(self.bid)[-1]
+        self.assertEqual(task['title'], 'Новая задача из формы')
+        self.assertEqual(task['assignees'], ['ivanov'])
+        self.assertEqual(task['labels'], ['На проверку'])
+        self.assertEqual(task['due_date'], '2027-03-18')
+        self.assertEqual(task['column_id'], self.columns[0]['id'])
+        self.assertEqual(task['checklist'], [{'text': 'Первый пункт', 'done': 1}, {'text': 'Второй пункт', 'done': 0}])
+
+    def test_catalog_dialog_add_and_refresh(self):
+        d = CatalogDialog(self.store, self.bid, 'users')
+        self.windows.append(d)
+        d.show()
+        wait_for(lambda: not d.jobs)
+        d.login.setText('petrov')
+        d.name.setText('Петров Пётр')
+        QTest.mouseClick(d.save_button, Qt.LeftButton)
+        wait_for(lambda: not d.jobs)
+        self.assertTrue(any('Петров Пётр' in d.list.item(i).text() for i in range(d.list.count())))
+        task = self.dialog()
+        self.assertTrue(any(task.assignees.itemData(i) == 'petrov' for i in range(task.assignees.count())))
+        label = CatalogDialog(self.store, self.bid, 'labels')
+        self.windows.append(label)
+        label.show()
+        wait_for(lambda: not label.jobs)
+        label.name.setText('Согласование')
+        QTest.mouseClick(label.save_button, Qt.LeftButton)
+        wait_for(lambda: not label.jobs)
+        task.load_catalogs()
+        wait_for(lambda: not task.jobs)
+        self.assertGreaterEqual(task.labels.findData('Согласование'), 0)
+
+    def test_readable_history_and_all_priorities(self):
+        self.store.save_user('tester', 'Тестировщик', self.store.catalogs(self.bid)['users'][0]['id'])
+        data = self.store.detail(self.result['id'])
+        data['due_date'] = '2027-04-01'
+        data['column_id'] = self.columns[2]['id']
+        data['priority'] = 'Срочный'
+        data['description'] = '<b>Обычный текст, не разметка</b>'
+        self.store.save_task(data)
+        d = self.dialog()
+        text = d.history.toPlainText()
+        self.assertEqual(d.description.toPlainText(), data['description'])
+        self.assertIn('Приоритет: Высокий → Срочный', text)
+        self.assertIn('Колонка: Входящие → В работе', text)
+        self.assertIn('Срок: 01.01.2020 → 01.04.2027', text)
+        self.assertIn('Тестировщик', text)
+        self.assertNotIn('"column_id"', text)
+        self.assertNotIn('"assignees"', text)
+        self.assertIn('&lt;b&gt;', history_html(self.store.detail(self.result['id'])['history'], self.columns))
+        for i in range(d.priority.count()):
+            self.assertFalse(d.priority.itemIcon(i).isNull())
+        self.assertEqual(len({v[0] for v in PRIORITIES.values()}), 4)
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        d.tabs.setCurrentIndex(3)
+        APP.processEvents()
+        d.grab().save(str(evidence / 'history-linux.png'))
+        d.tabs.setCurrentIndex(0)
+        d.assignees.showPopup()
+        APP.processEvents()
+        d.assignees.view().window().grab().save(str(evidence / 'assignees-popup-linux.png'))
+        d.assignees.hidePopup()
+
+    def test_priorities_board_and_narrow_layout(self):
+        titles = ['Проверить реквизиты договора', 'Подготовить письмо партнёрам', 'Согласовать проект документа', 'Отправить итоговый комплект']
+        for i, priority in enumerate(PRIORITIES):
+            self.store.save_task({'board_id': self.bid, 'column_id': self.columns[i]['id'], 'title': titles[i], 'priority': priority, 'assignees': ['tester'], 'due_date': '2027-04-01', 'labels': ['Документы']})
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.resize(1640, 900)
+        w.show()
+        w.timer.stop()
+        wait_for(lambda: bool(w.card_lists) and not w.loading)
+        QTest.qWait(100)
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        w.grab().save(str(evidence / 'priorities-linux.png'))
+        w.resize(1000, 650)
+        QTest.qWait(100)
+        self.assertGreater(w.scroll.horizontalScrollBar().maximum(), 0)
+        w.grab().save(str(evidence / 'board-narrow-linux.png'))
+
     def test_background_refresh_does_not_replace_form(self):
         d = self.dialog()
         d.description.setPlainText('Мой текст')
+        selected = d.assignees.values()
+        self.store.save_user('new-colleague', 'Новый сотрудник')
+        self.store.add_label(self.bid, 'Новая метка коллеги')
         other = self.store.detail(self.result['id'])
         other['description'] = 'Текст коллеги'
         self.store.save_task(other)
@@ -158,6 +307,9 @@ class UITest(unittest.TestCase):
         wait_for(lambda: not d.jobs)
         self.assertEqual(d.description.toPlainText(), 'Мой текст')
         self.assertIn('изменения коллег', d.status.text())
+        self.assertGreaterEqual(d.assignees.findData('new-colleague'), 0)
+        self.assertGreaterEqual(d.labels.findData('Новая метка коллеги'), 0)
+        self.assertEqual(d.assignees.values(), selected)
 
 
 if __name__ == '__main__':

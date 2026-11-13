@@ -133,6 +133,41 @@ class Store:
     def history(self, c, task_id, uid, op, changes):
         c.execute('INSERT INTO task_history(task_id,user_id,created_at,operation,changes) VALUES(?,?,?,?,?)', (task_id, uid, now(), op, json.dumps(changes, ensure_ascii=False)))
 
+    def catalogs(self, board_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            users = [dict(r) for r in c.execute('SELECT id,login,display_name FROM users ORDER BY display_name COLLATE NOCASE,login')]
+            labels = [dict(r) for r in c.execute('SELECT id,name FROM labels WHERE board_id=? ORDER BY name COLLATE NOCASE', (board_id,))]
+            return {'users': users, 'labels': labels}
+
+    def save_user(self, login, display_name, user_id=None, request_id=None):
+        login, display_name = login.strip(), display_name.strip()
+        if not login or not display_name:
+            raise ValueError('Укажите имя пользователя Windows и имя для отображения')
+        def apply(c, uid):
+            existing = c.execute('SELECT * FROM users WHERE login=?', (login,)).fetchone()
+            if user_id is None:
+                if existing:
+                    raise ValueError('Пользователь с таким именем Windows уже есть в справочнике')
+                return c.execute('INSERT INTO users(login,display_name) VALUES(?,?)', (login, display_name)).lastrowid
+            if not existing or existing['id'] != user_id:
+                raise ValueError('Имя пользователя Windows нельзя менять; создайте отдельного пользователя')
+            c.execute('UPDATE users SET display_name=? WHERE id=?', (display_name, user_id))
+            return user_id
+        return self.write('user', [login, display_name, user_id], apply, request_id)
+
+    def add_label(self, board_id, name, request_id=None):
+        name = name.strip()
+        if not name:
+            raise ValueError('Введите название метки')
+        def apply(c, uid):
+            self.active_board(c, board_id)
+            existing = c.execute('SELECT id FROM labels WHERE board_id=? AND name=?', (board_id, name)).fetchone()
+            if existing:
+                return existing[0]
+            return c.execute('INSERT INTO labels(board_id,name) VALUES(?,?)', (board_id, name)).lastrowid
+        return self.write('label', [board_id, name], apply, request_id)
+
     def boards(self):
         with self.connection() as c:
             return [dict(r) for r in c.execute('SELECT * FROM boards WHERE archived=0 ORDER BY id')]
@@ -191,6 +226,7 @@ class Store:
             raise ValueError('Задача не найдена')
         d = dict(row)
         d['assignees'] = [r[0] for r in c.execute('SELECT u.login FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.login', (task_id,))]
+        d['assignee_names'] = [r[0] for r in c.execute('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.login', (task_id,))]
         d['labels'] = [r[0] for r in c.execute('SELECT l.name FROM task_labels a JOIN labels l ON l.id=a.label_id WHERE a.task_id=? ORDER BY l.name', (task_id,))]
         d['checklist'] = [dict(r) for r in c.execute('SELECT text,done FROM checklist_items WHERE task_id=? ORDER BY position', (task_id,))]
         for key, query in [('comments', 'SELECT x.*,u.display_name AS author FROM comments x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id'), ('history', 'SELECT x.*,u.display_name AS author FROM task_history x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id DESC'), ('attachments', 'SELECT * FROM attachments WHERE task_id=? ORDER BY id')]:

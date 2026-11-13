@@ -4,6 +4,7 @@ from pathlib import Path
 import sys
 import tempfile
 from PyQt5.QtWidgets import QApplication
+from PyQt5.QtCore import QLocale, QTranslator, QLibraryInfo
 from .ui import MainWindow
 from .theme import stylesheet
 
@@ -20,7 +21,11 @@ def main():
     folder = Path(config.get('storage', 'folder', fallback='data'))
     if not folder.is_absolute():
         folder = base / folder
+    QLocale.setDefault(QLocale('ru_RU'))
     app = QApplication(sys.argv)
+    translator = QTranslator(app)
+    if translator.load('qtbase_ru', QLibraryInfo.location(QLibraryInfo.TranslationsPath)):
+        app.installTranslator(translator)
     app.setApplicationName('Канбан')
     app.setOrganizationName('LocalKanban')
     app.setStyle('Fusion')

@@ -12,6 +12,9 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView)
 from .store import Store, Conflict
+from .widgets import CheckComboBox, DateField, ChecklistEditor, PriorityCombo
+from .presentation import history_html, date_text
+from .cards import CardDelegate
 
 
 class Signals(QObject):
@@ -47,15 +50,15 @@ class Async:
         QThreadPool.globalInstance().start(job)
 
 
-def button(text, fn, parent_layout):
+def button(text, fn, parent_layout, variant=None):
     b = QPushButton(text)
     b.clicked.connect(fn)
+    b.setAutoDefault(False)
+    b.setCursor(Qt.PointingHandCursor)
+    if variant:
+        b.setProperty('variant', variant)
     parent_layout.addWidget(b)
     return b
-
-
-def split(text):
-    return sorted(set(x.strip() for x in text.split(',') if x.strip()))
 
 
 def error_text(error):
@@ -82,6 +85,124 @@ class DropFiles(QListWidget):
             event.acceptProposedAction()
 
 
+class CatalogDialog(QDialog, Async):
+    changed = pyqtSignal()
+
+    def __init__(self, store, board_id, kind, parent=None):
+        super().__init__(parent)
+        self.init_async()
+        self.store, self.board_id, self.kind = store, board_id, kind
+        self.edit_id = None
+        self.retry = None
+        self.setWindowTitle('Сотрудники' if kind == 'users' else 'Метки доски')
+        self.resize(540, 540)
+        root = QVBoxLayout(self)
+        heading = QLabel(self.windowTitle())
+        heading.setObjectName('Heading')
+        root.addWidget(heading)
+        hint = QLabel('Имя Windows связывает сотрудника с фильтром «Мои задачи».\nЭто справочник исполнителей, а не система входа.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
+        hint.setObjectName('Muted')
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        self.list = QListWidget()
+        root.addWidget(self.list, 1)
+        form = QFormLayout()
+        self.login = QLineEdit()
+        self.login.setPlaceholderText('Например, ivanov')
+        self.name = QLineEdit()
+        self.name.setPlaceholderText('Иванов Иван' if kind == 'users' else 'Например, Документы')
+        if kind == 'users':
+            form.addRow('Пользователь Windows', self.login)
+        form.addRow('Имя сотрудника' if kind == 'users' else 'Название метки', self.name)
+        root.addLayout(form)
+        actions = QHBoxLayout()
+        self.save_button = button('Добавить', self.save_entry, actions, 'primary')
+        if kind == 'users':
+            self.edit_button = button('Изменить имя', self.edit_entry, actions)
+        button('Закрыть', self.reject, actions)
+        root.addLayout(actions)
+        self.status = QLabel('Загрузка справочника…')
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.PlainText)
+        root.addWidget(self.status)
+        self.load()
+
+    def load(self):
+        self.save_button.setEnabled(False)
+        def done(data, error):
+            self.save_button.setEnabled(True)
+            if error:
+                self.status.setText(error_text(error) + '. Закройте и откройте справочник для повтора.')
+                return
+            self.list.clear()
+            rows = sorted(data[self.kind], key=lambda x: (x.get('display_name') or x.get('name')).casefold())
+            for row in rows:
+                title = '{} · {}'.format(row['display_name'], row['login']) if self.kind == 'users' else row['name']
+                item = QListWidgetItem(title)
+                item.setData(Qt.UserRole, row)
+                self.list.addItem(item)
+            self.status.setText('Записей: {}'.format(len(rows)))
+        self.work(lambda: self.store.catalogs(self.board_id), done)
+
+    def edit_entry(self):
+        if self.jobs or self.retry or not self.list.currentItem():
+            return
+        row = self.list.currentItem().data(Qt.UserRole)
+        self.edit_id = row['id']
+        self.login.setText(row['login'])
+        self.login.setReadOnly(True)
+        self.name.setText(row['display_name'])
+        self.save_button.setText('Сохранить имя')
+        self.name.setFocus()
+
+    def save_entry(self):
+        if self.jobs:
+            return
+        payload = (self.login.text(), self.name.text(), self.edit_id)
+        if not self.retry:
+            self.retry = (uuid.uuid4().hex, payload)
+        rid, payload = self.retry
+        login, name, user_id = payload
+        self.save_button.setEnabled(False)
+        self.status.setText('Сохранение…')
+        def apply():
+            if self.kind == 'users':
+                return self.store.save_user(login, name, user_id, rid)
+            return self.store.add_label(self.board_id, name, rid)
+        def done(result, error):
+            self.save_button.setEnabled(True)
+            if error:
+                if isinstance(error, ValueError):
+                    self.retry = None
+                self.status.setText(error_text(error) + '. Повторное нажатие безопасно.')
+                return
+            self.retry = None
+            if (self.login.text(), self.name.text(), self.edit_id) == payload:
+                self.edit_id = None
+                self.login.setReadOnly(False)
+                self.login.clear()
+                self.name.clear()
+                self.save_button.setText('Добавить')
+            self.changed.emit()
+            self.load()
+        self.work(apply, done)
+
+    def reject(self):
+        if self.jobs:
+            self.status.setText('Дождитесь завершения операции')
+            return
+        if (self.name.text().strip() or self.login.text().strip() or self.retry) and QMessageBox.question(self, 'Несохранённые данные', 'Закрыть справочник без сохранения введённых данных?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        super().reject()
+
+    def closeEvent(self, event):
+        if self.jobs:
+            event.ignore()
+        else:
+            event.ignore()
+            self.reject()
+
+
 class TaskDialog(QDialog, Async):
     changed = pyqtSignal()
     def __init__(self, store, columns, data, parent=None):
@@ -91,7 +212,7 @@ class TaskDialog(QDialog, Async):
         self.data = copy.deepcopy(data)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle('Задача №' + str(data['number']) if data.get('id') else 'Новая задача')
-        self.resize(840, 760)
+        self.resize(860, 830)
         self.setMinimumSize(640, 480)
         self.pending = False
         self.retry = None
@@ -99,39 +220,63 @@ class TaskDialog(QDialog, Async):
         self.comment_retry = None
         self.upload_queue = []
         root = QVBoxLayout(self)
+        root.setContentsMargins(24, 18, 24, 18)
+        root.setSpacing(12)
+        heading = QLabel('Задача №{}'.format(data['number']) if data.get('id') else 'Новая задача')
+        heading.setObjectName('Heading')
+        root.addWidget(heading)
         self.tabs = QTabWidget()
         root.addWidget(self.tabs)
         page = QWidget()
         form = QFormLayout(page)
+        form.setContentsMargins(4, 20, 12, 16)
+        form.setVerticalSpacing(14)
+        form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         self.title = QLineEdit(data.get('title', ''))
-        self.description = QTextEdit(data.get('description', ''))
+        self.title.setObjectName('TaskTitle')
+        self.title.setPlaceholderText('Что нужно сделать?')
+        self.description = QTextEdit()
+        self.description.setPlaceholderText('Подробности, контекст и ожидаемый результат…')
+        self.description.setMinimumHeight(110)
+        self.description.setMaximumHeight(170)
         self.description.setAcceptRichText(False)
-        self.assignees = QLineEdit(', '.join(data.get('assignees', [])))
-        self.assignees.setPlaceholderText('Имена пользователей Windows через запятую')
-        self.labels = QLineEdit(', '.join(data.get('labels', [])))
-        self.priority = QComboBox()
-        self.priority.addItems(['Низкий', 'Обычный', 'Высокий', 'Срочный'])
+        self.description.setPlainText(data.get('description', ''))
+        self.catalog_data = {'users': [], 'labels': []}
+        self.catalog_pending = False
+        self.catalog_ready = False
+        self.assignees = CheckComboBox('Выберите исполнителей', data.get('assignees', []))
+        self.labels = CheckComboBox('Выберите метки', data.get('labels', []))
+        self.priority = PriorityCombo()
         self.priority.setCurrentText(data.get('priority', 'Обычный'))
-        self.due = QLineEdit(data.get('due_date') or '')
-        self.due.setPlaceholderText('ГГГГ-ММ-ДД или пусто')
+        self.due = DateField(data.get('due_date'))
         self.column = QComboBox()
         for c in columns:
             self.column.addItem(c['name'], c['id'])
         self.column.setCurrentIndex(max(0, self.column.findData(data['column_id'])))
         self.archived = QCheckBox('Задача в архиве')
         self.archived.setChecked(bool(data.get('archived')))
-        for label, field in [('Название', self.title), ('Описание', self.description), ('Исполнители', self.assignees), ('Приоритет', self.priority), ('Метки через запятую', self.labels), ('Срок', self.due), ('Переместить в…', self.column), ('Архивирование', self.archived)]:
-            form.addRow(label, field)
-        self.checklist = QTextEdit()
-        self.checklist.setAcceptRichText(False)
-        self.checklist.setPlaceholderText('Одна строка — один пункт. Для выполненного: [x] Текст')
-        self.checklist.setPlainText('\n'.join(('[x] ' if i['done'] else '[ ] ') + i['text'] for i in data.get('checklist', [])))
-        self.checklist.setMaximumHeight(130)
+        form.addRow('Название', self.title)
+        form.addRow('Описание', self.description)
+        for caption, field, kind in [('Исполнители', self.assignees, 'users'), ('Метки', self.labels, 'labels')]:
+            wrapper = QWidget()
+            line = QHBoxLayout(wrapper)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.addWidget(field, 1)
+            button('Справочник…', lambda checked=False, kind=kind: self.open_catalog(kind), line)
+            form.addRow(caption, wrapper)
+        form.addRow('Приоритет', self.priority)
+        form.addRow('Срок', self.due)
+        self.column.setVisible(bool(data.get('id')))
+        if data.get('id'):
+            form.addRow('Переместить в…', self.column)
+            form.addRow('Архивирование', self.archived)
+        self.checklist = ChecklistEditor(data.get('checklist', []))
         form.addRow('Чек-лист', self.checklist)
         dates = QLabel('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(data.get('created_at', '—'), data.get('updated_at', '—'), data.get('completed_at') or '—'))
         dates.setTextFormat(Qt.PlainText)
         self.dates = dates
-        form.addRow('Даты (UTC)', dates)
+        if data.get('id'):
+            form.addRow('Даты (UTC)', dates)
         form_scroll = QScrollArea()
         form_scroll.setWidgetResizable(True)
         form_scroll.setWidget(page)
@@ -159,6 +304,7 @@ class TaskDialog(QDialog, Async):
         button('Скачать как…', lambda: self.download(False), attach_layout)
         self.tabs.addTab(attachments_page, 'Вложения')
         self.history = QTextEdit()
+        self.history_markup = ''
         self.history.setReadOnly(True)
         self.tabs.addTab(self.history, 'История')
         self.status = QLabel('')
@@ -172,7 +318,9 @@ class TaskDialog(QDialog, Async):
         self.rebase_button.hide()
         root.addLayout(conflict_bar)
         actions = QHBoxLayout()
-        self.save_button = button('Сохранить', self.save, actions)
+        self.save_button = button('Сохранить задачу', self.save, actions, 'primary')
+        self.save_button.setAutoDefault(False)
+        self.save_button.setDefault(False)
         button('Закрыть', self.close, actions)
         root.addLayout(actions)
         self.render_extras(data)
@@ -181,25 +329,21 @@ class TaskDialog(QDialog, Async):
         self.refresh_timer.timeout.connect(self.refresh_extras)
         self.refresh_timer.start(5000)
         self.extras_pending = False
+        self.load_catalogs()
 
     def payload(self):
-        checklist = []
-        for line in self.checklist.toPlainText().splitlines():
-            text = line.strip()
-            if not text:
-                continue
-            done = text.lower().startswith('[x]')
-            if text.startswith('[ ]') or done:
-                text = text[3:].strip()
-            if text:
-                checklist.append({'text': text, 'done': int(done)})
+        checklist = self.checklist.values()
         p = {k: self.data[k] for k in ['id', 'version', 'board_id'] if k in self.data}
-        p.update(title=self.title.text(), description=self.description.toPlainText(), assignees=split(self.assignees.text()), labels=split(self.labels.text()), priority=self.priority.currentText(), due_date=self.due.text().strip() or None, column_id=self.column.currentData(), archived=self.archived.isChecked(), checklist=checklist)
+        p.update(title=self.title.text(), description=self.description.toPlainText(), assignees=self.assignees.values(), labels=self.labels.values(), priority=self.priority.currentText(), due_date=self.due.text().strip() or None, column_id=self.column.currentData(), archived=self.archived.isChecked(), checklist=checklist)
         return p
 
     def render_extras(self, d):
-        self.dates.setText('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(d.get('created_at', '—'), d.get('updated_at', '—'), d.get('completed_at') or '—'))
-        self.comments.setPlainText('\n\n'.join(x['created_at'] + ' · ' + x['author'] + '\n' + x['body'] for x in d.get('comments', [])))
+        self.dates.setText('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(date_text(d.get('created_at'), True), date_text(d.get('updated_at'), True), date_text(d.get('completed_at'), True)))
+        comment_text = '\n\n'.join(date_text(x['created_at'], True) + ' · ' + x['author'] + '\n' + x['body'] for x in d.get('comments', []))
+        if self.comments.toPlainText() != comment_text:
+            scroll = self.comments.verticalScrollBar().value()
+            self.comments.setPlainText(comment_text)
+            self.comments.verticalScrollBar().setValue(scroll)
         selected = self.attachments.currentItem()
         selected_id = selected.data(Qt.UserRole)['id'] if selected else None
         self.attachments.clear()
@@ -209,12 +353,51 @@ class TaskDialog(QDialog, Async):
             self.attachments.addItem(item)
             if x['id'] == selected_id:
                 self.attachments.setCurrentItem(item)
-        self.history.setPlainText('\n\n'.join(x['created_at'] + ' · ' + x['author'] + ' · ' + x['operation'] + '\n' + x['changes'] for x in d.get('history', [])))
+        self.history_entries = d.get('history', [])
+        self.render_history()
         for b in [self.comment_button, self.file_button]:
             b.setEnabled(bool(d.get('id')) and not self.pending)
 
+    def render_history(self):
+        markup = history_html(self.history_entries, self.columns, self.catalog_data['users'])
+        if markup != self.history_markup:
+            scroll = self.history.verticalScrollBar().value()
+            self.history.setHtml(markup)
+            self.history.verticalScrollBar().setValue(scroll)
+            self.history_markup = markup
+
+    def load_catalogs(self):
+        if self.catalog_pending:
+            return
+        self.catalog_pending = True
+        if not self.catalog_ready:
+            self.save_button.setEnabled(False)
+        def done(data, error):
+            self.catalog_pending = False
+            if error:
+                self.save_button.setEnabled(self.catalog_ready and not self.pending)
+                self.status.setText('Справочники недоступны: ' + error_text(error) + '. Откройте справочник для повтора.')
+                return
+            self.catalog_ready = True
+            self.save_button.setEnabled(not self.pending)
+            self.catalog_data = data
+            users = sorted(data['users'], key=lambda u: u['display_name'].casefold())
+            self.assignees.set_options([(u['login'], u['display_name'] + ' · ' + u['login']) for u in users])
+            self.labels.set_options([(x['name'], x['name']) for x in sorted(data['labels'], key=lambda l: l['name'].casefold())])
+            self.render_history()
+        self.work(lambda: self.store.catalogs(self.data['board_id']), done)
+
+    def open_catalog(self, kind):
+        dialog = CatalogDialog(self.store, self.data['board_id'], kind, self)
+        dialog.changed.connect(self.load_catalogs)
+        dialog.exec_()
+        self.load_catalogs()
+
     def refresh_extras(self):
-        if not self.data.get('id') or self.extras_pending or self.pending:
+        if self.extras_pending or self.pending:
+            return
+        self.load_catalogs()
+        if not self.data.get('id'):
             return
         self.extras_pending = True
         tid = self.data['id']
@@ -230,13 +413,18 @@ class TaskDialog(QDialog, Async):
 
     def busy(self, enabled):
         self.pending = enabled
-        self.save_button.setEnabled(not enabled)
+        self.save_button.setEnabled(not enabled and self.catalog_ready)
         self.comment_button.setEnabled(not enabled and bool(self.data.get('id')))
         self.file_button.setEnabled(not enabled and bool(self.data.get('id')))
         self.tabs.setEnabled(not enabled)
         self.rebase_button.setEnabled(not enabled)
 
     def save(self):
+        if not self.catalog_ready:
+            self.status.setText('Дождитесь загрузки справочников')
+            return
+        if self.checklist.has_draft():
+            self.checklist.add_entry()
         p = self.payload()
         if not p['title'].strip():
             self.status.setText('Введите название задачи')
@@ -271,10 +459,21 @@ class TaskDialog(QDialog, Async):
             self.retry = None
             self.initial = dict(payload, id=result['id'], version=result['version'])
             self.status.setText('Сохранено' if self.payload() == self.initial else 'Предыдущая запись подтверждена. Новые изменения остаются в форме; сохраните их отдельно.')
-            self.setWindowTitle('Задача сохранена')
             self.changed.emit()
-            self.refresh_extras()
+            if self.payload() == self.initial and not self.comment_text.toPlainText().strip() and not self.upload_queue and not self.comment_retry and not self.checklist.has_draft():
+                self.close_saved_when_idle()
+            else:
+                self.status.setText('Задача сохранена. В карточке остались новые изменения или неотправленные данные.')
+                self.refresh_extras()
         self.work(lambda: self.store.save_task(payload, rid), done)
+
+    def close_saved_when_idle(self):
+        if self.payload() != self.initial or self.comment_text.toPlainText().strip() or self.checklist.has_draft():
+            return
+        if self.jobs:
+            QTimer.singleShot(50, self.close_saved_when_idle)
+            return
+        self.close()
 
     def compare(self):
         if not self.conflict_current:
@@ -399,7 +598,7 @@ class TaskDialog(QDialog, Async):
             self.status.setText('Дождитесь завершения операции')
             event.ignore()
             return
-        dirty = self.payload() != self.initial or bool(self.comment_text.toPlainText().strip()) or bool(self.upload_queue) or bool(self.retry) or bool(self.comment_retry)
+        dirty = self.checklist.has_draft() or self.payload() != self.initial or bool(self.comment_text.toPlainText().strip()) or bool(self.upload_queue) or bool(self.retry) or bool(self.comment_retry)
         if dirty and QMessageBox.question(self, 'Несохранённые данные', 'Закрыть карточку и потерять несохранённые изменения или данные для повтора?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             event.ignore()
             return
@@ -472,10 +671,14 @@ class Cards(QListWidget):
     def __init__(self, column_id):
         super().__init__()
         self.column_id = column_id
+        self.setObjectName('Cards')
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setItemDelegate(CardDelegate(self))
+        self.setMouseTracking(True)
         self.setDragDropMode(QListWidget.DragDrop)
         self.setDefaultDropAction(Qt.MoveAction)
         self.setSelectionMode(QListWidget.SingleSelection)
-        self.setSpacing(6)
+        self.setSpacing(4)
         self.setWordWrap(True)
         self.setMinimumWidth(250)
         self.setAccessibleName('Задачи колонки')
@@ -510,36 +713,53 @@ class MainWindow(QMainWindow, Async):
         central = QWidget()
         self.setCentralWidget(central)
         root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         sidebar = QWidget()
         sidebar.setObjectName('Sidebar')
         sidebar.setFixedWidth(220)
         side = QVBoxLayout(sidebar)
+        side.setContentsMargins(16, 20, 16, 16)
+        side.setSpacing(7)
         heading = QLabel('Канбан')
         heading.setObjectName('Heading')
         side.addWidget(heading)
         user = QLabel('Пользователь: ' + getpass.getuser())
         user.setTextFormat(Qt.PlainText)
         user.setWordWrap(True)
+        user.setObjectName('Muted')
         side.addWidget(user)
+        section = QLabel('ДОСКИ')
+        section.setObjectName('Muted')
+        side.addSpacing(24)
+        side.addWidget(section)
         self.boards_list = QListWidget()
+        self.boards_list.setObjectName('Boards')
         self.boards_list.currentItemChanged.connect(self.select_board)
         side.addWidget(self.boards_list)
-        button('Создать доску', lambda: self.board_action('create'), side)
-        button('Переименовать', lambda: self.board_action('rename'), side)
-        button('Архивировать доску', lambda: self.board_action('archive'), side)
-        button('Резервная копия…', self.backup, side)
+        button('+  Создать доску', lambda: self.board_action('create'), side, 'quiet')
+        button('Переименовать доску', lambda: self.board_action('rename'), side, 'quiet')
+        button('Архивировать доску', lambda: self.board_action('archive'), side, 'quiet')
+        side.addSpacing(18)
+        button('Сотрудники…', lambda: self.open_catalog('users'), side, 'quiet')
+        button('Метки доски…', lambda: self.open_catalog('labels'), side, 'quiet')
+        button('Резервная копия…', self.backup, side, 'quiet')
         root.addWidget(sidebar)
-        content = QVBoxLayout()
-        root.addLayout(content, 1)
+        surface = QWidget()
+        content = QVBoxLayout(surface)
+        content.setContentsMargins(24, 18, 24, 16)
+        content.setSpacing(12)
+        root.addWidget(surface, 1)
         top = QHBoxLayout()
         self.board_title = QLabel('Выберите или создайте доску')
         self.board_title.setTextFormat(Qt.PlainText)
         self.board_title.setObjectName('Heading')
         top.addWidget(self.board_title, 1)
         button('Колонки…', self.edit_columns, top)
-        button('Новая задача', self.new_task, top)
+        button('+  Новая задача', self.new_task, top, 'primary')
         button('Обновить', self.refresh, top)
-        button('Повторить запись', self.retry_mutation, top)
+        self.retry_button = button('Повторить запись', self.retry_mutation, top)
+        self.retry_button.hide()
         content.addLayout(top)
         filters = QHBoxLayout()
         self.search = QLineEdit()
@@ -550,21 +770,22 @@ class MainWindow(QMainWindow, Async):
         self.quick = QComboBox()
         self.quick.addItems(['Все задачи', 'Мои задачи', 'Просроченные', 'Без исполнителя'])
         filters.addWidget(self.quick)
-        self.priority_filter = QComboBox()
-        self.priority_filter.addItems(['Все приоритеты', 'Низкий', 'Обычный', 'Высокий', 'Срочный'])
+        self.priority_filter = PriorityCombo()
+        self.priority_filter.insertItem(0, 'Все приоритеты')
+        self.priority_filter.setCurrentIndex(0)
         filters.addWidget(self.priority_filter)
         self.archive_filter = QCheckBox('Архив')
         filters.addWidget(self.archive_filter)
         content.addLayout(filters)
         advanced = QHBoxLayout()
-        self.assignee_filter = QLineEdit()
-        self.assignee_filter.setPlaceholderText('Исполнитель: точное имя')
-        self.label_filter = QLineEdit()
-        self.label_filter.setPlaceholderText('Метка: точное название')
-        self.due_from = QLineEdit()
-        self.due_from.setPlaceholderText('Срок с ГГГГ-ММ-ДД')
-        self.due_to = QLineEdit()
-        self.due_to.setPlaceholderText('Срок по ГГГГ-ММ-ДД')
+        self.assignee_filter = QComboBox()
+        self.assignee_filter.addItem('Все исполнители', '')
+        self.assignee_filter.setAccessibleName('Фильтр по исполнителю')
+        self.label_filter = QComboBox()
+        self.label_filter.addItem('Все метки', '')
+        self.label_filter.setAccessibleName('Фильтр по метке')
+        self.due_from = DateField(caption='Срок с')
+        self.due_to = DateField(caption='по')
         for field in [self.assignee_filter, self.label_filter, self.due_from, self.due_to]:
             advanced.addWidget(field)
         content.addLayout(advanced)
@@ -572,6 +793,7 @@ class MainWindow(QMainWindow, Async):
         self.scroll.setWidgetResizable(True)
         content.addWidget(self.scroll, 1)
         self.status = QLabel('Подключение к общей папке…')
+        self.status.setObjectName('Status')
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.PlainText)
         content.addWidget(self.status)
@@ -584,8 +806,11 @@ class MainWindow(QMainWindow, Async):
         self.debounce = QTimer(self)
         self.debounce.setSingleShot(True)
         self.debounce.timeout.connect(self.refresh)
-        for field in [self.search, self.assignee_filter, self.label_filter, self.due_from, self.due_to]:
-            field.textChanged.connect(self.filters_changed)
+        self.search.textChanged.connect(self.filters_changed)
+        self.assignee_filter.currentIndexChanged.connect(self.filters_changed)
+        self.label_filter.currentIndexChanged.connect(self.filters_changed)
+        self.due_from.changed.connect(self.filters_changed)
+        self.due_to.changed.connect(self.filters_changed)
         self.quick.currentIndexChanged.connect(self.filters_changed)
         self.priority_filter.currentIndexChanged.connect(self.filters_changed)
         self.archive_filter.toggled.connect(self.filters_changed)
@@ -619,7 +844,7 @@ class MainWindow(QMainWindow, Async):
 
     def filters(self):
         quick = self.quick.currentIndex()
-        return {'query': self.search.text(), 'priority': self.priority_filter.currentText() if self.priority_filter.currentIndex() else '', 'archived': self.archive_filter.isChecked(), 'assignee': getpass.getuser() if quick == 1 else self.assignee_filter.text().strip(), 'overdue': quick == 2, 'unassigned': quick == 3, 'label': self.label_filter.text().strip(), 'due_from': self.due_from.text().strip(), 'due_to': self.due_to.text().strip()}
+        return {'query': self.search.text(), 'priority': self.priority_filter.currentText() if self.priority_filter.currentIndex() else '', 'archived': self.archive_filter.isChecked(), 'assignee': getpass.getuser() if quick == 1 else (self.assignee_filter.currentData() or ''), 'overdue': quick == 2, 'unassigned': quick == 3, 'label': self.label_filter.currentData() or '', 'due_from': self.due_from.text().strip(), 'due_to': self.due_to.text().strip()}
 
     def refresh(self):
         if self.loading or self.mutating or self.pending_action:
@@ -641,7 +866,7 @@ class MainWindow(QMainWindow, Async):
         def read():
             boards = self.store.boards()
             selected = bid if any(b['id'] == bid for b in boards) else (boards[0]['id'] if boards else None)
-            return boards, selected, self.store.columns(selected) if selected else [], self.store.tasks(selected, f) if selected else [], self.store.tasks(selected) if selected else []
+            return boards, selected, self.store.columns(selected) if selected else [], self.store.tasks(selected, f) if selected else [], self.store.tasks(selected) if selected else [], self.store.catalogs(selected)
         def done(result, error):
             self.loading = False
             if generation != self.generation:
@@ -650,7 +875,8 @@ class MainWindow(QMainWindow, Async):
             if error:
                 self.status.setText('Обновление не выполнено: ' + error_text(error) + '. Можно повторить. Открытые формы сохранены.')
                 return
-            boards, selected, columns, tasks, all_tasks = result
+            boards, selected, columns, tasks, all_tasks, catalogs = result
+            self.update_catalog_filters(catalogs)
             self.board_id = selected
             self.boards_list.blockSignals(True)
             self.boards_list.clear()
@@ -661,25 +887,35 @@ class MainWindow(QMainWindow, Async):
                 if b['id'] == selected:
                     self.boards_list.setCurrentItem(item)
                     self.board_title.setText(b['name'])
+                    self.board_title.setToolTip(b['name'])
             self.boards_list.blockSignals(False)
             if not selected:
                 self.board_title.setText('Создайте первую доску')
             self.columns_data = columns
             selected_task = self.selected_task()
+            horizontal_position = self.scroll.horizontalScrollBar().value()
+            vertical_positions = {c.column_id: c.verticalScrollBar().value() for c in self.card_lists}
             focused = any(x.hasFocus() for x in self.card_lists)
             board = QWidget()
+            board.setObjectName('BoardCanvas')
             row = QHBoxLayout(board)
             row.setSizeConstraint(QHBoxLayout.SetMinimumSize)
+            row.setContentsMargins(12, 14, 12, 12)
+            row.setSpacing(12)
             self.card_lists = []
             for column in columns:
                 panel = QWidget()
-                panel.setMinimumWidth(270)
+                panel.setObjectName('ColumnPanel')
+                panel.setMinimumWidth(292)
                 layout = QVBoxLayout(panel)
+                layout.setContentsMargins(3, 0, 3, 0)
+                layout.setSpacing(10)
                 count = sum(t['column_id'] == column['id'] for t in all_tasks)
                 warning = bool(column['wip_limit'] and count > column['wip_limit'])
                 label = QLabel(column['name'] + ' · ' + str(count) + (' / ' + str(column['wip_limit']) if column['wip_limit'] else '') + (' · Лимит превышен' if warning else ''))
                 label.setTextFormat(Qt.PlainText)
                 label.setWordWrap(True)
+                label.setObjectName('ColumnTitle')
                 layout.addWidget(label)
                 cards = Cards(column['id'])
                 cards.itemDoubleClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
@@ -690,9 +926,10 @@ class MainWindow(QMainWindow, Async):
                         continue
                     overdue = task['due_date'] and task['due_date'] < dt.date.today().isoformat() and not task['completed_at']
                     check = task['checklist']
-                    text = '№{}  {}\n{}\n{}{} · {}\n{}{}'.format(task['number'], task['title'], ', '.join(task['assignees']) or 'Без исполнителя', 'Просрочено: ' if overdue else 'Срок: ', task['due_date'] or 'не задан', task['priority'], ', '.join(task['labels']), '\nЧек-лист: {}/{}'.format(sum(bool(x['done']) for x in check), len(check)) if check else '')
+                    text = '№{}  {}\n{}\n{}{} · {}\n{}{}'.format(task['number'], task['title'], ', '.join(task.get('assignee_names') or task['assignees']) or 'Без исполнителя', 'Просрочено: ' if overdue else 'Срок: ', task['due_date'] or 'не задан', task['priority'], ', '.join(task['labels']), '\nЧек-лист: {}/{}'.format(sum(bool(x['done']) for x in check), len(check)) if check else '')
                     item = QListWidgetItem(text)
                     item.setData(Qt.UserRole, task)
+                    item.setToolTip(text)
                     cards.addItem(item)
                     if selected_task and selected_task['id'] == task['id']:
                         cards.setCurrentItem(item)
@@ -701,14 +938,39 @@ class MainWindow(QMainWindow, Async):
                 layout.addWidget(cards)
                 row.addWidget(panel)
                 self.card_lists.append(cards)
+                cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))
             if not columns:
                 row.addWidget(QLabel('Создайте доску, чтобы добавить задачи.'))
             old = self.scroll.takeWidget()
             if old:
                 old.deleteLater()
             self.scroll.setWidget(board)
+            self.scroll.horizontalScrollBar().setValue(horizontal_position)
             self.status.setText('Показано задач: {}. Обновление каждые 5 секунд. Двойной щелчок открывает карточку.'.format(len(tasks)) if tasks else 'Подходящих задач нет. Измените фильтры или создайте задачу.')
         self.work(read, done)
+
+    def update_catalog_filters(self, catalogs):
+        for combo, options, placeholder in [
+            (self.assignee_filter, [(u['login'], u['display_name']) for u in sorted(catalogs['users'], key=lambda u: u['display_name'].casefold())], 'Все исполнители'),
+            (self.label_filter, [(l['name'], l['name']) for l in sorted(catalogs['labels'], key=lambda l: l['name'].casefold())], 'Все метки')
+        ]:
+            selected = combo.currentData()
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem(placeholder, '')
+            for value, label in options:
+                combo.addItem(label, value)
+            combo.setCurrentIndex(max(0, combo.findData(selected)))
+            combo.blockSignals(False)
+
+    def open_catalog(self, kind):
+        if not self.store or (kind == 'labels' and not self.board_id):
+            self.status.setText('Сначала выберите доску и подключитесь к данным')
+            return
+        dialog = CatalogDialog(self.store, self.board_id, kind, self)
+        dialog.changed.connect(self.refresh)
+        dialog.exec_()
+        self.refresh()
 
     def exclusive_selection(self, source):
         if source.selectedItems():
@@ -756,6 +1018,7 @@ class MainWindow(QMainWindow, Async):
         self.status.setText('Сохранение…')
         def done(result, error):
             self.mutating = False
+            self.retry_button.setVisible(bool(error) and not isinstance(error, (Conflict, ValueError)))
             if error:
                 self.status.setText(error_text(error) + '. При сетевой ошибке нажмите «Повторить запись».')
                 if isinstance(error, (Conflict, ValueError)):
