@@ -17,3 +17,6 @@ kanban.ini
 *.bundle
 *.lnk
 docs/screenshots/
+
+# Portable runtime is distributed only in main.
+/environment/
