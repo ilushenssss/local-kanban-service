@@ -46,19 +46,19 @@ QMainWindow, QDialog, QWidget#content, QWidget#scrollBody, QWidget#BoardCanvas {
 QWidget#side { background: %(sidebar)s; }
 QWidget#side QLabel { color: #c9d1e3; }
 QLabel#appName { color: #ffffff; font-size: 17pt; font-weight: 600; }
-QLabel#Heading, QLabel#title { font-size: 18pt; font-weight: 600; }
+QLabel#Heading, QLabel#title { font-size: 16pt; font-weight: 600; }
 QLabel#SectionTitle, QLabel#ColumnTitle { font-size: 11pt; font-weight: 600; }
 QLabel#Muted, QLabel#muted, QLabel#Status, QLabel#hint { color: %(muted)s; }
 QLabel#fieldLabel { font-weight: 600; }
 QWidget#ColumnPanel { background: %(hover)s; border: 1px solid %(border)s; border-radius: 10px; }
 QWidget#ColumnPanel QLabel { background: transparent; border: none; }
-QLabel#ColumnTitle { padding: 10px 8px; border-radius: 5px; color: #202c40; }
+QLabel#ColumnTitle { padding: 7px 6px; border-radius: 5px; color: #202c40; }
 QLabel#ColumnTitle[tone="0"] { background: #dce9fb; border-left: 4px solid #568bd7; }
 QLabel#ColumnTitle[tone="1"] { background: #e7e0f8; border-left: 4px solid #9270cd; }
 QLabel#ColumnTitle[tone="2"] { background: #fff0cd; border-left: 4px solid #d5a033; }
 QLabel#ColumnTitle[tone="3"] { background: #fbe0d9; border-left: 4px solid #d17c66; }
 QLabel#ColumnTitle[tone="4"] { background: #daf0e3; border-left: 4px solid #59a479; }
-QPushButton { background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 7px 12px; }
+QPushButton { background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 10px; }
 QPushButton:hover { border-color: %(accent)s; background: %(hover)s; }
 QPushButton:focus { border: 2px solid %(accent)s; }
 QPushButton:disabled { color: %(muted)s; background: %(canvas)s; }
@@ -113,6 +113,7 @@ def apply_theme(app, dark=False):
         widget.update()
         if hasattr(widget, 'render_history'):
             widget.render_history()
+            widget.render_comments()
 
 
 def theme_settings():

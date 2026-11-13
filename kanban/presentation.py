@@ -65,10 +65,26 @@ def history_html(entries, columns=(), users=()):
     if not entries:
         return '<p>История появится после сохранения задачи.</p>'
     result = []
-    for entry in entries:
+    for entry in sorted(entries, key=lambda e: (e.get('created_at', ''), e.get('id', 0))):
         heading = '{} · {}'.format(entry['author'], entry['operation'])
         result.append('<p style="margin-top:18px; margin-bottom:4px"><b>{}</b><br><span style="color:{muted}">{}</span></p>'.format(html.escape(heading), html.escape(date_text(entry['created_at'], True)), muted=TOKENS['muted']))
         for line in history_text(entry, columns, users):
             result.append('<p style="margin-top:4px; margin-bottom:7px">{}</p>'.format(html.escape(line).replace('\n', '<br>')))
         result.append('<hr>')
+    return ''.join(result)
+
+
+def comments_html(entries, login):
+    if not entries:
+        return '<p style="color:{}">Пока нет комментариев.</p>'.format(TOKENS['muted'])
+    result = []
+    for entry in entries:
+        own = entry.get('login') == login
+        author = 'Вы' if own else entry['author']
+        body = html.escape(entry['body']).replace('\n', '<br>')
+        bubble = '<td width="78%" bgcolor="{bg}" style="padding:10px"><b>{author}</b><br>{body}<br><span style="color:{muted};font-size:9pt">{date}</span></td>'.format(
+            bg=TOKENS['selection'] if own else TOKENS['hover'], author=html.escape(author),
+            body=body, muted=TOKENS['muted'], date=html.escape(date_text(entry['created_at'], True)))
+        spacer = '<td width="22%"></td>'
+        result.append('<table width="100%" cellspacing="0" cellpadding="9"><tr>{}</tr></table><br>'.format(spacer+bubble if own else bubble+spacer))
     return ''.join(result)

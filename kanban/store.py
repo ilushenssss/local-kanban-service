@@ -252,7 +252,7 @@ class Store:
         d['assignee_names'] = [r[0] for r in c.execute('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.login', (task_id,))]
         d['labels'] = [r[0] for r in c.execute('SELECT l.name FROM task_labels a JOIN labels l ON l.id=a.label_id WHERE a.task_id=? ORDER BY l.name', (task_id,))]
         d['checklist'] = [dict(r) for r in c.execute('SELECT text,done FROM checklist_items WHERE task_id=? ORDER BY position', (task_id,))]
-        for key, query in [('comments', 'SELECT x.*,u.display_name AS author FROM comments x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id'), ('history', 'SELECT x.*,u.display_name AS author FROM task_history x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id DESC'), ('attachments', 'SELECT * FROM attachments WHERE task_id=? ORDER BY id')]:
+        for key, query in [('comments', 'SELECT x.*,u.login AS login,u.display_name AS author FROM comments x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id'), ('history', 'SELECT x.*,u.display_name AS author FROM task_history x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id DESC'), ('attachments', 'SELECT * FROM attachments WHERE task_id=? ORDER BY id')]:
             d[key] = [dict(r) for r in c.execute(query, (task_id,))]
         return d
 

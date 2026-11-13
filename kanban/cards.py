@@ -8,7 +8,7 @@ import datetime as dt
 
 class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
-        return QSize(240, 194)
+        return QSize(210, 154)
 
     def paint(self, painter, option, index):
         task = index.data(Qt.UserRole)
@@ -23,11 +23,13 @@ class CardDelegate(QStyledItemDelegate):
         painter.setBrush(QColor(TOKENS['selection'] if selected else TOKENS['background']))
         painter.drawRoundedRect(rect, 8, 8)
         painter.setClipRect(rect)
-        x, y = rect.x() + 14, rect.y() + 12
-        width = rect.width() - 28
+        if task.get("completed_at"):
+            painter.setOpacity(0.57)
+        x, y = rect.x() + 10, rect.y() + 8
+        width = rect.width() - 20
         def font(size, bold=False):
             f = QFont(option.font)
-            f.setPointSizeF(9 if size == 11 else 10.5)
+            f.setPointSizeF(8.5 if size == 11 else 9.5)
             f.setBold(bold)
             painter.setFont(f)
         font(11)
@@ -43,16 +45,19 @@ class CardDelegate(QStyledItemDelegate):
         font(11, True)
         painter.drawText(badge, Qt.AlignCenter, priority)
         font(14, True)
+        title_font = painter.font()
+        title_font.setStrikeOut(bool(task.get("completed_at")))
+        painter.setFont(title_font)
         painter.setPen(QColor(TOKENS['text']))
-        painter.drawText(QRect(x, y + 32, width, 42), Qt.AlignTop | Qt.TextWordWrap, task['title'])
+        painter.drawText(QRect(x, y + 27, width, 35), Qt.AlignTop | Qt.TextWordWrap, task['title'])
         font(11)
         painter.setPen(QColor(TOKENS['muted']))
         assignees = ', '.join(task.get('assignee_names') or task['assignees']) or 'Без исполнителя'
-        painter.drawText(QRect(x, y + 82, width, 18), Qt.AlignVCenter, painter.fontMetrics().elidedText(assignees, Qt.ElideRight, width))
+        painter.drawText(QRect(x, y + 65, width, 18), Qt.AlignVCenter, painter.fontMetrics().elidedText(assignees, Qt.ElideRight, width))
         overdue = task['due_date'] and task['due_date'] < dt.date.today().isoformat() and not task['completed_at']
         painter.setPen(QColor(TOKENS['danger'] if overdue else TOKENS['muted']))
         due = ('Просрочено · ' if overdue else 'Срок · ') + date_text(task['due_date']) if task['due_date'] else 'Срок не задан'
-        painter.drawText(QRect(x, y + 106, width, 18), Qt.AlignVCenter, due)
+        painter.drawText(QRect(x, y + 84, width, 18), Qt.AlignVCenter, due)
         labels = task.get('labels', [])
         if labels:
             available = width - (60 if task.get('checklist') else 0)
@@ -60,7 +65,7 @@ class CardDelegate(QStyledItemDelegate):
             visible = labels[:2]
             for name in visible:
                 chip_width = min((available - 6) // len(visible), painter.fontMetrics().horizontalAdvance(name) + 22)
-                tag = QRect(cursor, y + 138, chip_width, 24)
+                tag = QRect(cursor, y + 108, chip_width, 24)
                 foreground, background = label_colors(name)
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(QColor(background))
@@ -72,7 +77,7 @@ class CardDelegate(QStyledItemDelegate):
         checks = task.get('checklist', [])
         if checks:
             painter.setPen(QColor(TOKENS['muted']))
-            painter.drawText(QRect(rect.right() - 70, y + 138, 56, 24), Qt.AlignRight | Qt.AlignVCenter, '✓ {}/{}'.format(sum(bool(c['done']) for c in checks), len(checks)))
+            painter.drawText(QRect(rect.right() - 70, y + 108, 56, 24), Qt.AlignRight | Qt.AlignVCenter, '✓ {}/{}'.format(sum(bool(c['done']) for c in checks), len(checks)))
         if hovered and not selected:
             painter.setPen(QPen(QColor(TOKENS['scroll']), 1))
             painter.setBrush(Qt.NoBrush)
