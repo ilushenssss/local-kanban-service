@@ -6,24 +6,24 @@ from PyQt5.QtGui import QColor, QPalette, QFontDatabase, QIcon
 
 LIGHT = dict(background='#FFFFFF', canvas='#F4F5F8', sidebar='#FFFFFF',
              text='#1B1F2A', secondary='#4A5264', muted='#5E6678',
-             border='#E3E6EC', field_border='#D5D9E2', accent='#4452D6',
-             hover='#F0F2F6', selection='#ECEEFF', selected_text='#3340B8',
+             border='#E3E6EC', field_border='#D5D9E2', accent='#122C34',
+             hover='#F0F2F6', selection='#E7EFF0', selected_text='#122C34',
              danger='#9B1C1C', danger_border='#F3C6C6',
-             scroll='#9AA2B4', accent_hover='#3946C3', accent_pressed='#3340B8',
+             scroll='#9AA2B4', accent_hover='#1C414B', accent_pressed='#0C2026',
              column='#E8EAF0', properties='#F7F8FA', on_accent='#FFFFFF')
 DARK = dict(background='#202b3c', canvas='#151d2b', sidebar='#111827',
             text='#edf2fa', secondary='#c3cddd', muted='#b1bfd3',
-            border='#50617a', field_border='#65758c', accent='#8baeff',
-            hover='#2c3b52', selection='#334c76', selected_text='#dce7ff',
+            border='#50617a', field_border='#65758c', accent='#9DC5CB',
+            hover='#2c3b52', selection='#24434B', selected_text='#DCEFF1',
             danger='#ffaba5', danger_border='#95616a',
-            scroll='#7387a4', accent_hover='#acc4ff', accent_pressed='#c2d3ff',
+            scroll='#7387a4', accent_hover='#BCDADE', accent_pressed='#DCEFF1',
             column='#263346', properties='#1b2636', on_accent='#151d2b')
 STICKERS = (
     ('#9B1C1C', '#FDE8E8'), ('#1E4FA8', '#E0ECFF'),
     ('#146C3A', '#DDF5E6'), ('#7A4B00', '#FFF1D1'),
     ('#5B34B8', '#EDE6FF'),
 )
-AVATAR_COLORS = ('#4452D6', '#C2410C', '#0F766E')
+AVATAR_COLORS = ('#122C34', '#C2410C', '#0F766E')
 _fonts_loaded = False
 
 
@@ -56,7 +56,7 @@ def avatar_color(name):
 
 def symbol_icon(name):
     theme = 'dark' if TOKENS['background'] == DARK['background'] else 'light'
-    return QIcon(str(Path(__file__).parent / 'assets' / 'controls' / (name + '-' + theme + '.svg')))
+    return QIcon(str(Path(__file__).parent / 'assets' / 'controls' / (name + '-' + theme + '.png')))
 
 
 def stylesheet():
@@ -65,13 +65,14 @@ def stylesheet():
     arrow_theme = 'dark' if TOKENS['background'] == DARK['background'] else 'light'
     controls = Path(__file__).resolve().parent / 'assets' / 'controls'
     for state, suffix in [('arrow', ''), ('arrow_active', '-active'), ('arrow_disabled', '-disabled')]:
-        t[state] = (controls / ('chevron-' + arrow_theme + suffix + '.svg')).as_posix()
+        t[state] = (controls / ('chevron-' + arrow_theme + suffix + '.png')).as_posix()
     return '''
 QWidget#BoardCanvas { background: %(canvas)s; }
 QWidget { color: %(text)s; font-family: "Inter", "Arial", sans-serif; font-size: 14px; }
 QMainWindow, QDialog, QWidget#content, QWidget#scrollBody { background: %(canvas)s; }
 QWidget#side { background: %(sidebar)s; }
 QWidget#side QLabel { color: %(muted)s; }
+QLabel#SystemLogo { background: #FFFFFF; border-radius: 6px; }
 QLabel#appName { color: %(text)s; font-size: 22px; font-weight: 600; }
 QLabel#Heading, QLabel#title { font-size: 20px; font-weight: 600; }
 QLabel#SectionTitle, QLabel#ColumnTitle { font-size: 14px; font-weight: 600; }
@@ -133,8 +134,8 @@ QListWidget#Checklist::item { padding: 6px; }
 QTableWidget { background: %(background)s; alternate-background-color: %(hover)s; border: 1px solid %(border)s; border-radius: 8px; gridline-color: %(border)s; selection-background-color: %(selection)s; selection-color: %(selected_text)s; }
 QHeaderView::section { background: %(hover)s; color: %(text)s; padding: 9px; border: none; border-bottom: 1px solid %(border)s; font-weight: 600; }
 QTabWidget::pane { border: none; }
-QTabBar::tab { padding: 10px 20px; color: %(muted)s; border-bottom: 2px solid transparent; }
-QTabBar::tab:selected { color: %(selected_text)s; border-bottom: 2px solid %(accent)s; font-weight: 600; }
+QTabBar::tab { padding: 10px 16px; min-width: 76px; min-height: 22px; font-weight: 600; color: %(muted)s; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { color: %(selected_text)s; border-bottom: 2px solid %(accent)s; }
 QScrollArea { background: transparent; border: none; }
 QScrollBar:vertical { background: %(canvas)s; width: 14px; }
 QScrollBar:horizontal { background: %(canvas)s; height: 14px; }

@@ -664,6 +664,24 @@ class UITest(unittest.TestCase):
         self.assertEqual(task['column_id'], self.columns[0]['id'])
         self.assertEqual(task['checklist'], [{'text': 'Первый пункт', 'done': 1}, {'text': 'Второй пункт', 'done': 0}])
 
+    def test_raster_controls_and_tab_labels_fit(self):
+        from PyQt5.QtGui import QFontMetrics, QImageReader
+        from kanban.theme import symbol_icon, apply_theme
+        self.assertIn(b'png', [bytes(x) for x in QImageReader.supportedImageFormats()])
+        for dark in (False, True):
+            apply_theme(APP, dark)
+            for name in ('menu', 'chat', 'calendar-prev', 'calendar-next'):
+                self.assertFalse(symbol_icon(name).pixmap(24, 24).isNull(), name)
+        apply_theme(APP, False)
+        d = self.dialog()
+        bar = d.tabs.tabBar()
+        for selected in range(bar.count()):
+            d.tabs.setCurrentIndex(selected)
+            APP.processEvents()
+            for i in range(bar.count()):
+                text_width = QFontMetrics(bar.font()).horizontalAdvance(bar.tabText(i))
+                self.assertGreaterEqual(bar.tabRect(i).width(), text_width + 24)
+
     def test_date_field_opens_from_text_and_keeps_date_on_cancel(self):
         d = self.dialog()
         editor = d.due.editor
