@@ -1,48 +1,69 @@
 """Offline application palette: shared by native controls and painted cards."""
 import hashlib
+from pathlib import Path
 from PyQt5.QtCore import QSettings, Qt
-from PyQt5.QtGui import QColor, QPalette, QIcon, QPixmap, QPainter
+from PyQt5.QtGui import QColor, QPalette, QFontDatabase
 
-LIGHT = dict(background='#ffffff', canvas='#F4F5F7', sidebar='#FFFFFF',
-             text='#1E293B', muted='#64748B', border='#C8D2DF', accent='#2563EB',
-             hover='#e9eef7', selection='#dce7ff', danger='#b42318',
-             scroll='#96a6bc', accent_hover='#1d4ed8')
+LIGHT = dict(background='#FFFFFF', canvas='#F4F5F8', sidebar='#FFFFFF',
+             text='#1B1F2A', secondary='#4A5264', muted='#5E6678',
+             border='#E3E6EC', field_border='#D5D9E2', accent='#4452D6',
+             hover='#F0F2F6', selection='#ECEEFF', selected_text='#3340B8',
+             danger='#9B1C1C', danger_border='#F3C6C6',
+             scroll='#9AA2B4', accent_hover='#3946C3', accent_pressed='#3340B8',
+             column='#E8EAF0', properties='#F7F8FA', on_accent='#FFFFFF')
 DARK = dict(background='#202b3c', canvas='#151d2b', sidebar='#111827',
-            text='#edf2fa', muted='#b1bfd3', border='#50617a', accent='#8baeff',
-            hover='#2c3b52', selection='#334c76', danger='#ffaba5',
-            scroll='#7387a4', accent_hover='#acc4ff')
+            text='#edf2fa', secondary='#c3cddd', muted='#b1bfd3',
+            border='#50617a', field_border='#65758c', accent='#8baeff',
+            hover='#2c3b52', selection='#334c76', selected_text='#dce7ff',
+            danger='#ffaba5', danger_border='#95616a',
+            scroll='#7387a4', accent_hover='#acc4ff', accent_pressed='#c2d3ff',
+            column='#263346', properties='#1b2636', on_accent='#151d2b')
+STICKERS = (
+    ('#9B1C1C', '#FDE8E8'), ('#1E4FA8', '#E0ECFF'),
+    ('#146C3A', '#DDF5E6'), ('#7A4B00', '#FFF1D1'),
+    ('#5B34B8', '#EDE6FF'),
+)
+AVATAR_COLORS = ('#4452D6', '#C2410C', '#0F766E')
+_fonts_loaded = False
+
+
+def load_fonts():
+    """Load the reference's licensed Inter fonts without network access."""
+    global _fonts_loaded
+    if not _fonts_loaded:
+        for path in sorted((Path(__file__).parent / 'assets' / 'fonts').glob('*.ttf')):
+            if QFontDatabase.addApplicationFont(str(path)) < 0:
+                raise RuntimeError('Не удалось загрузить шрифт ' + path.name)
+        _fonts_loaded = True
+
 TOKENS = dict(LIGHT)
 PRIORITIES = {
-    'Низкий': ('#526078', '#edf0f4'), 'Обычный': ('#234ba5', '#eaf1ff'),
-    'Высокий': ('#805000', '#fff0ca'), 'Срочный': ('#a32018', '#fde4e2'),
+    'Низкий': ('#4A5264', '#F0F2F6'), 'Обычный': STICKERS[1],
+    'Высокий': STICKERS[3], 'Срочный': STICKERS[0],
 }
 
 
 def label_colors(name):
-    # Stable across machines, processes, updates and both themes; no Python hash().
-    hue = int(hashlib.sha256(name.encode('utf-8')).hexdigest()[:8], 16) % 360
-    return QColor.fromHsl(hue, 175, 70).name(), QColor.fromHsl(hue, 160, 230).name()
+    # Stable palette assignment without mutating labels or their stored values.
+    key = int(hashlib.sha256(name.encode('utf-8')).hexdigest(), 16)
+    return STICKERS[key % len(STICKERS)]
 
 
-def label_icon(name):
-    pixmap = QPixmap(16, 16)
-    pixmap.fill(Qt.transparent)
-    painter = QPainter(pixmap)
-    painter.setRenderHint(QPainter.Antialiasing)
-    painter.setPen(Qt.NoPen)
-    foreground, background = label_colors(name)
-    painter.setPen(QColor(background))
-    painter.setBrush(QColor(foreground))
-    painter.drawEllipse(2, 2, 12, 12)
-    painter.end()
-    return QIcon(pixmap)
+def avatar_color(name):
+    key = int(hashlib.sha256(name.encode('utf-8')).hexdigest(), 16)
+    return AVATAR_COLORS[key % len(AVATAR_COLORS)]
 
 
 def stylesheet():
-    t = TOKENS
+    load_fonts()
+    t = dict(TOKENS)
+    arrow_theme = 'dark' if TOKENS['background'] == DARK['background'] else 'light'
+    controls = Path(__file__).resolve().parent / 'assets' / 'controls'
+    for state, suffix in [('arrow', ''), ('arrow_active', '-active'), ('arrow_disabled', '-disabled')]:
+        t[state] = (controls / ('chevron-' + arrow_theme + suffix + '.svg')).as_posix()
     return '''
 QWidget#BoardCanvas { background: %(canvas)s; }
-QWidget { color: %(text)s; font-family: "Arial", "Liberation Sans", sans-serif; font-size: 14px; }
+QWidget { color: %(text)s; font-family: "Inter", "Arial", sans-serif; font-size: 14px; }
 QMainWindow, QDialog, QWidget#content, QWidget#scrollBody { background: %(canvas)s; }
 QWidget#side { background: %(sidebar)s; }
 QWidget#side QLabel { color: %(muted)s; }
@@ -59,54 +80,75 @@ QWidget#ColumnPanel[tone="1"] { background: %(hover)s; border-top: 3px solid #92
 QWidget#ColumnPanel[tone="2"] { background: %(hover)s; border-top: 3px solid #d5a033; }
 QWidget#ColumnPanel[tone="3"] { background: %(hover)s; border-top: 3px solid #d17c66; }
 QWidget#ColumnPanel[tone="4"] { background: %(hover)s; border-top: 3px solid #59a479; }
-QPushButton { background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 10px; }
+QPushButton { background: %(background)s; border: 1px solid %(field_border)s; border-radius: 8px; padding: 7px 14px; min-height: 20px; }
 QPushButton:hover { border-color: %(accent)s; background: %(hover)s; }
-QPushButton:focus { border: 2px solid %(accent)s; }
-QPushButton:disabled { color: %(muted)s; background: %(canvas)s; }
-QPushButton#primary, QPushButton[variant="primary"] { background: #2563EB; border-color: #2563EB; color: #ffffff; font-weight: 600; }
-QPushButton#primary:hover { background: #1d4ed8; }
-QPushButton#danger { color: %(danger)s; }
+QPushButton:pressed { background: %(selection)s; border-color: %(accent)s; }
+QPushButton:focus { border-color: %(accent)s; outline: none; }
+QPushButton:disabled { color: %(muted)s; background: %(canvas)s; border-color: %(border)s; }
+QPushButton#primary, QPushButton[variant="primary"] { background: %(accent)s; border-color: %(accent)s; color: %(on_accent)s; font-weight: 600; }
+QPushButton#primary:hover, QPushButton[variant="primary"]:hover { background: %(accent_hover)s; border-color: %(accent_hover)s; }
+QPushButton#primary:pressed, QPushButton[variant="primary"]:pressed { background: %(accent_pressed)s; }
+QPushButton#primary:focus, QPushButton[variant="primary"]:focus { border-color: %(text)s; }
+QPushButton#primary:disabled, QPushButton[variant="primary"]:disabled { background: %(hover)s; color: %(muted)s; border-color: %(border)s; }
+QPushButton#danger, QPushButton[variant="danger"] { color: %(danger)s; border-color: %(danger_border)s; }
+QPushButton#danger:hover, QPushButton[variant="danger"]:hover { background: %(hover)s; border-color: %(danger)s; }
+QPushButton[variant="danger"]:disabled, QPushButton#danger:disabled { color: %(muted)s; border-color: %(border)s; background: %(canvas)s; }
 QPushButton#link { background: transparent; border: none; color: %(accent)s; padding: 0; text-decoration: underline; }
 QWidget#side QPushButton[variant="quiet"] { color: %(text)s; background: transparent; border: none; text-align: left; padding: 9px 10px; }
 QWidget#side QPushButton[variant="quiet"]:hover { background: %(selection)s; color: %(accent)s; }
 QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QDateEdit, QSpinBox, QListWidget {
- background: %(background)s; border: 1px solid %(border)s; border-radius: 6px; padding: 5px 7px;
- selection-background-color: %(selection)s; selection-color: %(text)s; }
-QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QDateEdit:focus, QListWidget:focus { border-color: %(accent)s; }
-QComboBox QAbstractItemView { background: %(background)s; color: %(text)s; selection-background-color: %(selection)s; selection-color: %(text)s; }
+ background: %(background)s; border: 1px solid %(field_border)s; border-radius: 8px; padding: 7px 10px;
+ selection-background-color: %(selection)s; selection-color: %(selected_text)s; }
+QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus, QDateEdit:focus, QListWidget:focus { border-color: %(accent)s; }
+/* Reserve a full click target, with a small centered chevron and no native bevel. */
+QComboBox, QDateEdit { padding-right: 36px; }
+QComboBox::drop-down, QDateEdit::drop-down {
+ subcontrol-origin: border; subcontrol-position: top right; width: 32px;
+ border: none; border-top-right-radius: 8px; border-bottom-right-radius: 8px;
+ background: transparent; }
+QComboBox::drop-down:hover, QDateEdit::drop-down:hover { background: %(hover)s; }
+QComboBox::drop-down:pressed, QDateEdit::drop-down:pressed { background: %(selection)s; }
+QComboBox::down-arrow, QDateEdit::down-arrow {
+ image: url("%(arrow)s"); width: 12px; height: 8px; }
+QComboBox::down-arrow:on, QComboBox::down-arrow:hover, QDateEdit::down-arrow:hover {
+ image: url("%(arrow_active)s"); }
+QComboBox::down-arrow:disabled, QDateEdit::down-arrow:disabled {
+ image: url("%(arrow_disabled)s"); }
+QComboBox QAbstractItemView { background: %(background)s; color: %(text)s; selection-background-color: %(selection)s; selection-color: %(selected_text)s; }
 QListWidget#Boards { background: transparent; color: %(text)s; border: none; padding: 0; }
-QListWidget#Boards::item { padding: 11px 12px; border-radius: 6px; margin: 3px 0; }
+QListWidget#Boards::item { padding: 11px 12px; border-radius: 8px; margin: 3px 0; }
 QListWidget#Boards::item:hover { background: %(hover)s; }
 QListWidget#Boards::item:selected { background: %(selection)s; color: %(accent)s; font-weight: 600; }
 QListWidget#Cards { background: transparent; border: none; padding: 0; }
 QListWidget#Checklist::item { padding: 6px; }
-QTableWidget { background: %(background)s; alternate-background-color: %(hover)s; border: 1px solid %(border)s; border-radius: 6px; gridline-color: %(border)s; selection-background-color: %(selection)s; selection-color: %(text)s; }
+QTableWidget { background: %(background)s; alternate-background-color: %(hover)s; border: 1px solid %(border)s; border-radius: 8px; gridline-color: %(border)s; selection-background-color: %(selection)s; selection-color: %(selected_text)s; }
 QHeaderView::section { background: %(hover)s; color: %(text)s; padding: 9px; border: none; border-bottom: 1px solid %(border)s; font-weight: 600; }
 QTabWidget::pane { border: none; }
-QTabBar::tab { padding: 10px 20px; color: %(muted)s; border-bottom: 3px solid transparent; }
-QTabBar::tab:selected { color: %(accent)s; border-bottom: 3px solid %(accent)s; font-weight: 600; }
+QTabBar::tab { padding: 10px 20px; color: %(muted)s; border-bottom: 2px solid transparent; }
+QTabBar::tab:selected { color: %(selected_text)s; border-bottom: 2px solid %(accent)s; font-weight: 600; }
 QScrollArea { background: transparent; border: none; }
 QScrollBar:vertical { background: %(canvas)s; width: 14px; }
 QScrollBar:horizontal { background: %(canvas)s; height: 14px; }
 QScrollBar::handle { background: %(scroll)s; border-radius: 5px; min-height: 24px; min-width: 24px; }
+QScrollBar::handle:pressed { background: %(selected_text)s; }
 QScrollBar::handle:hover { background: %(accent)s; }
 QScrollBar::add-line, QScrollBar::sub-line { width: 0; height: 0; }
 QProgressBar { background: %(hover)s; border: 1px solid %(border)s; border-radius: 5px; text-align: center; }
-QProgressBar::chunk { background: %(accent)s; }
+QProgressBar::chunk { background: %(accent)s; border-radius: 2px; }
 QTreeWidget { background: %(sidebar)s; color: %(text)s; border: none; padding: 4px; }
 QTreeWidget::branch:selected { background: %(selection)s; }
 QTreeWidget::item { padding: 7px 4px; border-radius: 4px; }
 QTreeWidget::item:selected { background: %(selection)s; color: %(accent)s; }
 QWidget#Header { background: %(background)s; border-bottom: 1px solid %(border)s; }
 QSplitter::handle { background: %(border)s; }
-QWidget#side QPushButton:checked { color: %(accent)s; background: %(selection)s; }
+QWidget#side QPushButton:checked { color: %(selected_text)s; background: %(selection)s; }
 QLabel#ChatHeading { font-size: 14px; font-weight: 600; padding: 8px 12px; border-bottom: 1px solid %(border)s; }
 QWidget#side QLabel#appName { color: %(text)s; }
 QLabel#BoardName { font-size: 16px; font-weight: 600; }
 QLabel#Eyebrow { font-size: 11px; color: %(muted)s; letter-spacing: 1px; }
 QLabel#Profile { border-top: 1px solid %(border)s; padding-top: 16px; font-size: 12px; }
 QLabel#CountBadge { background: %(hover)s; color: %(muted)s; border-radius: 9px; padding: 2px 6px; font-size: 12px; }
-QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 10px; }
+QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 36px 7px 10px; }
 QTextEdit#ChatTimeline { border: none; background: %(background)s; padding: 12px; }
 QWidget#side { border-right: 1px solid %(border)s; }
 QWidget#Messenger { background: %(background)s; border: 1px solid %(border)s; border-radius: 12px; }

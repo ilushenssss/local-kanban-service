@@ -120,13 +120,51 @@ class UITest(unittest.TestCase):
         w.collapse_sidebar()
         visible = [b for b in w.sidebar.findChildren(QPushButton) if b.isVisible()]
         self.assertEqual(visible, [w.collapse_button])
-        self.assertEqual(w.collapse_button.text(), '☰')
+        self.assertEqual(w.collapse_button.text(), 'Меню')
         APP.processEvents()
         self.assertTrue(w.sidebar.rect().contains(w.collapse_button.geometry().center()))
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
         w.grab().save(str(evidence / 'collapsed-menu-linux.png'))
         w.collapse_sidebar()
         self.assertTrue(w.board_tree.isVisible())
+
+    def test_enter_sends_in_both_chats_and_shift_enter_adds_line(self):
+        d = self.dialog()
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: w.store is not None and not w.loading and not w.jobs)
+        m = w.messenger
+        m.open_chat()
+        wait_for(lambda: not w.jobs)
+        for editor, send_button, pending, records in (
+            (d.comment_text, d.comment_button, lambda: d.pending or bool(d.jobs),
+             lambda: self.store.detail(self.result['id'])['comments']),
+            (m.input, m.send_button, lambda: m.sending or bool(w.jobs),
+             lambda: w.store.team_chat()['messages']),
+        ):
+            count = len(records())
+            editor.setFocus()
+            editor.setPlainText('Первая строка')
+            editor.moveCursor(editor.textCursor().End)
+            QTest.keyClick(editor, Qt.Key_Return, Qt.ShiftModifier)
+            self.assertEqual(editor.toPlainText(), 'Первая строка\n')
+            self.assertEqual(len(records()), count)
+            editor.insertPlainText('Вторая строка')
+            send_button.setEnabled(False)
+            QTest.keyClick(editor, Qt.Key_Return)
+            self.assertEqual(len(records()), count)
+            self.assertEqual(editor.toPlainText(), 'Первая строка\nВторая строка')
+            send_button.setEnabled(True)
+            QTest.keyClick(editor, Qt.Key_Return)
+            QTest.keyClick(editor, Qt.Key_Return)
+            wait_for(lambda: not pending())
+            self.assertEqual(len(records()), count + 1)
+            self.assertEqual(records()[-1]['body'], 'Первая строка\nВторая строка')
+            self.assertEqual(editor.toPlainText(), '')
+            QTest.keyClick(editor, Qt.Key_Enter)
+            self.assertEqual(len(records()), count + 1)
+        self.assertTrue(d.isVisible())
 
     def test_team_messenger_badge_and_retry_preserves_draft(self):
         w = MainWindow(str(self.store.folder))
@@ -206,7 +244,7 @@ class UITest(unittest.TestCase):
         self.assertTrue(w.list_view.isVisible())
         w.view_switch.setCurrentIndex(0)
         w.collapse_button.click()
-        self.assertEqual(w.sidebar.width(), 64)
+        self.assertEqual(w.sidebar.width(), 96)
         w.collapse_button.click()
         self.assertEqual(w.sidebar.width(), 240)
         self.assertEqual(w.board_tree.topLevelItem(0).childCount(), 1)
@@ -422,7 +460,7 @@ class UITest(unittest.TestCase):
             calendar.window().grab().save(str(evidence / 'calendar-dark-linux.png'))
             QTest.keyClick(calendar.focusWidget(), Qt.Key_Escape)
             self.assertEqual(d.due.value(), '2020-01-01')
-            self.assertFalse(d.labels.list.item(0).icon().isNull())
+            self.assertTrue(d.labels.list.item(0).icon().isNull())
             self.assertNotEqual(label_colors('Документы'), label_colors('Договоры'))
             current = self.store.tasks(self.bid)
             stats = summarize(current, self.columns, '2026-01-01')
@@ -694,6 +732,21 @@ class UITest(unittest.TestCase):
         wait_for(lambda: not task.jobs)
         self.assertGreaterEqual(task.labels.combo.findData('Согласование'), 0)
 
+    def test_create_task_has_dropdowns_without_catalog_navigation(self):
+        from PyQt5.QtWidgets import QPushButton
+        d = TaskDialog(self.store, self.columns,
+                       {'board_id': self.bid, 'column_id': self.columns[0]['id']})
+        self.windows.append(d)
+        d.show()
+        wait_for(lambda: not d.jobs)
+        self.assertGreater(d.assignees.combo.count(), 1)
+        self.assertGreater(d.labels.combo.count(), 1)
+        for b in d.findChildren(QPushButton):
+            self.assertNotIn('справочник', (b.toolTip() + b.accessibleName()).lower())
+            self.assertNotEqual(b.text(), '+')
+        choose_option(d.assignees.combo, 'tester')
+        self.assertIn('tester', d.assignees.values())
+
     def test_readable_history_and_all_priorities(self):
         self.store.save_user('tester', 'Тестировщик', self.store.catalogs(self.bid)['users'][0]['id'])
         data = self.store.detail(self.result['id'])
@@ -713,7 +766,7 @@ class UITest(unittest.TestCase):
         self.assertNotIn('"assignees"', text)
         self.assertIn('&lt;b&gt;', history_html(self.store.detail(self.result['id'])['history'], self.columns))
         for i in range(d.priority.count()):
-            self.assertFalse(d.priority.itemIcon(i).isNull())
+            self.assertTrue(d.priority.itemIcon(i).isNull())
         self.assertEqual(len({v[0] for v in PRIORITIES.values()}), 4)
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
         evidence.mkdir(parents=True, exist_ok=True)

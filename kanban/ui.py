@@ -12,14 +12,14 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
 from .store import Store, Conflict
-from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo
+from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import CardDelegate
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
 from .messenger import Messenger
-from .theme import apply_theme, theme_settings, label_icon
+from .theme import apply_theme, theme_settings
 
 
 class ElidedLabel(QLabel):
@@ -182,8 +182,6 @@ class CatalogDialog(QDialog, Async):
             for row in rows:
                 title = '{} · {}'.format(row['display_name'], row['login']) if self.kind == 'users' else row['name']
                 item = QListWidgetItem(title)
-                if self.kind == 'labels':
-                    item.setIcon(label_icon(row['name']))
                 item.setData(Qt.UserRole, row)
                 self.list.addItem(item)
             self.status.setText('Записей: {}'.format(len(rows)))
@@ -311,16 +309,8 @@ class TaskDialog(QDialog, Async):
         self.archived.setChecked(bool(data.get('archived')))
         form.addRow('Название', self.title)
         form.addRow('Описание', self.description)
-        for caption, field, kind in [('Исполнители', self.assignees, 'users'), ('Метки', self.labels, 'labels')]:
-            wrapper = QWidget()
-            line = QHBoxLayout(wrapper)
-            line.setContentsMargins(0, 0, 0, 0)
-            line.addWidget(field, 1)
-            catalog_button = button('+', lambda checked=False, kind=kind: self.open_catalog(kind), line)
-            catalog_button.setFixedWidth(30)
-            catalog_button.setToolTip('Открыть справочник')
-            catalog_button.setAccessibleName('Открыть справочник ' + caption.lower())
-            properties.addRow(caption, wrapper)
+        properties.addRow('Исполнители', self.assignees)
+        properties.addRow('Метки', self.labels)
         properties.addRow('Приоритет', self.priority)
         properties.addRow('Срок', self.due)
         self.column.hide()
@@ -349,13 +339,14 @@ class TaskDialog(QDialog, Async):
         self.comments.setReadOnly(True)
         self.comments.setObjectName('ChatTimeline')
         comments_layout.addWidget(self.comments)
-        self.comment_text = QTextEdit()
+        self.comment_text = MessageEdit()
         self.comment_text.setAcceptRichText(False)
         self.comment_text.setMaximumHeight(120)
         self.comment_text.setPlaceholderText('Написать сообщение…')
         self.comment_text.setMaximumHeight(88)
         comments_layout.addWidget(self.comment_text)
         self.comment_button = button('Отправить сообщение', self.add_comment, comments_layout, 'primary')
+        self.comment_text.sendRequested.connect(self.comment_button.click)
         self.comments.verticalScrollBar().valueChanged.connect(lambda: QTimer.singleShot(0, self.acknowledge_comments))
         self.chat_page = comments_page
         self.task_splitter.addWidget(comments_page)
@@ -396,6 +387,12 @@ class TaskDialog(QDialog, Async):
         self.save_button.setDefault(False)
         button('Закрыть', self.close, actions).setFixedWidth(100)
         root.addLayout(actions)
+        # Font/layout metrics may settle after the first paint. A user scroll
+        # cancels this one initial positioning pass.
+        self.initial_scroll_timer = QTimer(self)
+        self.initial_scroll_timer.setSingleShot(True)
+        self.initial_scroll_timer.timeout.connect(self.scroll_chat_to_end)
+        self.comments.verticalScrollBar().actionTriggered.connect(self.initial_scroll_timer.stop)
         self.chat_initial_scroll = True
         self.last_read_comment = 0
         self.read_pending = False
@@ -441,9 +438,12 @@ class TaskDialog(QDialog, Async):
     def showEvent(self, event):
         super().showEvent(event)
         QTimer.singleShot(0, self.scroll_chat_to_end)
+        self.initial_scroll_timer.start(50)
 
     def scroll_chat_to_end(self):
-        self.comments.document().adjustSize()
+        # Resolve the layout at the viewport width before reading its range.
+        # adjustSize() changes the document width and can trigger a later reflow.
+        self.comments.document().documentLayout().documentSize()
         bar = self.comments.verticalScrollBar()
         bar.setValue(bar.maximum())
         self.chat_initial_scroll = False
@@ -929,10 +929,10 @@ class MainWindow(QMainWindow, Async):
         side.setContentsMargins(16, 14, 16, 16)
         side.setSpacing(6)
         brand_row = QHBoxLayout()
-        brand = QLabel('▦  TeamSync')
+        brand = QLabel('TeamSync')
         brand.setObjectName('appName')
         brand_row.addWidget(brand, 1)
-        self.collapse_button = button('☰', self.collapse_sidebar, brand_row, 'quiet')
+        self.collapse_button = button('Меню', self.collapse_sidebar, brand_row, 'quiet')
         self.collapse_button.setToolTip('Свернуть навигацию')
         side.addLayout(brand_row)
         side.addSpacing(22)
@@ -947,18 +947,18 @@ class MainWindow(QMainWindow, Async):
         self.board_tree.setIndentation(14)
         self.board_tree.itemClicked.connect(self.select_tree_board)
         side.addWidget(self.board_tree, 1)
-        button('+  Создать доску', lambda: self.board_action('create'), side, 'quiet')
+        button('Создать доску', lambda: self.board_action('create'), side, 'quiet')
         side.addSpacing(18)
-        self.my_nav = button('☑  Мои задачи', lambda: self.pages.setCurrentWidget(self.my_tasks), side, 'quiet')
+        self.my_nav = button('Мои задачи', lambda: self.pages.setCurrentWidget(self.my_tasks), side, 'quiet')
         self.my_nav.setCheckable(True)
-        self.report_nav = button('▥  Отчёты', lambda: self.pages.setCurrentWidget(self.statistics), side, 'quiet')
+        self.report_nav = button('Отчёты', lambda: self.pages.setCurrentWidget(self.statistics), side, 'quiet')
         self.report_nav.setCheckable(True)
-        button('♙  Сотрудники', lambda: self.open_catalog('users'), side, 'quiet')
+        button('Сотрудники', lambda: self.open_catalog('users'), side, 'quiet')
         self.theme_button = button('Тёмная тема', self.toggle_theme, side, 'quiet')
         self.theme_button.setCheckable(True)
         self.theme_button.setChecked(theme_settings().value('dark', False, type=bool))
         self.theme_button.setText('Светлая тема' if self.theme_button.isChecked() else 'Тёмная тема')
-        profile = QLabel('●  ' + getpass.getuser() + '\n     Локальное рабочее пространство')
+        profile = QLabel(getpass.getuser() + '\nЛокальное рабочее пространство')
         profile.setObjectName('Profile')
         profile.setTextFormat(Qt.PlainText)
         profile.setWordWrap(True)
@@ -992,16 +992,17 @@ class MainWindow(QMainWindow, Async):
         self.search = QLineEdit()
         self.search.setPlaceholderText('Поиск задач…')
         self.search.setAccessibleName('Поиск задач')
-        self.search.setClearButtonEnabled(True)
+        self.search.setClearButtonEnabled(False)
         self.search.setMaximumWidth(360)
         self._search_in_header = True
         top.addWidget(self.search, 2)
+        button('Очистить поиск', self.search.clear, top)
         self.view_switch.setFixedWidth(164)
         top.addWidget(self.view_switch)
-        self.new_task_button = button('+ Добавить задачу', self.new_task, top, 'primary')
+        self.new_task_button = button('Добавить задачу', self.new_task, top, 'primary')
         self.new_task_button.setFixedWidth(176)
-        settings_button = button('⋯', self.workspace_menu, top)
-        settings_button.setFixedWidth(36)
+        settings_button = button('Настройки', self.workspace_menu, top)
+        settings_button.setMinimumWidth(112)
         settings_button.setToolTip('Настройки доски и обслуживание')
         settings_button.setAccessibleName('Настройки доски')
         self.retry_button = button('Повторить', self.retry_mutation, top)
@@ -1144,7 +1145,7 @@ class MainWindow(QMainWindow, Async):
 
     def collapse_sidebar(self):
         collapsed = self.sidebar.width() > 100
-        self.sidebar.setFixedWidth(64 if collapsed else 240)
+        self.sidebar.setFixedWidth(96 if collapsed else 240)
         for widget in self.sidebar.findChildren(QWidget):
             if widget is self.collapse_button:
                 continue
@@ -1153,7 +1154,7 @@ class MainWindow(QMainWindow, Async):
                 widget.setVisible(not collapsed)
         self.boards_list.hide()
         self.board_tabs.hide()
-        self.collapse_button.setText('☰')
+        self.collapse_button.setText('Меню')
         self.collapse_button.setToolTip('Развернуть меню' if collapsed else 'Свернуть меню')
         self.sidebar.layout().setAlignment(Qt.AlignTop if collapsed else Qt.Alignment(0))
         self.sidebar.layout().invalidate()
@@ -1211,7 +1212,7 @@ class MainWindow(QMainWindow, Async):
 
     def filters_changed(self, *args):
         count = sum(bool(v) for v in (self.assignee_filter.currentData(), self.label_filter.currentData(), self.due_from.value(), self.due_to.value()))
-        self.filter_toggle.setText('Фильтры ({}) ▾'.format(count) if count else 'Фильтры ▾')
+        self.filter_toggle.setText('Фильтры ({})'.format(count) if count else 'Фильтры')
         self.generation += 1
         self.debounce.start(300)
 
@@ -1380,12 +1381,12 @@ class MainWindow(QMainWindow, Async):
                 header_row = QHBoxLayout()
                 label.setText(column['name'])
                 header_row.addWidget(label, 1)
-                counter = QLabel(str(count) + (' / ' + str(column['wip_limit']) if column['wip_limit'] else '') + (' !' if warning else ''))
+                counter = QLabel(str(count) + (' / ' + str(column['wip_limit']) if column['wip_limit'] else '') + (' Лимит превышен' if warning else ''))
                 counter.setToolTip('Лимит превышен' if warning else 'Количество задач')
                 counter.setObjectName('CountBadge')
                 header_row.addWidget(counter)
-                column_menu = button('⋯', self.edit_columns, header_row)
-                column_menu.setFixedWidth(24)
+                column_menu = button('Изменить', self.edit_columns, header_row)
+                column_menu.setMinimumWidth(96)
                 column_menu.setToolTip('Настроить колонки')
                 layout.addLayout(header_row)
                 cards = Cards(column['id'])
@@ -1409,9 +1410,9 @@ class MainWindow(QMainWindow, Async):
                         cards.setCurrentItem(item)
                         if focused:
                             QTimer.singleShot(0, cards.setFocus)
-                cards.setFixedHeight(min(550, max(60, sum(148 if cards.item(i).data(Qt.UserRole).get('checklist') else 132 for i in range(cards.count())) + cards.count()*8 + 8)))
+                cards.setFixedHeight(min(550, max(60, sum(164 if cards.item(i).data(Qt.UserRole).get('checklist') else 148 for i in range(cards.count())) + cards.count()*8 + 8)))
                 layout.addWidget(cards)
-                button('+ Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
+                button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
                 row.addWidget(panel, 0, Qt.AlignTop)
                 self.card_lists.append(cards)
                 cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))
@@ -1435,7 +1436,7 @@ class MainWindow(QMainWindow, Async):
             combo.clear()
             combo.addItem(placeholder, '')
             for value, label in options:
-                combo.addItem(label_icon(value), label, value) if combo is self.label_filter else combo.addItem(label, value)
+                combo.addItem(label, value)
             combo.setCurrentIndex(max(0, combo.findData(selected)))
             combo.blockSignals(False)
 

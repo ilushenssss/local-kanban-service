@@ -1,8 +1,35 @@
 """Shared native Qt form controls; no network or external resources."""
 from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
-    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel)
-from .theme import label_icon
+    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit)
+
+
+class MessageEdit(QTextEdit):
+    """Shared chat keyboard behavior; leave ordinary form editors unchanged."""
+    sendRequested = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._composing = False
+        self.setAcceptRichText(False)
+        self.setToolTip('Enter — отправить, Shift+Enter — новая строка')
+        self.setAccessibleDescription(self.toolTip())
+
+    def inputMethodEvent(self, event):
+        self._composing = bool(event.preeditString())
+        super().inputMethodEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            if self._composing:
+                event.accept()
+                return
+            if event.modifiers() in (Qt.NoModifier, Qt.KeypadModifier):
+                event.accept()
+                if not event.isAutoRepeat() and self.toPlainText().strip():
+                    self.sendRequested.emit()
+                return
+        super().keyPressEvent(event)
 
 
 class RegistrySelection(QWidget):
@@ -65,7 +92,7 @@ class RegistrySelection(QWidget):
         self.combo.addItem(hint, None)
         for value, label in self.options:
             if value not in self.chosen:
-                self.combo.addItem(label_icon(str(value)), label, value) if self.colored else self.combo.addItem(label, value)
+                self.combo.addItem(label, value)
         self.combo.setCurrentIndex(0)
         self.combo.blockSignals(False)
         selected = self.list.currentItem()
@@ -74,8 +101,6 @@ class RegistrySelection(QWidget):
         for value, label in self.options:
             if value in self.chosen:
                 item = QListWidgetItem(label)
-                if self.colored:
-                    item.setIcon(label_icon(str(value)))
                 item.setData(Qt.UserRole, value)
                 self.list.addItem(item)
                 if value == current:
@@ -230,16 +255,7 @@ class ChecklistEditor(QWidget):
 class PriorityCombo(QComboBox):
     def __init__(self, parent=None):
         super().__init__(parent)
-        from PyQt5.QtGui import QPainter, QPixmap, QIcon, QColor
         from .theme import PRIORITIES
-        for name, colors in PRIORITIES.items():
-            pixmap = QPixmap(16, 16)
-            pixmap.fill(Qt.transparent)
-            painter = QPainter(pixmap)
-            painter.setRenderHint(QPainter.Antialiasing)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(colors[0]))
-            painter.drawEllipse(3, 3, 10, 10)
-            painter.end()
-            self.addItem(QIcon(pixmap), name)
+        for name in PRIORITIES:
+            self.addItem(name)
         self.setAccessibleName('Приоритет задачи')

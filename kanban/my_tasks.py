@@ -1,6 +1,6 @@
 """Personal task list across all active boards."""
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QHBoxLayout, QComboBox
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLineEdit, QLabel, QTableWidget, QTableWidgetItem, QHeaderView, QHBoxLayout, QComboBox, QPushButton
 from PyQt5.QtGui import QFont
 from .presentation import date_text
 
@@ -14,9 +14,14 @@ class MyTasksPage(QWidget):
         layout = QVBoxLayout(self)
         self.search = QLineEdit()
         self.search.setPlaceholderText('Поиск среди моих задач на всех досках')
-        self.search.setClearButtonEnabled(True)
+        self.search.setClearButtonEnabled(False)
         self.search.textChanged.connect(self.render)
-        layout.addWidget(self.search)
+        search_row = QHBoxLayout()
+        search_row.addWidget(self.search, 1)
+        clear_search = QPushButton('Очистить поиск')
+        clear_search.clicked.connect(self.search.clear)
+        search_row.addWidget(clear_search)
+        layout.addLayout(search_row)
         filters = QHBoxLayout()
         self.board_filter = QComboBox()
         self.state_filter = QComboBox()

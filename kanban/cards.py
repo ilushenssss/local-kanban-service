@@ -9,7 +9,7 @@ from .theme import TOKENS, PRIORITIES, label_colors
 class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         task = index.data(Qt.UserRole) or {}
-        return QSize(292, 148 if task.get('checklist') else 132)
+        return QSize(292, 164 if task.get('checklist') else 148)
 
     def paint(self, p, option, index):
         t = index.data(Qt.UserRole)
@@ -77,35 +77,27 @@ class CardDelegate(QStyledItemDelegate):
         p.setPen(QColor(TOKENS['muted']))
         checks = t.get('checklist', [])
         checked = sum(bool(c['done']) for c in checks)
+        meta = []
         if checks:
-            p.drawText(QRect(x, footer, 58, 22), Qt.AlignVCenter, '✓ {}/{}'.format(checked, len(checks)))
-        unread = t.get('unread_count', 0)
-        if unread:
-            cx = x+(64 if checks else 0)
-            p.setPen(QColor(TOKENS['accent']))
-            p.setBrush(Qt.NoBrush)
-            p.drawRoundedRect(QRect(cx, footer+5, 14, 10), 3, 3)
-            p.drawLine(cx+3, footer+15, cx+3, footer+18)
-            p.drawText(QRect(cx+19, footer, 30, 22), Qt.AlignVCenter, str(unread))
+            meta.append('Пункты: {}/{}'.format(checked, len(checks)))
+        if t.get('unread_count'):
+            meta.append('Новые: {}'.format(t['unread_count']))
+        p.drawText(QRect(x, footer, w, 22), Qt.AlignVCenter, ' · '.join(meta))
         due = t.get('due_date')
         if due:
-            date = dt.date.fromisoformat(due)
             late = due < dt.date.today().isoformat() and not done
             p.setPen(QColor(TOKENS['danger'] if late else TOKENS['muted']))
-            text = ('! ' if late else '')+date.strftime('%d.%m')
-            p.drawText(QRect(box.right()-113, footer, 70, 22), Qt.AlignRight | Qt.AlignVCenter, text)
+            text = ('Просрочено: ' if late else 'Срок: ')+dt.date.fromisoformat(due).strftime('%d.%m')
+            p.drawText(QRect(x, footer+22, w, 22), Qt.AlignVCenter, text)
         names = t.get('assignee_names') or t.get('assignees', [])
         if names:
-            avatar = QRect(box.right()-35, footer, 24, 24)
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor(TOKENS['selection']))
-            p.drawEllipse(avatar)
-            p.setPen(QColor(TOKENS['accent']))
-            font(10, True)
-            initials = ''.join(part[0] for part in names[0].split()[:2]).upper()
-            p.drawText(avatar, Qt.AlignCenter, initials)
+            p.setPen(QColor(TOKENS['muted']))
+            # Full names remain available in the task and its tooltip.
+            room = w - (150 if due else 0)
+            name = p.fontMetrics().elidedText(', '.join(names), Qt.ElideRight, max(0, room))
+            p.drawText(QRect(x+(150 if due else 0), footer+22, max(0, room), 22), Qt.AlignRight | Qt.AlignVCenter, name)
         if checks:
-            track = QRectF(x, y+115, w, 4)
+            track = QRectF(x, y+137, w, 4)
             p.setPen(Qt.NoPen)
             p.setBrush(QColor(TOKENS['hover']))
             p.drawRoundedRect(track, 2, 2)

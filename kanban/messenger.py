@@ -1,42 +1,31 @@
 """Shared local team chat, separate from task discussions; no network services."""
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QRectF
-from PyQt5.QtGui import QPainter, QColor, QPen, QFont
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QAbstractButton
+from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
 from .theme import TOKENS
+from .widgets import MessageEdit
 from .presentation import comments_html
 
 
-class ChatBubble(QAbstractButton):
+class ChatBubble(QPushButton):
     def __init__(self, parent):
         super().__init__(parent)
-        self.unread = 0
-        self.setFixedSize(64, 64)
+        self._unread = 0
+        self.setObjectName('primary')
+        self.setFixedSize(180, 44)
         self.setCursor(Qt.PointingHandCursor)
-        self.setAccessibleName('Открыть общий чат TeamSync')
-        self.setToolTip('Общий чат TeamSync')
+        self.unread = 0
 
-    def paintEvent(self, event):
-        p = QPainter(self)
-        p.setRenderHint(QPainter.Antialiasing)
-        p.setPen(Qt.NoPen)
-        p.setBrush(QColor('#2563EB'))
-        p.drawEllipse(4, 8, 52, 52)
-        p.setPen(QPen(Qt.white, 2))
-        p.setBrush(Qt.NoBrush)
-        p.drawRoundedRect(QRectF(18, 23, 24, 17), 5, 5)
-        p.drawLine(23, 40, 23, 46)
-        p.drawLine(23, 46, 30, 40)
-        if self.unread:
-            p.setPen(Qt.NoPen)
-            p.setBrush(QColor('#dc2626'))
-            p.drawEllipse(36, 0, 28, 28)
-            p.setPen(Qt.white)
-            f = QFont(self.font())
-            f.setPixelSize(11)
-            f.setBold(True)
-            p.setFont(f)
-            p.drawText(36, 0, 28, 28, Qt.AlignCenter, str(self.unread) if self.unread < 100 else '99+')
+    @property
+    def unread(self):
+        return self._unread
+
+    @unread.setter
+    def unread(self, count):
+        self._unread = count
+        self.setText('Общий чат' + (' ({})'.format(count) if count else ''))
+        self.setAccessibleName('Открыть общий чат TeamSync. Непрочитанных: {}'.format(count))
+        self.setToolTip('Общий чат TeamSync. Непрочитанных: {}'.format(count))
 
 
 class Messenger(QWidget):
@@ -59,7 +48,7 @@ class Messenger(QWidget):
         title = QLabel('Общий чат TeamSync')
         title.setObjectName('SectionTitle')
         top.addWidget(title, 1)
-        hide = QPushButton('−')
+        hide = QPushButton('Свернуть')
         hide.setToolTip('Свернуть чат')
         hide.clicked.connect(self.hide)
         top.addWidget(hide)
@@ -67,7 +56,7 @@ class Messenger(QWidget):
         self.timeline = QTextEdit()
         self.timeline.setReadOnly(True)
         layout.addWidget(self.timeline, 1)
-        self.input = QTextEdit()
+        self.input = MessageEdit()
         self.input.setAcceptRichText(False)
         self.input.setPlaceholderText('Сообщение всем сотрудникам…')
         self.input.setMaximumHeight(90)
@@ -75,6 +64,7 @@ class Messenger(QWidget):
         self.send_button = QPushButton('Отправить')
         self.send_button.setObjectName('primary')
         self.send_button.clicked.connect(self.send)
+        self.input.sendRequested.connect(self.send_button.click)
         layout.addWidget(self.send_button)
         self.status = QLabel()
         self.status.setWordWrap(True)
@@ -99,7 +89,7 @@ class Messenger(QWidget):
     def reposition(self):
         w = self.window
         self.setGeometry(max(0, w.width()-392), 60, 376, max(260, w.height()-84))
-        self.bubble.move(w.width()-80, w.height()-80)
+        self.bubble.move(max(0, w.width()-196), w.height()-60)
         self.bubble.raise_()
         self.raise_()
 

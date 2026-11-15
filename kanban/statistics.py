@@ -100,7 +100,7 @@ class StatisticsPage(QWidget):
             (name, [(count, COLORS[index % len(COLORS)])], 'Задач: {}{}'.format(count, ' / лимит ' + str(limit) if limit != '—' else ''))
             for index, (name, count, limit) in enumerate(stats['columns'])])
         self.member_chart.set_rows([
-            (name, [(done, '#57a882'), (late, '#d97670'), (total-done-late, '#5789da')], '{} / ✓ {} / ! {}'.format(total, done, late))
+            (name, [(done, '#57a882'), (late, '#d97670'), (total-done-late, '#5789da')], 'Всего {} / Готово {} / Просрочено {}'.format(total, done, late))
             for name, total, done, late in stats['members']])
         for table, rows in [(self.columns, stats['columns']), (self.members, stats['members'])]:
             scroll = table.verticalScrollBar().value()

@@ -39,7 +39,7 @@ def history_text(entry, columns=(), users=()):
         if key == 'labels':
             return ', '.join(value)
         if key == 'checklist':
-            return '; '.join(('✓ ' if x['done'] else '○ ') + x['text'] for x in value)
+            return '; '.join(('Выполнено: ' if x['done'] else 'Не выполнено: ') + x['text'] for x in value)
         return str(value)
     if entry['operation'] == 'Комментарий':
         return [changes.get('text', 'Комментарий добавлен')]
