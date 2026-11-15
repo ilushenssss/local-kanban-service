@@ -31,7 +31,7 @@ def main():
     app.setStyle('Fusion')
     apply_theme(app, theme_settings().value('dark', False, type=bool))
     window = MainWindow(str(folder))
-    window.show()
+    window.showMaximized()
     return app.exec_()
 
 

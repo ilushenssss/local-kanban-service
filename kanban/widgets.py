@@ -1,7 +1,7 @@
 """Shared native Qt form controls; no network or external resources."""
-from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal
+from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal, QEvent, QPointF, QSize
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
-    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit)
+    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QRadioButton, QButtonGroup, QToolButton)
 
 
 class MessageEdit(QTextEdit):
@@ -88,7 +88,7 @@ class RegistrySelection(QWidget):
         self.combo.blockSignals(True)
         self.combo.clear()
         available = [(value, label) for value, label in self.options if value not in self.chosen]
-        hint = self.placeholder if available else ('Все значения выбраны' if self.options else 'Список пуст — откройте справочник')
+        hint = self.placeholder if available else ('Все значения выбраны' if self.options else 'Список пуст')
         self.combo.addItem(hint, None)
         for value, label in self.options:
             if value not in self.chosen:
@@ -129,15 +129,117 @@ class DeadlineCalendar(QCalendarWidget):
         self.editor = editor
         self.setLocale(QLocale('ru_RU'))
         self.setFirstDayOfWeek(Qt.Monday)
+        self.setObjectName('DeadlineCalendar')
+        self.setGridVisible(False)
+        self.setVerticalHeaderFormat(QCalendarWidget.NoVerticalHeader)
+        self.setHorizontalHeaderFormat(QCalendarWidget.ShortDayNames)
+        self.setMinimumSize(308, 300)
+        self.refresh_palette()
+
+    def refresh_palette(self):
+        from PyQt5.QtGui import QTextCharFormat, QColor
+        from .theme import TOKENS, symbol_icon
+        header = QTextCharFormat()
+        header.setForeground(QColor(TOKENS['muted']))
+        header.setBackground(QColor(TOKENS['background']))
+        self.setHeaderTextFormat(header)
+        for day in (Qt.Saturday, Qt.Sunday):
+            weekend = QTextCharFormat()
+            weekend.setForeground(QColor(TOKENS['secondary']))
+            self.setWeekdayTextFormat(day, weekend)
+        for obj, icon, label in (
+            ('qt_calendar_prevmonth', 'calendar-prev', 'Предыдущий месяц'),
+            ('qt_calendar_nextmonth', 'calendar-next', 'Следующий месяц'),
+        ):
+            control = self.findChild(QToolButton, obj)
+            if control:
+                control.setIcon(symbol_icon(icon))
+                control.setIconSize(QSize(18, 18))
+                control.setCursor(Qt.PointingHandCursor)
+                control.setToolTip(label)
+                control.setAccessibleName(label)
+        self.updateCells()
+
+    def paintCell(self, painter, rect, date):
+        from PyQt5.QtGui import QColor, QPen
+        from .theme import TOKENS
+        painter.save()
+        painter.setRenderHint(painter.Antialiasing)
+        painter.fillRect(rect, QColor(TOKENS['background']))
+        side = min(34, rect.width() - 4, rect.height() - 4)
+        cell = rect.adjusted((rect.width()-side)//2, (rect.height()-side)//2,
+                             -(rect.width()-side+1)//2, -(rect.height()-side+1)//2)
+        selected = date == self.selectedDate()
+        today = date == QDate.currentDate()
+        available = self.minimumDate() <= date <= self.maximumDate()
+        painter.setPen(Qt.NoPen)
+        if selected:
+            painter.setBrush(QColor(TOKENS['accent']))
+            painter.drawRoundedRect(cell, 8, 8)
+        elif today:
+            painter.setPen(QPen(QColor(TOKENS['accent']), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(cell, 8, 8)
+        color = TOKENS['on_accent'] if selected else TOKENS['text']
+        if not available or date.month() != self.monthShown():
+            color = TOKENS['muted'] if not selected else TOKENS['on_accent']
+        painter.setPen(QColor(color))
+        font = self.font()
+        font.setPixelSize(13)
+        font.setBold(selected or today)
+        painter.setFont(font)
+        painter.drawText(rect, Qt.AlignCenter, str(date.day()))
+        painter.restore()
 
     def showEvent(self, event):
         super().showEvent(event)
+        self.refresh_palette()
         if self.editor.date() == self.editor.minimumDate():
             today = QDate.currentDate()
             blocked = self.blockSignals(True)
             self.setSelectedDate(today)
             self.setCurrentPage(today.year(), today.month())
             self.blockSignals(blocked)
+
+
+class ClickDateEdit(QDateEdit):
+    """Every click opens Qt's calendar; clicking digits never edits the year."""
+    def __init__(self, date):
+        super().__init__(date)
+        self.lineEdit().setReadOnly(True)
+        self.lineEdit().installEventFilter(self)
+        self.setCursor(Qt.PointingHandCursor)
+
+    def open_calendar(self):
+        from PyQt5.QtGui import QMouseEvent
+        point = QPointF(self.width() - 12, self.height() / 2)
+        event = QMouseEvent(QEvent.MouseButtonPress, point, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+        super().mousePressEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            self.open_calendar()
+            event.accept()
+        else:
+            super().mousePressEvent(event)
+
+    def eventFilter(self, source, event):
+        if source is self.lineEdit() and event.type() == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self.open_calendar()
+            return True
+        return super().eventFilter(source, event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter, Qt.Key_Down):
+            self.open_calendar()
+            event.accept()
+        elif event.key() in (Qt.Key_Tab, Qt.Key_Backtab, Qt.Key_Escape):
+            super().keyPressEvent(event)
+        else:
+            event.accept()
+
+    def wheelEvent(self, event):
+        event.ignore()
 
 
 class DateField(QWidget):
@@ -150,7 +252,7 @@ class DateField(QWidget):
         layout.setSpacing(8)
         if caption:
             layout.addWidget(QLabel(caption))
-        self.editor = QDateEdit(QDate.currentDate())
+        self.editor = ClickDateEdit(QDate.currentDate())
         self.editor.setCalendarPopup(True)
         self.editor.setDisplayFormat('dd.MM.yyyy')
         self.editor.setFixedWidth(160)
@@ -252,10 +354,38 @@ class ChecklistEditor(QWidget):
         return bool(self.entry.text().strip())
 
 
-class PriorityCombo(QComboBox):
+class PrioritySelector(QWidget):
+    """One priority at a time, using keyboard-accessible native radio buttons."""
     def __init__(self, parent=None):
         super().__init__(parent)
         from .theme import PRIORITIES
+        self.group = QButtonGroup(self)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        self.buttons = {}
         for name in PRIORITIES:
-            self.addItem(name)
+            radio = QRadioButton(name)
+            radio.setCursor(Qt.PointingHandCursor)
+            self.group.addButton(radio)
+            self.buttons[name] = radio
+            layout.addWidget(radio)
+        self.setCurrentText('Обычный')
         self.setAccessibleName('Приоритет задачи')
+
+    def setCurrentText(self, text):
+        if text in self.buttons:
+            self.buttons[text].setChecked(True)
+
+    def currentText(self):
+        selected = self.group.checkedButton()
+        return selected.text() if selected else 'Обычный'
+
+
+class PriorityCombo(QComboBox):
+    """Compact priority filter for the board; task forms use PrioritySelector."""
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        from .theme import PRIORITIES
+        self.addItems(list(PRIORITIES))
+        self.setAccessibleName('Фильтр по приоритету')

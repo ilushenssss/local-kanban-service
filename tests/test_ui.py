@@ -120,7 +120,8 @@ class UITest(unittest.TestCase):
         w.collapse_sidebar()
         visible = [b for b in w.sidebar.findChildren(QPushButton) if b.isVisible()]
         self.assertEqual(visible, [w.collapse_button])
-        self.assertEqual(w.collapse_button.text(), 'Меню')
+        self.assertEqual(w.collapse_button.text(), '')
+        self.assertFalse(w.collapse_button.icon().isNull())
         APP.processEvents()
         self.assertTrue(w.sidebar.rect().contains(w.collapse_button.geometry().center()))
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
@@ -244,7 +245,7 @@ class UITest(unittest.TestCase):
         self.assertTrue(w.list_view.isVisible())
         w.view_switch.setCurrentIndex(0)
         w.collapse_button.click()
-        self.assertEqual(w.sidebar.width(), 96)
+        self.assertEqual(w.sidebar.width(), 64)
         w.collapse_button.click()
         self.assertEqual(w.sidebar.width(), 240)
         self.assertEqual(w.board_tree.topLevelItem(0).childCount(), 1)
@@ -663,6 +664,26 @@ class UITest(unittest.TestCase):
         self.assertEqual(task['column_id'], self.columns[0]['id'])
         self.assertEqual(task['checklist'], [{'text': 'Первый пункт', 'done': 1}, {'text': 'Второй пункт', 'done': 0}])
 
+    def test_date_field_opens_from_text_and_keeps_date_on_cancel(self):
+        d = self.dialog()
+        editor = d.due.editor
+        calendar = editor.calendarWidget()
+        for value in ('2027-03-18', None):
+            d.due.set_value(value)
+            for target, point in ((editor, QPoint(8, editor.height() // 2)),
+                                  (editor.lineEdit(), editor.lineEdit().rect().center())):
+                QTest.mouseClick(target, Qt.LeftButton, pos=point)
+                wait_for(calendar.isVisible)
+                if value is None:
+                    self.assertEqual(calendar.yearShown(), QDate.currentDate().year())
+                QTest.keyClick(calendar, Qt.Key_Escape)
+                wait_for(lambda: not calendar.isVisible())
+                self.assertEqual(d.due.value(), value)
+        for name, radio in d.priority.buttons.items():
+            QTest.mouseClick(radio, Qt.LeftButton)
+            self.assertEqual(d.priority.currentText(), name)
+            self.assertEqual(sum(b.isChecked() for b in d.priority.buttons.values()), 1)
+
     def test_calendar_selects_date_with_keyboard(self):
         d = self.dialog()
         d.due.editor.setDate(QDate(2027, 3, 18))
@@ -765,8 +786,8 @@ class UITest(unittest.TestCase):
         self.assertNotIn('"column_id"', text)
         self.assertNotIn('"assignees"', text)
         self.assertIn('&lt;b&gt;', history_html(self.store.detail(self.result['id'])['history'], self.columns))
-        for i in range(d.priority.count()):
-            self.assertTrue(d.priority.itemIcon(i).isNull())
+        self.assertEqual(len(d.priority.buttons), 4)
+        self.assertEqual(sum(b.isChecked() for b in d.priority.buttons.values()), 1)
         self.assertEqual(len({v[0] for v in PRIORITIES.values()}), 4)
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
         evidence.mkdir(parents=True, exist_ok=True)

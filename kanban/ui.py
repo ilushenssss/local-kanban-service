@@ -5,21 +5,21 @@ import json
 from pathlib import Path
 import tempfile
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint
-from PyQt5.QtGui import QDesktopServices, QDrag
+from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize
+from PyQt5.QtGui import QDesktopServices, QDrag, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
 from .store import Store, Conflict
-from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, MessageEdit
+from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import CardDelegate
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
 from .messenger import Messenger
-from .theme import apply_theme, theme_settings
+from .theme import apply_theme, theme_settings, symbol_icon
 
 
 class ElidedLabel(QLabel):
@@ -281,7 +281,12 @@ class TaskDialog(QDialog, Async):
         properties.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form_columns.addLayout(form, 3)
         form_columns.addLayout(properties, 2)
-        form.setContentsMargins(4, 20, 12, 16)
+        form_columns.setContentsMargins(12, 20, 12, 16)
+        form_columns.setSpacing(20)
+        form.setContentsMargins(0, 0, 0, 0)
+        properties.setContentsMargins(0, 0, 0, 0)
+        form.setFormAlignment(Qt.AlignTop)
+        properties.setFormAlignment(Qt.AlignTop)
         form.setVerticalSpacing(8)
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
@@ -298,7 +303,7 @@ class TaskDialog(QDialog, Async):
         self.catalog_ready = False
         self.assignees = RegistrySelection('Выберите исполнителей', data.get('assignees', []))
         self.labels = RegistrySelection('Выберите метки', data.get('labels', []), colored=True)
-        self.priority = PriorityCombo()
+        self.priority = PrioritySelector()
         self.priority.setCurrentText(data.get('priority', 'Обычный'))
         self.due = DateField(data.get('due_date'))
         self.column = QComboBox()
@@ -931,9 +936,19 @@ class MainWindow(QMainWindow, Async):
         brand_row = QHBoxLayout()
         brand = QLabel('TeamSync')
         brand.setObjectName('appName')
+        logo = QLabel()
+        logo.setObjectName('SystemLogo')
+        logo.setFixedSize(32, 32)
+        logo.setPixmap(QPixmap(str(Path(__file__).parent / 'assets' / 'teamsync-logo.png')).scaled(32, 32, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        brand_row.addWidget(logo)
         brand_row.addWidget(brand, 1)
-        self.collapse_button = button('Меню', self.collapse_sidebar, brand_row, 'quiet')
+        self.collapse_button = button('', self.collapse_sidebar, brand_row, 'quiet')
         self.collapse_button.setToolTip('Свернуть навигацию')
+        self.collapse_button.setAccessibleName('Свернуть навигацию')
+        self.collapse_button.setProperty('symbol', 'menu')
+        self.collapse_button.setIcon(symbol_icon('menu'))
+        self.collapse_button.setIconSize(QSize(22, 22))
+        self.collapse_button.setFixedSize(36, 36)
         side.addLayout(brand_row)
         side.addSpacing(22)
         caption = QLabel('ПРОЕКТЫ И ДОСКИ')
@@ -1145,7 +1160,7 @@ class MainWindow(QMainWindow, Async):
 
     def collapse_sidebar(self):
         collapsed = self.sidebar.width() > 100
-        self.sidebar.setFixedWidth(96 if collapsed else 240)
+        self.sidebar.setFixedWidth(64 if collapsed else 240)
         for widget in self.sidebar.findChildren(QWidget):
             if widget is self.collapse_button:
                 continue
@@ -1154,7 +1169,8 @@ class MainWindow(QMainWindow, Async):
                 widget.setVisible(not collapsed)
         self.boards_list.hide()
         self.board_tabs.hide()
-        self.collapse_button.setText('Меню')
+        self.collapse_button.setText('')
+        self.collapse_button.setAccessibleName('Развернуть меню' if collapsed else 'Свернуть меню')
         self.collapse_button.setToolTip('Развернуть меню' if collapsed else 'Свернуть меню')
         self.sidebar.layout().setAlignment(Qt.AlignTop if collapsed else Qt.Alignment(0))
         self.sidebar.layout().invalidate()
@@ -1385,9 +1401,6 @@ class MainWindow(QMainWindow, Async):
                 counter.setToolTip('Лимит превышен' if warning else 'Количество задач')
                 counter.setObjectName('CountBadge')
                 header_row.addWidget(counter)
-                column_menu = button('Изменить', self.edit_columns, header_row)
-                column_menu.setMinimumWidth(96)
-                column_menu.setToolTip('Настроить колонки')
                 layout.addLayout(header_row)
                 cards = Cards(column['id'])
                 cards.itemClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))

@@ -1,8 +1,8 @@
 """Shared local team chat, separate from task discussions; no network services."""
 import uuid
-from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtCore import Qt, QTimer, QSize
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
-from .theme import TOKENS
+from .theme import TOKENS, symbol_icon
 from .widgets import MessageEdit
 from .presentation import comments_html
 
@@ -12,7 +12,10 @@ class ChatBubble(QPushButton):
         super().__init__(parent)
         self._unread = 0
         self.setObjectName('primary')
-        self.setFixedSize(180, 44)
+        self.setFixedSize(64, 52)
+        self.setProperty('symbol', 'chat')
+        self.setIcon(symbol_icon('chat'))
+        self.setIconSize(QSize(24, 24))
         self.setCursor(Qt.PointingHandCursor)
         self.unread = 0
 
@@ -23,7 +26,7 @@ class ChatBubble(QPushButton):
     @unread.setter
     def unread(self, count):
         self._unread = count
-        self.setText('Общий чат' + (' ({})'.format(count) if count else ''))
+        self.setText(str(count) if count else '')
         self.setAccessibleName('Открыть общий чат TeamSync. Непрочитанных: {}'.format(count))
         self.setToolTip('Общий чат TeamSync. Непрочитанных: {}'.format(count))
 
@@ -89,7 +92,7 @@ class Messenger(QWidget):
     def reposition(self):
         w = self.window
         self.setGeometry(max(0, w.width()-392), 60, 376, max(260, w.height()-84))
-        self.bubble.move(max(0, w.width()-196), w.height()-60)
+        self.bubble.move(max(0, w.width()-80), w.height()-68)
         self.bubble.raise_()
         self.raise_()
 

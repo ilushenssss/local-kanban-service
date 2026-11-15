@@ -2,7 +2,7 @@
 import hashlib
 from pathlib import Path
 from PyQt5.QtCore import QSettings, Qt
-from PyQt5.QtGui import QColor, QPalette, QFontDatabase
+from PyQt5.QtGui import QColor, QPalette, QFontDatabase, QIcon
 
 LIGHT = dict(background='#FFFFFF', canvas='#F4F5F8', sidebar='#FFFFFF',
              text='#1B1F2A', secondary='#4A5264', muted='#5E6678',
@@ -54,6 +54,11 @@ def avatar_color(name):
     return AVATAR_COLORS[key % len(AVATAR_COLORS)]
 
 
+def symbol_icon(name):
+    theme = 'dark' if TOKENS['background'] == DARK['background'] else 'light'
+    return QIcon(str(Path(__file__).parent / 'assets' / 'controls' / (name + '-' + theme + '.svg')))
+
+
 def stylesheet():
     load_fonts()
     t = dict(TOKENS)
@@ -93,6 +98,10 @@ QPushButton#primary:disabled, QPushButton[variant="primary"]:disabled { backgrou
 QPushButton#danger, QPushButton[variant="danger"] { color: %(danger)s; border-color: %(danger_border)s; }
 QPushButton#danger:hover, QPushButton[variant="danger"]:hover { background: %(hover)s; border-color: %(danger)s; }
 QPushButton[variant="danger"]:disabled, QPushButton#danger:disabled { color: %(muted)s; border-color: %(border)s; background: %(canvas)s; }
+QRadioButton { spacing: 10px; padding: 5px 0; min-height: 22px; }
+QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid %(field_border)s; border-radius: 9px; background: %(background)s; }
+QRadioButton::indicator:checked { border: 5px solid %(accent)s; width: 8px; height: 8px; border-radius: 9px; }
+QRadioButton:focus { color: %(accent)s; }
 QPushButton#link { background: transparent; border: none; color: %(accent)s; padding: 0; text-decoration: underline; }
 QWidget#side QPushButton[variant="quiet"] { color: %(text)s; background: transparent; border: none; text-align: left; padding: 9px 10px; }
 QWidget#side QPushButton[variant="quiet"]:hover { background: %(selection)s; color: %(accent)s; }
@@ -152,6 +161,18 @@ QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 36px 7p
 QTextEdit#ChatTimeline { border: none; background: %(background)s; padding: 12px; }
 QWidget#side { border-right: 1px solid %(border)s; }
 QWidget#Messenger { background: %(background)s; border: 1px solid %(border)s; border-radius: 12px; }
+QCalendarWidget#DeadlineCalendar { background: %(background)s; border: 1px solid %(field_border)s; border-radius: 12px; padding: 8px; }
+QCalendarWidget QWidget#qt_calendar_navigationbar { background: %(background)s; padding: 4px; }
+QCalendarWidget QToolButton { color: %(text)s; background: transparent; border: none; border-radius: 8px; padding: 6px; min-height: 24px; font-weight: 600; }
+QCalendarWidget QToolButton:hover { background: %(hover)s; }
+QCalendarWidget QToolButton:pressed { background: %(selection)s; }
+QCalendarWidget QToolButton:focus { background: %(selection)s; color: %(selected_text)s; }
+QCalendarWidget QToolButton::menu-indicator { image: none; width: 0; }
+QCalendarWidget QAbstractItemView { background: %(background)s; color: %(text)s; selection-background-color: %(accent)s; selection-color: %(on_accent)s; border: none; outline: none; font-size: 13px; }
+QCalendarWidget QSpinBox { background: %(background)s; color: %(text)s; border: 1px solid %(accent)s; padding: 2px 4px; }
+QCalendarWidget QMenu { background: %(background)s; color: %(text)s; border: 1px solid %(field_border)s; padding: 4px; }
+QCalendarWidget QMenu::item { padding: 6px 12px; }
+QCalendarWidget QMenu::item:selected { background: %(selection)s; color: %(selected_text)s; }
 QToolTip { color: %(text)s; background: %(background)s; border: 1px solid %(border)s; padding: 6px; }
 ''' % t
 
@@ -171,6 +192,13 @@ def apply_theme(app, dark=False):
     app.setStyleSheet(stylesheet())
     for widget in app.topLevelWidgets():
         widget.update()
+        from PyQt5.QtWidgets import QPushButton, QCalendarWidget
+        for calendar in widget.findChildren(QCalendarWidget):
+            if hasattr(calendar, 'refresh_palette'):
+                calendar.refresh_palette()
+        for control in widget.findChildren(QPushButton):
+            if control.property('symbol'):
+                control.setIcon(symbol_icon(control.property('symbol')))
         if hasattr(widget, 'messenger'):
             widget.messenger.markup = None
             widget.messenger.render()
