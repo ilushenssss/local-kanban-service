@@ -107,8 +107,9 @@ QPushButton#ChatLauncher { background: %(accent)s; color: %(on_accent)s; border:
 QPushButton#ChatLauncher:hover { background: %(accent_hover)s; }
 QPushButton#ChatLauncher:pressed { background: %(accent_pressed)s; }
 QPushButton#ChatLauncher:focus { border: 2px solid %(text)s; }
-QPushButton#AddColumnTask { text-align: left; background: transparent; color: %(secondary)s; border: 1px dashed %(field_border)s; border-radius: 8px; padding: 8px 12px; }
-QPushButton#AddColumnTask:hover { background: %(background)s; border-color: %(accent)s; color: %(accent)s; }
+QPushButton#AddColumnTask { text-align: left; background: transparent; color: %(accent)s; border: 1px solid transparent; border-radius: 6px; padding: 3px 8px; font-size: 12px; min-height: 20px; }
+QPushButton#AddColumnTask:hover { background: %(selection)s; color: %(selected_text)s; }
+QPushButton#AddColumnTask:focus { border-color: %(accent)s; }
 QPushButton#AddColumnTask:pressed { background: %(selection)s; }
 QPushButton#link { background: transparent; border: none; color: %(accent)s; padding: 0; text-decoration: underline; }
 QWidget#side QPushButton[variant="quiet"] { color: %(text)s; background: transparent; border: none; text-align: left; padding: 9px 10px; }

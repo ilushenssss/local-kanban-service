@@ -263,6 +263,7 @@ class TaskDialog(QDialog, Async):
         self.comment_retry = None
         self.upload_queue = []
         root = QVBoxLayout(self)
+        root.setSizeConstraint(QVBoxLayout.SetMinimumSize)
         root.setContentsMargins(20, 16, 20, 16)
         root.setSpacing(12)
         heading = QLabel('Задача №{}'.format(data['number']) if data.get('id') else 'Новая задача')
@@ -1447,6 +1448,9 @@ class MainWindow(QMainWindow, Async):
                 counter.setObjectName('CountBadge')
                 header_row.addWidget(counter)
                 layout.addLayout(header_row)
+                add_task = button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
+                add_task.setObjectName('AddColumnTask')
+                add_task.setCursor(Qt.PointingHandCursor)
                 cards = Cards(column['id'], self.expanded_task_ids)
                 cards.itemClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
@@ -1471,9 +1475,6 @@ class MainWindow(QMainWindow, Async):
                             QTimer.singleShot(0, cards.setFocus)
                 cards.update_card_height()
                 layout.addWidget(cards)
-                add_task = button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
-                add_task.setObjectName('AddColumnTask')
-                add_task.setCursor(Qt.PointingHandCursor)
                 row.addWidget(panel, 0, Qt.AlignTop)
                 self.card_lists.append(cards)
                 cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))

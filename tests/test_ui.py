@@ -754,6 +754,37 @@ class UITest(unittest.TestCase):
         wait_for(lambda: not calendar.isVisible())
         self.assertEqual(d.due.value(), QDate.currentDate().toString(Qt.ISODate))
 
+    def test_column_add_button_and_long_assignee_layout(self):
+        from PyQt5.QtWidgets import QPushButton
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and bool(w.card_lists))
+        for cards in w.card_lists:
+            panel = cards.parentWidget()
+            add = panel.findChild(QPushButton, 'AddColumnTask')
+            self.assertIsNotNone(add)
+            self.assertLess(add.geometry().bottom(), cards.geometry().top())
+        long_name = 'Иванов Иван Иванович — ведущий специалист проектного отдела'
+        self.store.save_user('ivanov', long_name)
+        d = self.dialog()
+        choose_option(d.assignees.combo, 'ivanov')
+        APP.processEvents()
+        field = d.assignees
+        self.assertFalse(field.list.horizontalScrollBar().isVisible())
+        self.assertGreaterEqual(field.selected_row.height(), field.list.height())
+        page = d.task_page
+        from PyQt5.QtWidgets import QLabel
+        labels_caption = next(l for l in page.findChildren(QLabel) if l.text() == 'Метки')
+        self.assertLess(field.geometry().bottom(), labels_caption.geometry().top())
+        item = next(field.list.item(i) for i in range(field.list.count())
+                    if field.list.item(i).data(Qt.UserRole) == 'ivanov')
+        self.assertIn(long_name, item.toolTip())
+        self.assertGreaterEqual(field.list.visualItemRect(item).height(), field.list.fontMetrics().height() + 8)
+        self.assertGreaterEqual(field.list.viewport().height(), field.list.visualItemRect(item).bottom() + 1)
+        self.assertLessEqual(field.list.geometry().right(), field.remove_button.geometry().left())
+        d.grab().save(str(Path(__file__).resolve().parent.parent / 'docs/screenshots/long-assignee-layout.png'))
+
     def test_selected_users_and_labels_reopen_and_remove(self):
         d = self.dialog()
         self.assertEqual(d.assignees.values(), ['tester'])

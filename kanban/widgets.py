@@ -1,7 +1,7 @@
 """Shared native Qt form controls; no network or external resources."""
 from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal, QEvent, QPointF, QSize
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
-    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QRadioButton, QButtonGroup, QToolButton)
+    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QRadioButton, QButtonGroup, QToolButton, QSizePolicy)
 
 
 class MessageEdit(QTextEdit):
@@ -54,6 +54,12 @@ class RegistrySelection(QWidget):
         row.setContentsMargins(0, 0, 0, 0)
         self.list = QListWidget()
         self.list.setAccessibleName('Выбранные значения: ' + placeholder)
+        self.list.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.list.setTextElideMode(Qt.ElideRight)
+        self.list.setWordWrap(False)
+        self.list.setUniformItemSizes(True)
+        self.list.setMinimumWidth(0)
+        self.list.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
         self.list.setMinimumHeight(42)
         self.list.setMaximumHeight(96)
         self.remove_button = QPushButton('Убрать')
@@ -102,11 +108,17 @@ class RegistrySelection(QWidget):
             if value in self.chosen:
                 item = QListWidgetItem(label)
                 item.setData(Qt.UserRole, value)
+                item.setToolTip(label)
+                item.setSizeHint(QSize(0, max(28, self.list.fontMetrics().height() + 8)))
                 self.list.addItem(item)
                 if value == current:
                     self.list.setCurrentItem(item)
-        self.list.setFixedHeight(min(96, max(42, self.list.count() * 27 + 12)))
+        row_height = max(28, self.list.fontMetrics().height() + 8)
+        self.list.setFixedHeight(min(3, max(1, self.list.count())) * row_height + 18)
+        self.updateGeometry()
+        self.selected_row.setMinimumHeight(self.list.height())
         self.selected_row.setVisible(bool(self.chosen))
+        self.setMinimumHeight(self.combo.sizeHint().height() + (6 + self.list.height() if self.chosen else 0))
         self.remove_button.setEnabled(bool(self.list.selectedItems()))
         self.selectionChanged.emit()
 
