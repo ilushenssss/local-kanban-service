@@ -103,6 +103,13 @@ QRadioButton { spacing: 10px; padding: 5px 0; min-height: 22px; }
 QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid %(field_border)s; border-radius: 9px; background: %(background)s; }
 QRadioButton::indicator:checked { border: 5px solid %(accent)s; width: 8px; height: 8px; border-radius: 9px; }
 QRadioButton:focus { color: %(accent)s; }
+QPushButton#ChatLauncher { background: %(accent)s; color: %(on_accent)s; border: 1px solid %(accent)s; border-radius: 28px; padding: 0; }
+QPushButton#ChatLauncher:hover { background: %(accent_hover)s; }
+QPushButton#ChatLauncher:pressed { background: %(accent_pressed)s; }
+QPushButton#ChatLauncher:focus { border: 2px solid %(text)s; }
+QPushButton#AddColumnTask { text-align: left; background: transparent; color: %(secondary)s; border: 1px dashed %(field_border)s; border-radius: 8px; padding: 8px 12px; }
+QPushButton#AddColumnTask:hover { background: %(background)s; border-color: %(accent)s; color: %(accent)s; }
+QPushButton#AddColumnTask:pressed { background: %(selection)s; }
 QPushButton#link { background: transparent; border: none; color: %(accent)s; padding: 0; text-decoration: underline; }
 QWidget#side QPushButton[variant="quiet"] { color: %(text)s; background: transparent; border: none; text-align: left; padding: 9px 10px; }
 QWidget#side QPushButton[variant="quiet"]:hover { background: %(selection)s; color: %(accent)s; }

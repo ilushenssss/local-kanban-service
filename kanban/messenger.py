@@ -1,6 +1,7 @@
 """Shared local team chat, separate from task discussions; no network services."""
 import uuid
 from PyQt5.QtCore import Qt, QTimer, QSize
+from PyQt5.QtGui import QPainter, QColor, QFont
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
 from .theme import TOKENS, symbol_icon
 from .widgets import MessageEdit
@@ -11,8 +12,8 @@ class ChatBubble(QPushButton):
     def __init__(self, parent):
         super().__init__(parent)
         self._unread = 0
-        self.setObjectName('primary')
-        self.setFixedSize(64, 52)
+        self.setObjectName('ChatLauncher')
+        self.setFixedSize(56, 56)
         self.setProperty('symbol', 'chat')
         self.setIcon(symbol_icon('chat'))
         self.setIconSize(QSize(24, 24))
@@ -26,9 +27,25 @@ class ChatBubble(QPushButton):
     @unread.setter
     def unread(self, count):
         self._unread = count
-        self.setText(str(count) if count else '')
+        self.setText('')
+        self.update()
         self.setAccessibleName('Открыть общий чат TeamSync. Непрочитанных: {}'.format(count))
         self.setToolTip('Общий чат TeamSync. Непрочитанных: {}'.format(count))
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self.unread:
+            painter = QPainter(self)
+            painter.setRenderHint(QPainter.Antialiasing)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor('#9B1C1C'))
+            painter.drawEllipse(35, 0, 21, 21)
+            font = QFont(self.font())
+            font.setPixelSize(9)
+            font.setBold(True)
+            painter.setFont(font)
+            painter.setPen(Qt.white)
+            painter.drawText(35, 0, 21, 21, Qt.AlignCenter, str(self.unread) if self.unread < 100 else '99+')
 
 
 class Messenger(QWidget):

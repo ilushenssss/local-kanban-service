@@ -664,6 +664,36 @@ class UITest(unittest.TestCase):
         self.assertEqual(task['column_id'], self.columns[0]['id'])
         self.assertEqual(task['checklist'], [{'text': 'Первый пункт', 'done': 1}, {'text': 'Второй пункт', 'done': 0}])
 
+    def test_card_disclosure_preserves_data_and_survives_refresh(self):
+        from kanban.cards import CardDelegate, EXPANDED_ROLE
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and bool(w.card_lists))
+        cards = next(c for c in w.card_lists if c.count())
+        item = cards.item(0)
+        task = item.data(Qt.UserRole)
+        original = self.store.detail(task['id'])
+        height = cards.height()
+        arrow = CardDelegate.disclosure_rect(cards.visualItemRect(item), task)
+        QTest.mouseClick(cards.viewport(), Qt.LeftButton, pos=arrow.center())
+        self.assertTrue(item.data(EXPANDED_ROLE))
+        self.assertGreater(cards.height(), height)
+        self.assertFalse(w.dialogs)
+        cards.grab().save(str(Path(__file__).resolve().parent.parent / 'docs/screenshots/card-expanded.png'))
+        self.assertEqual(self.store.detail(task['id']), original)
+        # Force a new board snapshot, then verify view state is retained.
+        self.store.comment(task['id'], 'Обновление обсуждения')
+        w.refresh()
+        wait_for(lambda: not w.loading and not w.jobs)
+        cards = next(c for c in w.card_lists if c.count())
+        item = cards.item(0)
+        self.assertTrue(item.data(EXPANDED_ROLE))
+        cards.setCurrentItem(item)
+        QTest.keyClick(cards, Qt.Key_Space)
+        self.assertFalse(item.data(EXPANDED_ROLE))
+        self.assertFalse(w.dialogs)
+
     def test_raster_controls_and_tab_labels_fit(self):
         from PyQt5.QtGui import QFontMetrics, QImageReader
         from kanban.theme import symbol_icon, apply_theme

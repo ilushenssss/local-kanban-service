@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
 from .store import Store, Conflict
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
-from .cards import CardDelegate
+from .cards import CardDelegate, EXPANDED_ROLE
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -866,9 +866,10 @@ class ColumnsDialog(QDialog):
 class Cards(QListWidget):
     moved = pyqtSignal(int, int, object)
     dragging = pyqtSignal(bool)
-    def __init__(self, column_id):
+    def __init__(self, column_id, expanded_ids=None):
         super().__init__()
         self.column_id = column_id
+        self.expanded_ids = expanded_ids if expanded_ids is not None else set()
         self.setObjectName('Cards')
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setItemDelegate(CardDelegate(self))
@@ -880,6 +881,46 @@ class Cards(QListWidget):
         self.setWordWrap(True)
         self.setMinimumWidth(220)
         self.setAccessibleName('Задачи колонки')
+    def update_card_height(self):
+        option = self.viewOptions()
+        height = sum(self.itemDelegate().sizeHint(option, self.model().index(i, 0)).height() + self.spacing()*2
+                     for i in range(self.count())) + 8
+        self.setFixedHeight(min(650, max(40, height)))
+
+    def toggle_details(self, item):
+        expanded = not item.data(EXPANDED_ROLE)
+        item.setData(EXPANDED_ROLE, expanded)
+        item.setData(Qt.AccessibleDescriptionRole, 'Подробности раскрыты. Пробел — свернуть.' if expanded else 'Пробел — раскрыть подробности.')
+        tid = item.data(Qt.UserRole)['id']
+        if expanded:
+            self.expanded_ids.add(tid)
+        else:
+            self.expanded_ids.discard(tid)
+        self.doItemsLayout()
+        self.update_card_height()
+        self.viewport().update()
+
+    def mouseReleaseEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item and event.button() == Qt.LeftButton:
+            task = item.data(Qt.UserRole)
+            if CardDelegate.disclosure_rect(self.visualItemRect(item), task).contains(event.pos()):
+                self.toggle_details(item)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.currentItem() and event.key() == Qt.Key_Space:
+            self.toggle_details(self.currentItem())
+            event.accept()
+            return
+        if self.currentItem() and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.itemClicked.emit(self.currentItem())
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
     def startDrag(self, supported_actions):
         if not self.selectedIndexes():
             return
@@ -921,6 +962,7 @@ class MainWindow(QMainWindow, Async):
         self.drag_active = False
         self.refresh_deferred = False
         self.last_snapshot = None
+        self.expanded_task_ids = set()
         self.setWindowTitle('TeamSync')
         self.resize(1400, 850)
         self.setMinimumSize(900, 600)
@@ -1405,7 +1447,7 @@ class MainWindow(QMainWindow, Async):
                 counter.setObjectName('CountBadge')
                 header_row.addWidget(counter)
                 layout.addLayout(header_row)
-                cards = Cards(column['id'])
+                cards = Cards(column['id'], self.expanded_task_ids)
                 cards.itemClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
                 cards.moved.connect(self.move_task)
@@ -1420,15 +1462,18 @@ class MainWindow(QMainWindow, Async):
                     text = '№{}  {}\n{}\n{}{} · {}\n{}{}'.format(task['number'], task['title'], ', '.join(task.get('assignee_names') or task['assignees']) or 'Без исполнителя', 'Просрочено: ' if overdue else 'Срок: ', task['due_date'] or 'не задан', task['priority'], ', '.join(task['labels']), '\nЧек-лист: {}/{}'.format(sum(bool(x['done']) for x in check), len(check)) if check else '')
                     item = QListWidgetItem(text)
                     item.setData(Qt.UserRole, task)
-                    item.setToolTip(text)
+                    item.setData(EXPANDED_ROLE, task['id'] in self.expanded_task_ids)
+                    item.setToolTip(text + '\nСтрелка или пробел — раскрыть подробности')
                     cards.addItem(item)
                     if selected_task and selected_task['id'] == task['id']:
                         cards.setCurrentItem(item)
                         if focused:
                             QTimer.singleShot(0, cards.setFocus)
-                cards.setFixedHeight(min(550, max(60, sum(164 if cards.item(i).data(Qt.UserRole).get('checklist') else 148 for i in range(cards.count())) + cards.count()*8 + 8)))
+                cards.update_card_height()
                 layout.addWidget(cards)
-                button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
+                add_task = button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
+                add_task.setObjectName('AddColumnTask')
+                add_task.setCursor(Qt.PointingHandCursor)
                 row.addWidget(panel, 0, Qt.AlignTop)
                 self.card_lists.append(cards)
                 cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))
