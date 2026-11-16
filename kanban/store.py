@@ -70,7 +70,7 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 3:
+                if version > 4:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
@@ -86,7 +86,11 @@ class Store:
                     c.execute('CREATE TABLE access_history(id INTEGER PRIMARY KEY, actor TEXT NOT NULL, created_at TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT NOT NULL)')
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(3,?)', (now(),))
                     c.execute('PRAGMA user_version=3')
-                c.execute('PRAGMA user_version=3')
+                if 'kind' not in {r[1] for r in c.execute('PRAGMA table_info(team_messages)')}:
+                    c.execute("ALTER TABLE team_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text' CHECK(kind IN ('text','sticker'))")
+                    c.execute('CREATE TABLE IF NOT EXISTS team_stickers(message_id INTEGER PRIMARY KEY REFERENCES team_messages(id), stored_name TEXT NOT NULL UNIQUE, sha256 TEXT NOT NULL, size INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL)')
+                c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(4,?)', (now(),))
+                c.execute('PRAGMA user_version=4')
                 self.user(c, self.login)
                 c.commit()
 
@@ -315,7 +319,7 @@ class Store:
             row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
             last = int(row[0]) if row else 0
             unread = c.execute('SELECT COUNT(*) FROM team_messages m JOIN users u ON u.id=m.user_id WHERE m.id>? AND u.login<>?', (last, self.login)).fetchone()[0]
-            messages = [dict(r) for r in c.execute('SELECT m.*,u.login,u.display_name AS author FROM team_messages m JOIN users u ON u.id=m.user_id WHERE m.id>? ORDER BY m.id', (after,))]
+            messages = [dict(r) for r in c.execute('SELECT m.*,s.width,s.height,u.login,u.display_name AS author FROM team_messages m JOIN users u ON u.id=m.user_id LEFT JOIN team_stickers s ON s.message_id=m.id WHERE m.id>? ORDER BY m.id', (after,))]
             return {'messages': messages, 'unread': unread}
 
     def team_send(self, text, request_id=None):
@@ -324,6 +328,42 @@ class Store:
         def apply(c, uid):
             return c.execute('INSERT INTO team_messages(user_id,body,created_at) VALUES(?,?,?)', (uid, text.strip(), now())).lastrowid
         return self.write('team_message', text, apply, request_id)
+
+    def team_send_sticker(self, png, request_id=None):
+        from .stickers import prepare_sticker
+        png, width, height = prepare_sticker(png)
+        digest = hashlib.sha256(png).hexdigest()
+        request_id = request_id or uuid.uuid4().hex
+        name = 'team-' + hashlib.sha256((self.login + ':' + request_id).encode()).hexdigest() + '.png'
+        def apply(c, uid):
+            target = self.folder / 'attachments' / name
+            temporary = target.with_suffix('.partial')
+            try:
+                with temporary.open('wb') as dst:
+                    dst.write(png)
+                    dst.flush()
+                    os.fsync(dst.fileno())
+                os.replace(str(temporary), str(target))
+                mid = c.execute("INSERT INTO team_messages(user_id,body,created_at,kind) VALUES(?,'',?,'sticker')", (uid, now())).lastrowid
+                c.execute('INSERT INTO team_stickers VALUES(?,?,?,?,?,?)', (mid, name, digest, len(png), width, height))
+                return mid
+            finally:
+                if temporary.exists():
+                    temporary.unlink()
+        return self.write('team_sticker', digest, apply, request_id)
+
+    def team_sticker(self, message_id):
+        with self.connection() as c:
+            self.actor(c)
+            row = c.execute('SELECT * FROM team_stickers WHERE message_id=?', (message_id,)).fetchone()
+            if not row:
+                raise ValueError('Стикер не найден')
+            path = self.folder / 'attachments' / row['stored_name']
+            with path.open('rb') as src:
+                data = src.read(2 * 1024 * 1024 + 1)
+            if len(data) != row['size'] or hashlib.sha256(data).hexdigest() != row['sha256']:
+                raise IOError('Контрольная сумма стикера не совпадает')
+            return data
 
     def team_mark_read(self, message_id):
         def apply(c, uid):
@@ -625,7 +665,7 @@ class Store:
                     raise IOError('Проверка резервной базы не пройдена')
             (target / 'attachments').mkdir()
             manifest = {}
-            for r in c.execute('SELECT stored_name,sha256 FROM attachments'):
+            for r in c.execute('SELECT stored_name,sha256 FROM attachments UNION ALL SELECT stored_name,sha256 FROM team_stickers'):
                 name = r['stored_name']
                 shutil.copyfile(str(self.folder / 'attachments' / name), str(target / 'attachments' / name))
                 digest = hashlib.sha256((target / 'attachments' / name).read_bytes()).hexdigest()

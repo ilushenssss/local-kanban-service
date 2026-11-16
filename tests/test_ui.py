@@ -83,6 +83,68 @@ class UITest(unittest.TestCase):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
 
+    def test_sticker_preview_retry_and_inline_image(self):
+        from test_stickers import image_bytes
+        from PyQt5.QtCore import QUrl, QTimer, QMimeData
+        from PyQt5.QtGui import QImage, QTextDocument, QPainter, QColor
+        from PyQt5.QtWidgets import QDialog
+        from unittest.mock import patch
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.resize(1000, 800)
+        w.show()
+        wait_for(lambda: w.store is not None and not w.loading and not w.jobs)
+        m = w.messenger
+        m.open_chat()
+        wait_for(lambda: not m.loading and not w.jobs)
+        m.input.setPlainText('Текстовый черновик')
+        mime = QMimeData()
+        sample = QImage(400, 400, QImage.Format_ARGB32)
+        sample.fill(Qt.transparent)
+        painter = QPainter(sample)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setBrush(QColor('#0F766E'))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(10, 10, 380, 380)
+        painter.setPen(Qt.white)
+        font = painter.font()
+        font.setPixelSize(50)
+        painter.setFont(font)
+        painter.drawText(sample.rect(), Qt.AlignCenter, 'Привет!')
+        painter.end()
+        mime.setImageData(sample)
+        m.input.insertFromMimeData(mime)
+        wait_for(lambda: not m.preparing and not w.jobs)
+        self.assertTrue(m.preview.isVisible())
+        self.assertEqual(m.input.toPlainText(), 'Текстовый черновик')
+        original = w.store.team_send_sticker
+        def uncertain(data, rid):
+            original(data, rid)
+            raise OSError('Connection lost after commit')
+        with patch.object(w.store, 'team_send_sticker', side_effect=uncertain):
+            m.send_sticker()
+            wait_for(lambda: not m.sending and not w.jobs)
+        self.assertIsNotNone(m.sticker_retry)
+        self.assertFalse(m.remove_button.isEnabled())
+        m.send_sticker()
+        wait_for(lambda: not m.sending and not m.loading and not w.jobs)
+        m.poll()
+        wait_for(lambda: not m.loading and not w.jobs)
+        self.assertIsNone(m.sticker_retry)
+        self.assertEqual(len(m.messages), 1)
+        self.assertEqual(m.input.toPlainText(), 'Текстовый черновик')
+        self.assertIn('sticker:', m.markup)
+        self.assertFalse(m.timeline.document().resource(QTextDocument.ImageResource, QUrl('sticker:1')).isNull())
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        w.grab().save(str(evidence / 'chat-sticker-linux.png'))
+        def close_viewer():
+            for dialog in m.findChildren(QDialog):
+                if dialog.windowTitle() == 'Фотостикер':
+                    dialog.accept()
+        QTimer.singleShot(20, close_viewer)
+        m.view_sticker(QUrl('sticker:1'))
+
     def test_role_and_board_access_dialogs(self):
         from kanban.ui import AccessDialog
         from unittest.mock import patch

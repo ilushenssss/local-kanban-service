@@ -1,11 +1,34 @@
 """Shared local team chat, separate from task discussions; no network services."""
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QSize
-from PyQt5.QtGui import QPainter, QColor, QFont
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit
+from PyQt5.QtCore import Qt, QTimer, QSize, QUrl, QByteArray, QBuffer, QIODevice, pyqtSignal
+from PyQt5.QtGui import QPainter, QColor, QFont, QImage, QPixmap, QTextDocument
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QTextBrowser, QFileDialog, QDialog, QDialogButtonBox
 from .theme import TOKENS, symbol_icon
 from .widgets import MessageEdit
 from .presentation import comments_html
+from .stickers import prepare_sticker, sticker_from_file
+
+
+class StickerInput(MessageEdit):
+    imagePasted = pyqtSignal(bytes)
+
+    def insertFromMimeData(self, source):
+        if source.hasImage():
+            value = source.imageData()
+            image = value.toImage() if isinstance(value, QPixmap) else QImage(value)
+            data = QByteArray()
+            buffer = QBuffer(data)
+            buffer.open(QIODevice.WriteOnly)
+            if image.save(buffer, 'PNG'):
+                self.imagePasted.emit(bytes(data))
+        else:
+            super().insertFromMimeData(source)
+
+
+class StickerTimeline(QTextBrowser):
+    def loadResource(self, kind, url):
+        # All images are verified bytes inserted into QTextDocument by Messenger.
+        return None
 
 
 class ChatBubble(QPushButton):
@@ -61,6 +84,10 @@ class Messenger(QWidget):
         self.read_cursor = 0
         self.retry = None
         self.markup = None
+        self.stickers = {}
+        self.sticker = None
+        self.sticker_retry = None
+        self.preparing = False
         self.bubble = ChatBubble(window)
         self.bubble.clicked.connect(self.open_chat)
         layout = QVBoxLayout(self)
@@ -73,10 +100,14 @@ class Messenger(QWidget):
         hide.clicked.connect(self.hide)
         top.addWidget(hide)
         layout.addLayout(top)
-        self.timeline = QTextEdit()
+        self.timeline = StickerTimeline()
+        self.timeline.setOpenLinks(False)
+        self.timeline.setOpenExternalLinks(False)
+        self.timeline.anchorClicked.connect(self.view_sticker)
         self.timeline.setReadOnly(True)
         layout.addWidget(self.timeline, 1)
-        self.input = MessageEdit()
+        self.input = StickerInput()
+        self.input.imagePasted.connect(self.paste_sticker)
         self.input.setAcceptRichText(False)
         self.input.setPlaceholderText('Сообщение всем сотрудникам…')
         self.input.setMaximumHeight(90)
@@ -85,7 +116,28 @@ class Messenger(QWidget):
         self.send_button.setObjectName('primary')
         self.send_button.clicked.connect(self.send)
         self.input.sendRequested.connect(self.send_button.click)
-        layout.addWidget(self.send_button)
+        actions = QHBoxLayout()
+        self.image_button = QPushButton('Фотостикер…')
+        self.image_button.setToolTip('PNG, JPG, WebP до 10 МБ; также можно вставить изображение через Ctrl+V')
+        self.image_button.clicked.connect(self.choose_sticker)
+        actions.addWidget(self.image_button)
+        actions.addWidget(self.send_button)
+        layout.addLayout(actions)
+        self.preview = QWidget()
+        preview_layout = QVBoxLayout(self.preview)
+        self.preview_image = QLabel()
+        self.preview_image.setAlignment(Qt.AlignCenter)
+        preview_layout.addWidget(self.preview_image)
+        preview_actions = QHBoxLayout()
+        self.sticker_button = QPushButton('Отправить стикер')
+        self.sticker_button.clicked.connect(self.send_sticker)
+        self.remove_button = QPushButton('Убрать')
+        self.remove_button.clicked.connect(self.remove_sticker)
+        preview_actions.addWidget(self.sticker_button)
+        preview_actions.addWidget(self.remove_button)
+        preview_layout.addLayout(preview_actions)
+        layout.addWidget(self.preview)
+        self.preview.hide()
         self.status = QLabel()
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.PlainText)
@@ -134,20 +186,42 @@ class Messenger(QWidget):
             if error:
                 self.status.setText('Чат недоступен. Повторная проверка выполняется автоматически; введённый текст сохранён.')
                 return
-            if not self.retry:
-                self.status.clear()
+            if not self.retry and not self.sticker_retry and not self.preparing:
+                self.status.setText('Некоторые стикеры недоступны. Загрузка повторится автоматически.' if result.get('image_errors') else '')
             self.messages.extend(result['messages'])
+            self.stickers.update(result.get('stickers', {}))
             self.bubble.unread = result['unread']
             self.bubble.setToolTip('Общий чат · непрочитанных: {}'.format(result['unread']))
             self.bubble.update()
             self.render()
             self.mark_read()
-        self.window.work(lambda: self.window.store.team_chat(after), done)
+        missing = [m['id'] for m in self.messages if m.get('kind') == 'sticker' and m['id'] not in self.stickers]
+        def read():
+            result = self.window.store.team_chat(after)
+            ids = missing + [m['id'] for m in result['messages'] if m.get('kind') == 'sticker']
+            result['stickers'] = {}
+            for mid in ids:
+                try:
+                    result['stickers'][mid] = self.window.store.team_sticker(mid)
+                except (OSError, ValueError):
+                    result['image_errors'] = True
+            return result
+        self.window.work(read, done)
 
     def render(self):
         if not self.window.store:
             return
-        markup = comments_html(self.messages, self.window.store.login)
+        def sticker_html(entry):
+            mid = entry['id']
+            data = self.stickers.get(mid)
+            if data is None:
+                return 'Стикер недоступен — повторная загрузка…'
+            image = QImage.fromData(data, 'PNG')
+            url = QUrl('sticker:{}'.format(mid))
+            self.timeline.document().addResource(QTextDocument.ImageResource, url, image)
+            size = image.size().scaled(180, 180, Qt.KeepAspectRatio)
+            return '<a href="sticker:{0}"><img src="sticker:{0}" width="{1}" height="{2}" alt="Фотостикер — открыть" /></a>'.format(mid, size.width(), size.height())
+        markup = comments_html(self.messages, self.window.store.login, sticker_html)
         if markup == self.markup:
             return
         bar = self.timeline.verticalScrollBar()
@@ -165,6 +239,8 @@ class Messenger(QWidget):
         bar = self.timeline.verticalScrollBar()
         if bar.value() < bar.maximum()-4:
             return
+        if any(m.get('kind') == 'sticker' and m['id'] not in self.stickers for m in self.messages):
+            return
         latest = self.messages[-1]['id']
         if latest <= self.read_cursor:
             return
@@ -177,7 +253,7 @@ class Messenger(QWidget):
         self.window.work(lambda: self.window.store.team_mark_read(latest), done)
 
     def send(self):
-        if self.sending or not self.window.store:
+        if self.sending or self.sticker_retry or not self.window.store:
             return
         if not self.retry:
             text = self.input.toPlainText()
@@ -199,3 +275,84 @@ class Messenger(QWidget):
             self.status.clear()
             self.poll()
         self.window.work(lambda: self.window.store.team_send(text, request_id), done)
+
+    def choose_sticker(self):
+        if self.sending or self.retry or self.sticker_retry or self.preparing:
+            self.status.setText('Сначала завершите текущую отправку')
+            return
+        path, _ = QFileDialog.getOpenFileName(self, 'Выберите фотостикер', '', 'Изображения (*.png *.jpg *.jpeg *.webp)')
+        if path:
+            self.prepare_image(lambda: sticker_from_file(path))
+
+    def paste_sticker(self, data):
+        if self.sending or self.retry or self.sticker_retry or self.preparing:
+            self.status.setText('Сначала завершите текущую отправку')
+            return
+        self.prepare_image(lambda: prepare_sticker(data))
+
+    def prepare_image(self, fn):
+        self.preparing = True
+        self.image_button.setEnabled(False)
+        self.status.setText('Подготовка фотостикера…')
+        def done(result, error):
+            self.preparing = False
+            self.image_button.setEnabled(True)
+            if error:
+                self.status.setText('Не удалось подготовить стикер: ' + str(error))
+                return
+            self.sticker = result[0]
+            self.preview_image.setPixmap(QPixmap.fromImage(QImage.fromData(self.sticker)).scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            self.preview.show()
+            self.status.setText('Предпросмотр. Нажмите «Отправить стикер».')
+        self.window.work(fn, done)
+
+    def remove_sticker(self):
+        if not self.sending and not self.sticker_retry:
+            self.sticker = None
+            self.preview.hide()
+            self.status.clear()
+
+    def send_sticker(self):
+        if self.sending or self.retry or self.preparing or not self.sticker or not self.window.store:
+            return
+        if not self.sticker_retry:
+            self.sticker_retry = (uuid.uuid4().hex, self.sticker)
+        rid, data = self.sticker_retry
+        self.sending = True
+        for button in (self.send_button, self.image_button, self.sticker_button, self.remove_button):
+            button.setEnabled(False)
+        self.status.setText('Отправка стикера…')
+        def done(value, error):
+            self.sending = False
+            self.send_button.setEnabled(True)
+            self.image_button.setEnabled(True)
+            self.sticker_button.setEnabled(True)
+            if error:
+                self.sticker_button.setText('Повторить стикер')
+                self.status.setText('Отправка не подтверждена. Повторите стикер: дубликат не появится.')
+                return
+            self.sticker_retry = None
+            self.remove_button.setEnabled(True)
+            self.sticker_button.setText('Отправить стикер')
+            self.remove_sticker()
+            self.poll()
+        self.window.work(lambda: self.window.store.team_send_sticker(data, rid), done)
+
+    def view_sticker(self, url):
+        if url.scheme() != 'sticker':
+            return
+        try:
+            data = self.stickers[int(url.path())]
+        except (ValueError, KeyError):
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Фотостикер')
+        layout = QVBoxLayout(dialog)
+        label = QLabel()
+        label.setPixmap(QPixmap.fromImage(QImage.fromData(data, 'PNG')))
+        label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(label)
+        close = QPushButton('Закрыть')
+        close.clicked.connect(dialog.accept)
+        layout.addWidget(close)
+        dialog.exec_()

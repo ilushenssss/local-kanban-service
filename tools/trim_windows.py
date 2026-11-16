@@ -7,7 +7,7 @@ import shutil
 ROOT = Path(__file__).resolve().parent.parent
 KEEP_PYQT = {'__init__.py', 'QtCore.pyd', 'QtGui.pyd', 'QtWidgets.pyd', 'QtTest.pyd', 'sip.cp38-win_amd64.pyd', 'Qt5'}
 KEEP_BIN = {'Qt5Core.dll', 'Qt5Gui.dll', 'Qt5Widgets.dll', 'Qt5Test.dll', 'libEGL.dll', 'libGLESv2.dll', 'd3dcompiler_47.dll', 'concrt140.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'vcruntime140.dll', 'vcruntime140_1.dll'}
-KEEP_PLUGINS = {'platforms': {'qwindows.dll', 'qminimal.dll', 'qoffscreen.dll'}, 'styles': {'qwindowsvistastyle.dll'}, 'imageformats': {'qgif.dll', 'qico.dll', 'qjpeg.dll'}}
+KEEP_PLUGINS = {'platforms': {'qwindows.dll', 'qminimal.dll', 'qoffscreen.dll'}, 'styles': {'qwindowsvistastyle.dll'}, 'imageformats': {'qgif.dll', 'qico.dll', 'qjpeg.dll', 'qwebp.dll'}}
 
 
 def remove(path):

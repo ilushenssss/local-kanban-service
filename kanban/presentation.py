@@ -74,7 +74,7 @@ def history_html(entries, columns=(), users=()):
     return ''.join(result)
 
 
-def comments_html(entries, login):
+def comments_html(entries, login, sticker_html=None):
     if not entries:
         return '<p style="color:{}">Пока нет комментариев.</p>'.format(TOKENS['muted'])
     result = []
@@ -82,8 +82,11 @@ def comments_html(entries, login):
         own = entry.get('login') == login
         author = 'Вы' if own else entry['author']
         body = html.escape(entry['body']).replace('\n', '<br>')
-        bubble = '<td width="78%" bgcolor="{bg}" style="padding:10px"><b>{author}</b><br>{body}<br><span style="color:{muted};font-size:9pt">{date}</span></td>'.format(
-            bg=TOKENS['selection'] if own else TOKENS['hover'], author=html.escape(author),
+        if entry.get('kind') == 'sticker' and sticker_html:
+            body = sticker_html(entry)
+        background = '' if entry.get('kind') == 'sticker' else ' bgcolor="{}"'.format(TOKENS['selection'] if own else TOKENS['hover'])
+        bubble = '<td width="78%"{bg} style="padding:10px"><b>{author}</b><br>{body}<br><span style="color:{muted};font-size:9pt">{date}</span></td>'.format(
+            bg=background, author=html.escape(author),
             body=body, muted=TOKENS['muted'], date=html.escape(date_text(entry['created_at'], True)))
         spacer = '<td width="22%"></td>'
         result.append('<table width="100%" cellspacing="0" cellpadding="9"><tr>{}</tr></table><br>'.format(spacer+bubble if own else bubble+spacer))

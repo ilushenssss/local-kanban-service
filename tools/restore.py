@@ -18,6 +18,8 @@ def restore(source, destination):
         if c.execute('PRAGMA integrity_check').fetchone()[0] != 'ok' or c.execute('PRAGMA foreign_key_check').fetchall():
             raise ValueError('База повреждена')
         expected = dict(c.execute('SELECT stored_name,sha256 FROM attachments'))
+        if c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='team_stickers'").fetchone():
+            expected.update(c.execute('SELECT stored_name,sha256 FROM team_stickers'))
     manifest = json.loads((source / 'manifest.json').read_text(encoding='utf-8'))
     if expected != manifest:
         raise ValueError('Манифест не соответствует базе')
