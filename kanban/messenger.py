@@ -52,8 +52,8 @@ class ChatBubble(QPushButton):
         self._unread = count
         self.setText('')
         self.update()
-        self.setAccessibleName('Открыть общий чат TeamSync. Непрочитанных: {}'.format(count))
-        self.setToolTip('Общий чат TeamSync. Непрочитанных: {}'.format(count))
+        self.setAccessibleName('Открыть чат доски. Непрочитанных: {}'.format(count))
+        self.setToolTip('Чат доски. Непрочитанных: {}'.format(count))
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -72,9 +72,12 @@ class ChatBubble(QPushButton):
 
 
 class Messenger(QWidget):
-    def __init__(self, window):
+    def __init__(self, window, board_id=None, board_name=""):
         super().__init__(window)
         self.window = window
+        self.board_id = board_id
+        self.board_name = board_name
+        self.active = board_id is not None
         self.setObjectName('Messenger')
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.messages = []
@@ -92,7 +95,8 @@ class Messenger(QWidget):
         self.bubble.clicked.connect(self.open_chat)
         layout = QVBoxLayout(self)
         top = QHBoxLayout()
-        title = QLabel('Общий чат TeamSync')
+        title = QLabel('Чат · ' + board_name if board_id else 'Выберите доску для чата')
+        self.title_label = title
         title.setObjectName('SectionTitle')
         top.addWidget(title, 1)
         hide = QPushButton('Свернуть')
@@ -109,7 +113,7 @@ class Messenger(QWidget):
         self.input = StickerInput()
         self.input.imagePasted.connect(self.paste_sticker)
         self.input.setAcceptRichText(False)
-        self.input.setPlaceholderText('Сообщение всем сотрудникам…')
+        self.input.setPlaceholderText('Сообщение участникам доски…')
         self.input.setMaximumHeight(90)
         layout.addWidget(self.input)
         self.send_button = QPushButton('Отправить')
@@ -147,7 +151,10 @@ class Messenger(QWidget):
         self.timer.timeout.connect(self.poll)
         self.timer.start(3000)
         self.hide()
-        self.bubble.show()
+        self.bubble.setVisible(self.active)
+        self.input.setEnabled(self.active)
+        self.send_button.setEnabled(self.active)
+        self.image_button.setEnabled(self.active)
         self.reposition()
 
     def showEvent(self, event):
@@ -156,7 +163,25 @@ class Messenger(QWidget):
 
     def hideEvent(self, event):
         super().hideEvent(event)
+        self.bubble.setVisible(self.active and getattr(self.window, "messenger", None) is self)
+
+    def deactivate(self):
+        self.active = False
+        self.timer.stop()
+        self.hide()
+        self.bubble.hide()
+
+    def activate(self, opened=False):
+        self.active = self.board_id is not None
+        if not self.active:
+            return
+        self.timer.start()
         self.bubble.show()
+        self.reposition()
+        if opened:
+            self.open_chat()
+        else:
+            self.poll()
 
     def reposition(self):
         w = self.window
@@ -166,6 +191,8 @@ class Messenger(QWidget):
         self.raise_()
 
     def open_chat(self):
+        if not self.active:
+            return
         self.show()
         self.reposition()
         self.end()
@@ -177,7 +204,7 @@ class Messenger(QWidget):
         QTimer.singleShot(0, self.mark_read)
 
     def poll(self):
-        if self.loading or not self.window.store:
+        if not self.active or self.loading or not self.window.store:
             return
         self.loading = True
         after = self.messages[-1]['id'] if self.messages else 0
@@ -188,18 +215,16 @@ class Messenger(QWidget):
                 return
             if not self.retry and not self.sticker_retry and not self.preparing:
                 self.status.setText('Некоторые стикеры недоступны. Загрузка повторится автоматически.' if result.get('image_errors') else '')
-            if hasattr(self.window, 'notifications'):
-                self.window.notifications.observe(result['messages'], self.window.store.login)
             self.messages.extend(result['messages'])
             self.stickers.update(result.get('stickers', {}))
             self.bubble.unread = result['unread']
-            self.bubble.setToolTip('Общий чат · непрочитанных: {}'.format(result['unread']))
+            self.bubble.setToolTip('Чат доски · непрочитанных: {}'.format(result['unread']))
             self.bubble.update()
             self.render()
             self.mark_read()
         missing = [m['id'] for m in self.messages if m.get('kind') == 'sticker' and m['id'] not in self.stickers]
         def read():
-            result = self.window.store.team_chat(after)
+            result = self.window.store.team_chat(after, board_id=self.board_id)
             ids = missing + [m['id'] for m in result['messages'] if m.get('kind') == 'sticker']
             result['stickers'] = {}
             for mid in ids:
@@ -252,10 +277,10 @@ class Messenger(QWidget):
             if not error:
                 self.read_cursor = value
                 self.poll()
-        self.window.work(lambda: self.window.store.team_mark_read(latest), done)
+        self.window.work(lambda: self.window.store.team_mark_read(latest, board_id=self.board_id), done)
 
     def send(self):
-        if self.sending or self.sticker_retry or not self.window.store:
+        if not self.active or self.sending or self.sticker_retry or not self.window.store:
             return
         if not self.retry:
             text = self.input.toPlainText()
@@ -276,10 +301,10 @@ class Messenger(QWidget):
                 self.input.clear()
             self.status.clear()
             self.poll()
-        self.window.work(lambda: self.window.store.team_send(text, request_id), done)
+        self.window.work(lambda: self.window.store.team_send(text, request_id, board_id=self.board_id), done)
 
     def choose_sticker(self):
-        if self.sending or self.retry or self.sticker_retry or self.preparing:
+        if not self.active or self.sending or self.retry or self.sticker_retry or self.preparing:
             self.status.setText('Сначала завершите текущую отправку')
             return
         path, _ = QFileDialog.getOpenFileName(self, 'Выберите фотостикер', '', 'Изображения (*.png *.jpg *.jpeg *.webp)')
@@ -287,7 +312,7 @@ class Messenger(QWidget):
             self.prepare_image(lambda: sticker_from_file(path))
 
     def paste_sticker(self, data):
-        if self.sending or self.retry or self.sticker_retry or self.preparing:
+        if not self.active or self.sending or self.retry or self.sticker_retry or self.preparing:
             self.status.setText('Сначала завершите текущую отправку')
             return
         self.prepare_image(lambda: prepare_sticker(data))
@@ -338,7 +363,7 @@ class Messenger(QWidget):
             self.sticker_button.setText('Отправить стикер')
             self.remove_sticker()
             self.poll()
-        self.window.work(lambda: self.window.store.team_send_sticker(data, rid), done)
+        self.window.work(lambda: self.window.store.team_send_sticker(data, rid, board_id=self.board_id), done)
 
     def view_sticker(self, url):
         if url.scheme() != 'sticker':

@@ -137,6 +137,7 @@ class CatalogDialog(QDialog, Async):
         self.store, self.board_id, self.kind = store, board_id, kind
         self.edit_id = None
         self.retry = None
+        self.delete_retry = None
         self.setWindowTitle('Сотрудники' if kind == 'users' else 'Метки доски')
         self.resize(540, 540)
         root = QVBoxLayout(self)
@@ -162,8 +163,9 @@ class CatalogDialog(QDialog, Async):
         root.addLayout(form)
         actions = QHBoxLayout()
         self.save_button = button('Добавить', self.save_entry, actions, 'primary')
-        if kind == 'users':
-            self.edit_button = button('Изменить имя', self.edit_entry, actions)
+        self.edit_button = button('Изменить имя' if kind == 'users' else 'Переименовать', self.edit_entry, actions)
+        if kind == 'labels':
+            self.delete_button = button('Удалить', self.delete_entry, actions, 'danger')
         button('Закрыть', self.reject, actions)
         root.addLayout(actions)
         self.status = QLabel('Загрузка справочника…')
@@ -179,6 +181,11 @@ class CatalogDialog(QDialog, Async):
             if error:
                 self.status.setText(error_text(error) + '. Закройте и откройте справочник для повтора.')
                 return
+            allowed = self.kind == 'users' or data.get('permissions', {}).get('manage', False)
+            self.save_button.setEnabled(allowed)
+            self.edit_button.setEnabled(allowed)
+            if self.kind == 'labels':
+                self.delete_button.setEnabled(allowed)
             self.list.clear()
             rows = sorted(data[self.kind], key=lambda x: (x.get('display_name') or x.get('name')).casefold())
             for row in rows:
@@ -190,18 +197,20 @@ class CatalogDialog(QDialog, Async):
         self.work(lambda: {'users': self.store.access_users()} if self.kind == 'users' else self.store.catalogs(self.board_id), done)
 
     def edit_entry(self):
-        if self.jobs or self.retry or not self.list.currentItem():
+        if self.jobs or self.retry or self.delete_retry or not self.list.currentItem():
             return
         row = self.list.currentItem().data(Qt.UserRole)
         self.edit_id = row['id']
-        self.login.setText(row['login'])
-        self.login.setReadOnly(True)
-        self.name.setText(row['display_name'])
-        self.save_button.setText('Сохранить имя')
+        self.edit_name = row.get('name')
+        if self.kind == 'users':
+            self.login.setText(row['login'])
+            self.login.setReadOnly(True)
+        self.name.setText(row.get('display_name') or row['name'])
+        self.save_button.setText('Сохранить')
         self.name.setFocus()
 
     def save_entry(self):
-        if self.jobs:
+        if self.jobs or self.delete_retry:
             return
         payload = (self.login.text(), self.name.text(), self.edit_id)
         if not self.retry:
@@ -213,6 +222,8 @@ class CatalogDialog(QDialog, Async):
         def apply():
             if self.kind == 'users':
                 return self.store.save_user(login, name, user_id, rid)
+            if user_id is not None:
+                return self.store.edit_label(self.board_id, user_id, name, rid, self.edit_name)
             return self.store.add_label(self.board_id, name, rid)
         def done(result, error):
             self.save_button.setEnabled(True)
@@ -232,11 +243,39 @@ class CatalogDialog(QDialog, Async):
             self.load()
         self.work(apply, done)
 
+    def delete_entry(self):
+        if self.jobs or self.retry or (not self.delete_retry and not self.list.currentItem()):
+            return
+        row = self.delete_retry[1] if self.delete_retry else self.list.currentItem().data(Qt.UserRole)
+        text = 'Удалить метку «{}»? Она будет снята со всех задач этой доски ({}). История задач сохранится.'.format(row['name'], row.get('task_count', 0))
+        if not self.delete_retry and QMessageBox.question(self, 'Удалить метку', text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        if not self.delete_retry:
+            self.delete_retry = (uuid.uuid4().hex, row)
+        rid = self.delete_retry[0]
+        self.save_button.setEnabled(False)
+        self.name.setEnabled(False)
+        def done(result, error):
+            self.save_button.setEnabled(True)
+            self.name.setEnabled(True)
+            if error:
+                if isinstance(error, ValueError):
+                    self.delete_retry = None
+                self.status.setText(error_text(error) + '. Повторите удаление: повтор безопасен.')
+                return
+            self.delete_retry = None
+            self.edit_id = None
+            self.name.clear()
+            self.save_button.setText('Добавить')
+            self.changed.emit()
+            self.load()
+        self.work(lambda: self.store.edit_label(self.board_id, row['id'], None, rid, row['name']), done)
+
     def reject(self):
         if self.jobs:
             self.status.setText('Дождитесь завершения операции')
             return
-        if (self.name.text().strip() or self.login.text().strip() or self.retry) and QMessageBox.question(self, 'Несохранённые данные', 'Закрыть справочник без сохранения введённых данных?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if (self.name.text().strip() or self.login.text().strip() or self.retry or self.delete_retry) and QMessageBox.question(self, 'Несохранённые данные', 'Закрыть справочник без сохранения введённых данных?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             return
         super().reject()
 
@@ -1264,6 +1303,7 @@ class MainWindow(QMainWindow, Async):
         self.timer.start(5000)
         self.card_lists = []
         self.messenger = Messenger(self)
+        self.board_chats = {None: self.messenger}
         self.notifications = Notifications(self)
         self.connect_store()
 
@@ -1302,7 +1342,7 @@ class MainWindow(QMainWindow, Async):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Создать доску':
                 action.setEnabled(permissions.get('create', False))
-            elif text not in ('Обновить', 'Уведомления общего чата', 'Закрывать окно в трей', 'Проверять орфографию') and not action.isSeparator():
+            elif text not in ('Обновить', 'Уведомления чатов досок', 'Закрывать окно в трей', 'Проверять орфографию') and not action.isSeparator():
                 action.setEnabled(bool(self.board_id) and permissions.get('manage', False))
 
     def open_access(self, board_id=None):
@@ -1317,7 +1357,7 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Участники доски', lambda: self.open_access(self.board_id))
         menu.addAction('Роли сотрудников', lambda: self.open_access())
         menu.addAction('Колонки доски', self.edit_columns)
-        menu.addAction('Стикеры доски', lambda: self.open_catalog('labels'))
+        menu.addAction('Метки доски', lambda: self.open_catalog('labels'))
         menu.addSeparator()
         menu.addAction('Переименовать доску', lambda: self.board_action('rename'))
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
@@ -1404,7 +1444,7 @@ class MainWindow(QMainWindow, Async):
                 self.status.setText('Общая папка недоступна: ' + error_text(error) + '. Проверьте kanban.ini и нажмите «Обновить».')
                 return
             self.store = store
-            self.messenger.poll()
+            self.notifications.poll()
             self.refresh()
         self.work(lambda: Store(self.folder), done)
 
@@ -1414,10 +1454,35 @@ class MainWindow(QMainWindow, Async):
         self.generation += 1
         self.debounce.start(300)
 
+    def activate_board_chat(self, board_id, name=''):
+        if self.messenger.board_id == board_id:
+            if name:
+                self.messenger.board_name = name
+                self.messenger.title_label.setText("Чат · " + name)
+            return
+        opened = self.messenger.isVisible()
+        self.messenger.deactivate()
+        if board_id not in self.board_chats:
+            self.board_chats[board_id] = Messenger(self, board_id, name)
+        self.messenger = self.board_chats[board_id]
+        self.messenger.activate(opened)
+
+    def show_board_chat(self, board_id):
+        for index in range(self.board_tabs.count()):
+            if self.board_tabs.tabData(index) == board_id:
+                self.board_tabs.setCurrentIndex(index)
+                self.board_id = board_id
+                self.activate_board_chat(board_id, self.board_tabs.tabText(index))
+                self.messenger.open_chat()
+                return
+        self.status.setText('Доступ к доске отозван или доска архивирована. Обновите список досок.')
+        self.refresh()
+
     def select_board_tab(self, index):
         if index < 0:
             return
         self.board_id = self.board_tabs.tabData(index)
+        self.activate_board_chat(self.board_id, self.board_tabs.tabText(index))
         self.generation += 1
         self.pages.setCurrentIndex(0)
         self.refresh()
@@ -1436,6 +1501,7 @@ class MainWindow(QMainWindow, Async):
 
     def select_board(self, current, previous):
         self.board_id = current.data(Qt.UserRole) if current else None
+        self.activate_board_chat(self.board_id, current.text() if current else "")
         self.generation += 1
         self.refresh()
 
@@ -1530,6 +1596,14 @@ class MainWindow(QMainWindow, Async):
             self.board_tabs.blockSignals(False)
             self.update_catalog_filters(catalogs)
             self.board_id = selected
+            self.activate_board_chat(selected, next((b["name"] for b in boards if b["id"] == selected), ""))
+            for bid, chat in self.board_chats.items():
+                if bid is not None and not any(b["id"] == bid for b in boards):
+                    chat.deactivate()
+                    chat.messages.clear()
+                    chat.stickers.clear()
+                    chat.timeline.clear()
+                    chat.markup = None
             self.boards_list.blockSignals(True)
             self.boards_list.clear()
             for b in boards:
@@ -1833,7 +1907,7 @@ class MainWindow(QMainWindow, Async):
         if self.pending_action and QMessageBox.question(self, 'Незавершённая запись', 'Результат записи неизвестен. Перед выходом рекомендуется повторить запись. Всё равно выйти?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             event.ignore()
             return
-        if (self.messenger.input.toPlainText().strip() or self.messenger.retry or self.messenger.sticker or self.messenger.sticker_retry) and QMessageBox.question(self, 'Неотправленное сообщение', 'Закрыть TeamSync без отправки сообщения общего чата?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if any(chat.input.toPlainText().strip() or chat.retry or chat.sticker or chat.sticker_retry for chat in self.board_chats.values()) and QMessageBox.question(self, 'Неотправленное сообщение', 'Закрыть TeamSync без отправки сообщения общего чата?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             event.ignore()
             return
         for dialog in list(self.dialogs):
@@ -1841,6 +1915,7 @@ class MainWindow(QMainWindow, Async):
                 event.ignore()
                 return
         self.timer.stop()
-        self.messenger.timer.stop()
+        for chat in self.board_chats.values():
+            chat.timer.stop()
         self.notifications.shutdown()
         event.accept()

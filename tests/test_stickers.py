@@ -28,6 +28,9 @@ class StickersTest(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.store = Store(self.root / 'data', 'alice')
         self.store.initialize_admin('alice')
+        self.bid = self.store.board_action('Стикеры')
+        bob = self.store.save_user('bob', 'bob')
+        self.store.set_board_access(self.bid, [bob], self.store.profile()['id'])
 
     def test_resize_alpha_and_supported_formats(self):
         for fmt in ('PNG', 'JPEG', 'WEBP'):
@@ -53,11 +56,17 @@ class StickersTest(unittest.TestCase):
             c.execute("INSERT INTO users VALUES(1,'alice','Администратор','admin')")
             c.execute('CREATE TABLE team_messages(id INTEGER PRIMARY KEY,user_id INTEGER REFERENCES users(id),body TEXT,created_at TEXT)')
             c.execute("INSERT INTO team_messages VALUES(1,1,'Старое сообщение','2026-01-01')")
+            c.execute("INSERT INTO boards(id,name,archived,created_at,owner_id) VALUES(10,'С-А',0,'2026-01-01',1)")
+            c.execute("INSERT INTO settings VALUES('team_read:alice','1')")
             c.execute('PRAGMA user_version=3')
         upgraded = Store(folder, 'alice')
         self.assertEqual(upgraded.profile()['role'], 'admin')
         old = upgraded.team_chat()['messages'][0]
         self.assertEqual((old['body'], old['kind']), ('Старое сообщение', 'text'))
+        self.assertEqual(old['board_id'], 10)
+        self.assertEqual(len(upgraded.boards()), 1)
+        with upgraded.connection() as c:
+            self.assertEqual(c.execute("SELECT value FROM settings WHERE key LIKE 'board_read:%'").fetchone()[0], '1')
         mid = upgraded.team_send_sticker(image_bytes())
         self.assertTrue(upgraded.team_sticker(mid).startswith(b'\x89PNG'))
 

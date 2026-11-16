@@ -83,6 +83,67 @@ class UITest(unittest.TestCase):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
 
+    def test_board_chat_switch_keeps_drafts_and_late_results_separate(self):
+        second = self.store.board_action('Вторая переписка')
+        self.grant_all(second)
+        self.store.team_send('Сообщение A', board_id=self.bid)
+        self.store.team_send('Сообщение B', board_id=second)
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and not w.jobs)
+        a = w.messenger
+        a.open_chat()
+        wait_for(lambda: not w.jobs)
+        a.input.setPlainText('Черновик A')
+        self.store.team_send('Запоздалое A', board_id=self.bid)
+        pending = []
+        with patch.object(w, 'work', side_effect=lambda fn, cb: pending.append((fn, cb))):
+            a.poll()
+            w.activate_board_chat(second, 'Вторая переписка')
+            b = w.messenger
+            b.input.setPlainText('Черновик B')
+            old_fn, old_done = pending.pop(0)
+            new_fn, new_done = pending.pop(0)
+            new_done(new_fn(), None)
+            old_done(old_fn(), None)
+            self.assertEqual([m['body'] for m in b.messages], ['Сообщение B'])
+            self.assertEqual(b.input.toPlainText(), 'Черновик B')
+            self.assertFalse(a.isVisible())
+            self.assertFalse(a.bubble.isVisible())
+            while pending:
+                fn, cb = pending.pop(0)
+                cb(fn(), None)
+        w.activate_board_chat(self.bid, 'Проектный отдел')
+        wait_for(lambda: not w.jobs)
+        self.assertIs(w.messenger, a)
+        self.assertEqual(a.input.toPlainText(), 'Черновик A')
+        self.assertEqual([m['body'] for m in a.messages], ['Сообщение A', 'Запоздалое A'])
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        w.grab().save(str(evidence / 'board-chat-linux.png'))
+
+    def test_label_dialog_renames_and_deletes_assigned_label(self):
+        d = CatalogDialog(self.store, self.bid, 'labels')
+        self.windows.append(d)
+        d.show()
+        wait_for(lambda: not d.jobs)
+        d.list.setCurrentRow(0)
+        d.edit_entry()
+        d.name.setText('Договоры')
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        d.grab().save(str(evidence / 'labels-edit-linux.png'))
+        d.save_entry()
+        wait_for(lambda: not d.jobs)
+        self.assertEqual(self.store.detail(self.result['id'])['labels'], ['Договоры'])
+        d.list.setCurrentRow(0)
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+            d.delete_entry()
+            wait_for(lambda: not d.jobs)
+        self.assertEqual(self.store.detail(self.result['id'])['labels'], [])
+        self.assertEqual(d.list.count(), 0)
+
     def test_close_to_tray_keeps_polling_and_explicit_exit_stops(self):
         w = MainWindow(str(self.store.folder))
         self.windows.append(w)
@@ -137,8 +198,8 @@ class UITest(unittest.TestCase):
         self.assertTrue(m.preview.isVisible())
         self.assertEqual(m.input.toPlainText(), 'Текстовый черновик')
         original = w.store.team_send_sticker
-        def uncertain(data, rid):
-            original(data, rid)
+        def uncertain(data, rid, board_id=None):
+            original(data, rid, board_id=board_id)
             raise OSError('Connection lost after commit')
         with patch.object(w.store, 'team_send_sticker', side_effect=uncertain):
             m.send_sticker()
@@ -314,8 +375,8 @@ class UITest(unittest.TestCase):
         self.assertFalse(m.bubble.isVisible())
         m.input.setPlainText('Моё сообщение')
         original = w.store.team_send
-        def uncertain(text, rid=None):
-            original(text, rid)
+        def uncertain(text, rid=None, board_id=None):
+            original(text, rid, board_id=board_id)
             raise OSError('Connection lost after commit')
         with patch.object(w.store, 'team_send', side_effect=uncertain):
             m.send()

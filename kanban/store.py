@@ -70,7 +70,7 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 4:
+                if version > 5:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
@@ -90,7 +90,27 @@ class Store:
                     c.execute("ALTER TABLE team_messages ADD COLUMN kind TEXT NOT NULL DEFAULT 'text' CHECK(kind IN ('text','sticker'))")
                     c.execute('CREATE TABLE IF NOT EXISTS team_stickers(message_id INTEGER PRIMARY KEY REFERENCES team_messages(id), stored_name TEXT NOT NULL UNIQUE, sha256 TEXT NOT NULL, size INTEGER NOT NULL, width INTEGER NOT NULL, height INTEGER NOT NULL)')
                 c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(4,?)', (now(),))
-                c.execute('PRAGMA user_version=4')
+                if 'board_id' not in {r[1] for r in c.execute('PRAGMA table_info(team_messages)')}:
+                    c.execute('ALTER TABLE team_messages ADD COLUMN board_id INTEGER REFERENCES boards(id)')
+                    if c.execute('SELECT 1 FROM team_messages LIMIT 1').fetchone():
+                        matches = c.execute('SELECT id FROM boards WHERE name=? AND archived=0', ('С-А',)).fetchall()
+                        if len(matches) > 1:
+                            raise ValueError('Несколько досок «С-А»: оставьте это название только у одной перед обновлением')
+                        if matches:
+                            target = matches[0][0]
+                        else:
+                            admin = c.execute("SELECT id FROM users WHERE role='admin'").fetchone()
+                            target = c.execute('INSERT INTO boards(name,created_at,owner_id) VALUES(?,?,?)', ('С-А', now(), admin[0] if admin else None)).lastrowid
+                            for position, title in enumerate(['Бэклог', 'В работе', 'На проверке', 'Готово']):
+                                c.execute('INSERT INTO columns(id,board_id,name,position,is_done) VALUES(?,?,?,?,?)', (self.next_column_id(c), target, title, position, int(position == 3)))
+                        c.execute('UPDATE team_messages SET board_id=?', (target,))
+                        for setting in c.execute("SELECT key,value FROM settings WHERE key LIKE 'team_read:%'").fetchall():
+                            key = 'board_read:' + json.dumps([setting['key'][len('team_read:'):], target])
+                            c.execute('INSERT OR IGNORE INTO settings VALUES(?,?)', (key, setting['value']))
+                c.execute('CREATE INDEX IF NOT EXISTS team_messages_board ON team_messages(board_id,id)')
+                c.execute('CREATE TABLE IF NOT EXISTS retired_labels(board_id INTEGER NOT NULL REFERENCES boards(id),name TEXT NOT NULL,PRIMARY KEY(board_id,name))')
+                c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(5,?)', (now(),))
+                c.execute('PRAGMA user_version=5')
                 self.user(c, self.login)
                 c.commit()
 
@@ -199,8 +219,10 @@ class Store:
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, 'create_board' if payload[1] is None else 'manage', payload[1])
-        elif operation in ('columns', 'label', 'access'):
+        elif operation in ('columns', 'label', 'label_change', 'access'):
             self.require(c, 'manage', payload[0])
+        elif operation in ('team_message', 'team_sticker', 'team_read'):
+            self.chat_board(c, payload[0])
         elif operation == 'task':
             old = self.detail_in(c, payload['id']) if payload.get('id') else None
             self.require(c, 'edit' if old else 'create_task', payload['board_id'])
@@ -276,7 +298,7 @@ class Store:
             c.execute('BEGIN')
             self.require(c, 'read', board_id)
             users = [dict(r) for r in c.execute('SELECT id,login,display_name FROM users WHERE ? IS NULL OR id IN (SELECT user_id FROM board_members WHERE board_id=?) OR id=(SELECT owner_id FROM boards WHERE id=?) OR role="admin" ORDER BY display_name COLLATE NOCASE,login', (board_id, board_id, board_id))]
-            labels = [dict(r) for r in c.execute('SELECT id,name FROM labels WHERE board_id=? ORDER BY name COLLATE NOCASE', (board_id,))]
+            labels = [dict(r) for r in c.execute('SELECT l.id,l.name,COUNT(t.task_id) AS task_count FROM labels l LEFT JOIN task_labels t ON t.label_id=l.id WHERE l.board_id=? GROUP BY l.id ORDER BY l.name COLLATE NOCASE', (board_id,))]
             actor = self.actor(c)
             board = c.execute('SELECT owner_id FROM boards WHERE id=?', (board_id,)).fetchone()
             permissions = {'admin': actor['role'] == 'admin', 'create': actor['role'] in ('admin', 'manager'),
@@ -299,6 +321,13 @@ class Store:
             return user_id
         return self.write('user', [login, display_name, user_id], apply, request_id)
 
+    def next_label_id(self, c):
+        maximum = c.execute('SELECT COALESCE(MAX(id),0) FROM labels').fetchone()[0]
+        row = c.execute("SELECT value FROM settings WHERE key='label_sequence'").fetchone()
+        value = max(maximum, int(row[0]) if row else 0) + 1
+        c.execute("INSERT OR REPLACE INTO settings VALUES('label_sequence',?)", (str(value),))
+        return value
+
     def add_label(self, board_id, name, request_id=None):
         name = name.strip()
         if not name:
@@ -308,29 +337,84 @@ class Store:
             existing = c.execute('SELECT id FROM labels WHERE board_id=? AND name=?', (board_id, name)).fetchone()
             if existing:
                 return existing[0]
-            return c.execute('INSERT INTO labels(board_id,name) VALUES(?,?)', (board_id, name)).lastrowid
+            c.execute('DELETE FROM retired_labels WHERE board_id=? AND name=?', (board_id, name))
+            return c.execute('INSERT INTO labels(id,board_id,name) VALUES(?,?,?)', (self.next_label_id(c), board_id, name)).lastrowid
         return self.write('label', [board_id, name], apply, request_id)
 
-    def team_chat(self, after=0):
+    def edit_label(self, board_id, label_id, name, request_id=None, expected_name=None):
+        """None deletes; renaming preserves ID. Invalidate all affected task forms."""
+        if name is not None:
+            name = name.strip()
+            if not name:
+                raise ValueError('Введите название метки')
+        def apply(c, uid):
+            self.active_board(c, board_id)
+            old = c.execute('SELECT * FROM labels WHERE id=? AND board_id=?', (label_id, board_id)).fetchone()
+            if not old:
+                raise ValueError('Метка удалена. Обновите справочник.')
+            if expected_name is not None and old['name'] != expected_name:
+                raise ValueError('Метка уже переименована. Обновите справочник.')
+            if name == old['name']:
+                return label_id
+            if name is not None and c.execute('SELECT 1 FROM labels WHERE board_id=? AND name=? AND id<>?', (board_id, name, label_id)).fetchone():
+                raise ValueError('Метка с таким названием уже существует')
+            affected = [self.detail_in(c, r[0]) for r in c.execute('SELECT task_id FROM task_labels WHERE label_id=?', (label_id,)).fetchall()]
+            if name is None:
+                self.next_label_id(c)
+                c.execute('DELETE FROM task_labels WHERE label_id=?', (label_id,))
+                c.execute('DELETE FROM labels WHERE id=?', (label_id,))
+            else:
+                c.execute('UPDATE labels SET name=? WHERE id=?', (name, label_id))
+            c.execute('INSERT OR IGNORE INTO retired_labels VALUES(?,?)', (board_id, old['name']))
+            for task in affected:
+                current = self.detail_in(c, task['id'])
+                c.execute('UPDATE tasks SET version=version+1,updated_at=? WHERE id=?', (now(), task['id']))
+                self.history(c, task['id'], uid, 'Удаление метки' if name is None else 'Переименование метки', {'labels': [task['labels'], current['labels']]})
+            return label_id
+        return self.write('label_change', [board_id, label_id, name, expected_name], apply, request_id)
+
+    def chat_board(self, c, board_id):
+        if board_id is None:
+            actor = self.actor(c)
+            available = c.execute('SELECT id FROM boards b WHERE b.archived=0 AND (?="admin" OR b.owner_id=? OR EXISTS(SELECT 1 FROM board_members m WHERE m.board_id=b.id AND m.user_id=?))', (actor["role"], actor["id"], actor["id"])).fetchall()
+            if len(available) != 1:
+                raise ValueError('Выберите доску для чата')
+            board_id = available[0]['id']
+        self.require(c, 'read', board_id)
+        self.active_board(c, board_id)
+        return board_id
+
+    def chat_updates(self, after=0):
         with self.connection() as c:
             c.execute('BEGIN')
-            self.actor(c)
-            key = 'team_read:' + self.login
+            actor = self.actor(c)
+            sql = 'SELECT m.*,u.login,u.display_name AS author,b.name AS board_name FROM team_messages m JOIN users u ON u.id=m.user_id JOIN boards b ON b.id=m.board_id WHERE m.id>? AND b.archived=0 AND (?="admin" OR b.owner_id=? OR EXISTS(SELECT 1 FROM board_members x WHERE x.board_id=b.id AND x.user_id=?)) ORDER BY m.id'
+            return [dict(r) for r in c.execute(sql, (after, actor['role'], actor['id'], actor['id']))]
+
+    def team_chat(self, after=0, board_id=None):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            board_id = self.chat_board(c, board_id)
+            key = 'board_read:' + json.dumps([self.login, board_id])
             row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
             last = int(row[0]) if row else 0
-            unread = c.execute('SELECT COUNT(*) FROM team_messages m JOIN users u ON u.id=m.user_id WHERE m.id>? AND u.login<>?', (last, self.login)).fetchone()[0]
-            messages = [dict(r) for r in c.execute('SELECT m.*,s.width,s.height,u.login,u.display_name AS author FROM team_messages m JOIN users u ON u.id=m.user_id LEFT JOIN team_stickers s ON s.message_id=m.id WHERE m.id>? ORDER BY m.id', (after,))]
+            unread = c.execute('SELECT COUNT(*) FROM team_messages m JOIN users u ON u.id=m.user_id WHERE m.board_id=? AND m.id>? AND u.login<>?', (board_id, last, self.login)).fetchone()[0]
+            messages = [dict(r) for r in c.execute('SELECT m.*,s.width,s.height,u.login,u.display_name AS author FROM team_messages m JOIN users u ON u.id=m.user_id LEFT JOIN team_stickers s ON s.message_id=m.id WHERE m.board_id=? AND m.id>? ORDER BY m.id', (board_id, after))]
             return {'messages': messages, 'unread': unread}
 
-    def team_send(self, text, request_id=None):
+    def team_send(self, text, request_id=None, board_id=None):
         if not text.strip():
             raise ValueError('Введите сообщение')
+        with self.connection() as c:
+            board_id = self.chat_board(c, board_id)
         def apply(c, uid):
-            return c.execute('INSERT INTO team_messages(user_id,body,created_at) VALUES(?,?,?)', (uid, text.strip(), now())).lastrowid
-        return self.write('team_message', text, apply, request_id)
+            return c.execute('INSERT INTO team_messages(user_id,body,created_at,board_id) VALUES(?,?,?,?)', (uid, text.strip(), now(), board_id)).lastrowid
+        return self.write('team_message', [board_id, text], apply, request_id)
 
-    def team_send_sticker(self, png, request_id=None):
+    def team_send_sticker(self, png, request_id=None, board_id=None):
         from .stickers import prepare_sticker
+        with self.connection() as c:
+            board_id = self.chat_board(c, board_id)
         png, width, height = prepare_sticker(png)
         digest = hashlib.sha256(png).hexdigest()
         request_id = request_id or uuid.uuid4().hex
@@ -344,20 +428,20 @@ class Store:
                     dst.flush()
                     os.fsync(dst.fileno())
                 os.replace(str(temporary), str(target))
-                mid = c.execute("INSERT INTO team_messages(user_id,body,created_at,kind) VALUES(?,'',?,'sticker')", (uid, now())).lastrowid
+                mid = c.execute("INSERT INTO team_messages(user_id,body,created_at,kind,board_id) VALUES(?,'',?,'sticker',?)", (uid, now(), board_id)).lastrowid
                 c.execute('INSERT INTO team_stickers VALUES(?,?,?,?,?,?)', (mid, name, digest, len(png), width, height))
                 return mid
             finally:
                 if temporary.exists():
                     temporary.unlink()
-        return self.write('team_sticker', digest, apply, request_id)
+        return self.write('team_sticker', [board_id, digest], apply, request_id)
 
     def team_sticker(self, message_id):
         with self.connection() as c:
-            self.actor(c)
-            row = c.execute('SELECT * FROM team_stickers WHERE message_id=?', (message_id,)).fetchone()
+            row = c.execute('SELECT s.*,m.board_id FROM team_stickers s JOIN team_messages m ON m.id=s.message_id WHERE message_id=?', (message_id,)).fetchone()
             if not row:
                 raise ValueError('Стикер не найден')
+            self.chat_board(c, row['board_id'])
             path = self.folder / 'attachments' / row['stored_name']
             with path.open('rb') as src:
                 data = src.read(2 * 1024 * 1024 + 1)
@@ -365,17 +449,18 @@ class Store:
                 raise IOError('Контрольная сумма стикера не совпадает')
             return data
 
-    def team_mark_read(self, message_id):
+    def team_mark_read(self, message_id, board_id=None):
+        with self.connection() as c:
+            board_id = self.chat_board(c, board_id)
         def apply(c, uid):
-            if not c.execute('SELECT 1 FROM team_messages WHERE id=?', (message_id,)).fetchone():
-                raise ValueError('Сообщение не найдено')
-            self.actor(c)
-            key = 'team_read:' + self.login
+            if not c.execute('SELECT 1 FROM team_messages WHERE id=? AND board_id=?', (message_id, board_id)).fetchone():
+                raise ValueError('Сообщение не принадлежит доске')
+            key = 'board_read:' + json.dumps([self.login, board_id])
             old = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
             value = max(message_id, int(old[0]) if old else 0)
             c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, str(value)))
             return value
-        return self.write('team_read', message_id, apply)
+        return self.write('team_read', [board_id, message_id], apply)
 
     def boards(self):
         with self.connection() as c:
@@ -563,8 +648,10 @@ class Store:
             for name in sorted(set(data.get('labels', []))):
                 if name.strip():
                     if not c.execute('SELECT 1 FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone():
+                        if c.execute('SELECT 1 FROM retired_labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone():
+                            raise ValueError('Метка удалена или переименована. Обновите форму задачи.')
                         self.require(c, 'manage', bid)
-                    c.execute('INSERT OR IGNORE INTO labels(board_id,name) VALUES(?,?)', (bid, name.strip()))
+                    c.execute('INSERT OR IGNORE INTO labels(id,board_id,name) VALUES(?,?,?)', (self.next_label_id(c), bid, name.strip()))
                     lid = c.execute('SELECT id FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone()[0]
                     c.execute('INSERT INTO task_labels VALUES(?,?)', (tid, lid))
             c.execute('DELETE FROM checklist_items WHERE task_id=?', (tid,))
