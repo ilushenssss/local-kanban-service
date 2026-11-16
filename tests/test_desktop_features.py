@@ -1,12 +1,13 @@
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 from PyQt5.QtCore import QSettings, Qt
 from PyQt5.QtGui import QTextCharFormat
 from PyQt5.QtWidgets import QWidget, QVBoxLayout
 from test_ui import APP, wait_for
 from kanban.notifications import Notifications
+from kanban.store import Store
 from kanban.spellcheck import SpellTextEdit, SpellLineEdit, spell_engine
 
 
@@ -67,6 +68,70 @@ class DesktopFeaturesTest(unittest.TestCase):
         self.assertFalse(self.window.isMinimized())
         self.assertTrue(self.window.isMaximized())
         self.assertTrue(self.window.messenger.isVisible())
+
+    def prepare_task_feed(self):
+        creator = Store(Path(self.tmp.name) / 'data', 'creator')
+        creator.initialize_admin('creator')
+        uid = creator.save_user('alice', 'Алиса')
+        board = creator.board_action('Уведомления')
+        creator.set_board_access(board, [uid], creator.profile()['id'])
+        self.window.store = Store(creator.folder, 'alice')
+        def work(fn, cb):
+            try:
+                result = fn()
+            except Exception as error:
+                cb(None, error)
+            else:
+                cb(result, None)
+        self.window.work = work
+        self.window.show_task_notification = Mock()
+        return creator, board
+
+    def test_task_notification_click_settings_and_safe_repeat(self):
+        creator, board = self.prepare_task_feed()
+        n = self.notifications
+        with patch.object(n.tray, 'showMessage') as show:
+            n.poll()
+            self.assertEqual(n.task_cursor, 0)
+            task = creator.save_task({'board_id': board, 'column_id': creator.columns(board)[0]['id'], 'title': 'Новая задача', 'assignees': ['alice']})['id']
+            # A failed poll keeps its cursor, so the next poll recovers the event.
+            with patch.object(self.window.store, 'task_updates', side_effect=OSError('Network')):
+                n.poll()
+            self.assertEqual(n.task_cursor, 0)
+            n.poll()
+            self.assertEqual(len(n.task_pending), 1)
+            with patch.object(self.window.store, 'detail', side_effect=OSError('SMB unavailable')):
+                n.flush_tasks()
+            show.assert_not_called()
+            self.assertEqual(len(n.task_pending), 1)
+            n.flush_tasks()
+            show.assert_called_once()
+            self.assertIn('Вам назначена задача', show.call_args.args[1])
+            n.open_notification()
+            self.window.show_task_notification.assert_called_once_with(task)
+            self.assertEqual(n.last_task, task)
+            n.poll()
+            n.flush_tasks()
+            self.assertEqual(show.call_count, 1)
+            self.settings.setValue('notifications/tasks', False)
+            current = creator.detail(task)
+            current['priority'] = 'Высокий'
+            creator.save_task(current)
+            n.poll()
+            n.flush_tasks()
+            self.assertEqual(show.call_count, 1)
+
+    def test_task_notification_rechecks_access_before_desktop_display(self):
+        creator, board = self.prepare_task_feed()
+        n = self.notifications
+        n.poll()
+        creator.save_task({'board_id': board, 'column_id': creator.columns(board)[0]['id'], 'title': 'Закрытая', 'assignees': ['alice']})
+        n.poll()
+        self.assertEqual(len(n.task_pending), 1)
+        creator.set_board_access(board, [], creator.profile()['id'])
+        with patch.object(n.tray, 'showMessage') as show:
+            n.flush_tasks()
+            show.assert_not_called()
 
     def test_spelling_formats_without_modifying_text_and_handles_emoji(self):
         engine = spell_engine()

@@ -70,7 +70,7 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 6:
+                if version > 7:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
@@ -113,7 +113,10 @@ class Store:
                 if 'personal' not in {r[1] for r in c.execute('PRAGMA table_info(boards)')}:
                     c.execute('ALTER TABLE boards ADD COLUMN personal INTEGER NOT NULL DEFAULT 0 CHECK(personal IN (0,1))')
                 c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(6,?)', (now(),))
-                c.execute('PRAGMA user_version=6')
+                c.execute('CREATE TABLE IF NOT EXISTS task_notifications(id INTEGER PRIMARY KEY,history_id INTEGER NOT NULL REFERENCES task_history(id),user_id INTEGER NOT NULL REFERENCES users(id),UNIQUE(history_id,user_id))')
+                c.execute('CREATE INDEX IF NOT EXISTS task_notifications_user ON task_notifications(user_id,id)')
+                c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(7,?)', (now(),))
+                c.execute('PRAGMA user_version=7')
                 self.user(c, self.login)
                 c.commit()
 
@@ -317,7 +320,40 @@ class Store:
                 raise
 
     def history(self, c, task_id, uid, op, changes):
-        c.execute('INSERT INTO task_history(task_id,user_id,created_at,operation,changes) VALUES(?,?,?,?,?)', (task_id, uid, now(), op, json.dumps(changes, ensure_ascii=False)))
+        hid = c.execute('INSERT INTO task_history(task_id,user_id,created_at,operation,changes) VALUES(?,?,?,?,?)', (task_id, uid, now(), op, json.dumps(changes, ensure_ascii=False))).lastrowid
+        if not (set(changes) - {'position'}):
+            return
+        recipients = {r[0] for r in c.execute('SELECT user_id FROM task_assignees WHERE task_id=?', (task_id,))}
+        creator = c.execute("SELECT user_id FROM task_history WHERE task_id=? AND operation='Создание' ORDER BY id LIMIT 1", (task_id,)).fetchone()
+        if creator:
+            recipients.add(creator[0])
+        previous = changes.get('assignees', [None, None])[0] or []
+        for login in previous:
+            row = c.execute('SELECT id FROM users WHERE login=?', (login,)).fetchone()
+            if row:
+                recipients.add(row[0])
+        c.executemany('INSERT OR IGNORE INTO task_notifications(history_id,user_id) VALUES(?,?)', [(hid, recipient) for recipient in sorted(recipients - {uid})])
+
+    def task_updates(self, after=None):
+        """Initial snapshot skips old events. Recipient and board access are both required."""
+        with self.connection() as c:
+            c.execute('BEGIN')
+            actor = self.actor(c)
+            cursor = c.execute('SELECT COALESCE(MAX(id),0) FROM task_notifications').fetchone()[0]
+            if after is None:
+                return {'cursor': cursor, 'events': []}
+            sql = 'SELECT n.id,h.id AS history_id,h.task_id,h.operation,h.changes,h.created_at,t.board_id,t.title,t.number,b.name AS board_name,u.login,u.display_name AS author FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id JOIN users u ON u.id=h.user_id WHERE n.id>:after AND n.user_id=:uid AND h.user_id<>:uid AND b.archived=0 AND (' + self.board_visibility() + ') ORDER BY n.id'
+            events = [dict(r) for r in c.execute(sql, {'after': after, 'uid': actor['id'], 'role': actor['role']})]
+            columns = {}
+            for event in events:
+                change = json.loads(event['changes']).get('column_id')
+                if change:
+                    key = (event['board_id'], change[1])
+                    if key not in columns:
+                        row = c.execute('SELECT name FROM columns WHERE board_id=? AND id=?', key).fetchone()
+                        columns[key] = row[0] if row else None
+                    event['status_name'] = columns[key]
+            return {'cursor': cursor, 'events': events}
 
     def catalogs(self, board_id):
         with self.connection() as c:

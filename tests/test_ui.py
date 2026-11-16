@@ -83,6 +83,26 @@ class UITest(unittest.TestCase):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
 
+    def test_task_notification_opens_card_and_keeps_existing_draft(self):
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and not w.jobs)
+        w.show_task_notification(self.result['id'])
+        wait_for(lambda: bool(w.dialogs) and not w.jobs and not any(d.jobs for d in w.dialogs))
+        dialog = next(iter(w.dialogs))
+        self.windows.append(dialog)
+        dialog.title.setText('Несохранённый черновик')
+        w.show_task_notification(self.result['id'])
+        wait_for(lambda: not w.jobs)
+        self.assertEqual(len(w.dialogs), 1)
+        self.assertEqual(dialog.title.text(), 'Несохранённый черновик')
+        self.store.set_board_access(self.bid, [], self.store.profile()['id'])
+        w.show_task_notification(self.result['id'])
+        wait_for(lambda: not w.jobs)
+        self.assertIn('Не удалось открыть задачу', w.status.text())
+        self.assertEqual(dialog.title.text(), 'Несохранённый черновик')
+
     def test_personal_section_employee_creation_management_and_restore(self):
         from PyQt5.QtWidgets import QInputDialog, QMenu
         self.store.save_user('private-user', 'Личный пользователь')

@@ -108,3 +108,45 @@ def conversation_html(comments, events, login, columns=()):
             result.append('<p align="center" style="color:{color};font-size:9pt">{text}<br>{date}</p>'.format(
                 color=TOKENS['muted'], text=html.escape(text), date=html.escape(date_text(date, True))))
     return ''.join(result) or comments_html([], login)
+
+
+def task_notification_text(event, login):
+    """Short desktop summary; large descriptions/checklists stay inside the card."""
+    try:
+        changes = json.loads(event['changes'])
+    except (ValueError, TypeError):
+        changes = {}
+    title = ' '.join(event['title'].split())
+    if len(title) > 80:
+        title = title[:77] + '…'
+    author = ' '.join(event['author'].split())[:40]
+    heading = '№{} «{}»\n{}: '.format(event['number'], title, author)
+    assignments = changes.get('assignees', [None, None])
+    previous, current = assignments[0] or [], assignments[1] or []
+    if event['operation'] == 'Создание':
+        summary = 'Вам назначена задача' if login in current else 'Создана задача'
+        return heading + summary
+    details = []
+    if login in current and login not in previous:
+        details.append('Вам назначена задача')
+    elif login in previous and login not in current:
+        details.append('Вы сняты с задачи')
+    if 'column_id' in changes or 'column_name' in changes:
+        status = event.get('status_name') or (changes.get('column_name') or [None, None])[1]
+        details.append('Изменён статус' + (': ' + status if status else ''))
+    elif 'completed_at' in changes:
+        details.append('Задача завершена' if changes['completed_at'][1] else 'Задача возобновлена')
+    if 'archived' in changes:
+        details.append('Задача архивирована' if changes['archived'][1] else 'Задача восстановлена')
+    if event['operation'] == 'Комментарий':
+        details.append('Добавлен комментарий')
+    elif event['operation'] == 'Вложение':
+        details.append('Добавлено вложение')
+    names = {'title': 'название', 'description': 'описание', 'priority': 'приоритет', 'due_date': 'срок', 'labels': 'метки', 'checklist': 'чек-лист'}
+    changed = [title for key, title in names.items() if key in changes]
+    if 'assignees' in changes and not any(login in value for value in (previous, current)):
+        changed.append('исполнители')
+    if changed:
+        details.append('Изменены: ' + ', '.join(changed))
+    summary = '; '.join(details) or event['operation']
+    return heading + summary

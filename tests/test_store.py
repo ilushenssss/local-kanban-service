@@ -133,7 +133,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(upgraded.detail(task['id'])['title'], task['title'])
         upgraded.team_send('После обновления')
         with upgraded.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 6)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 7)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
 
     def test_create_and_history(self):

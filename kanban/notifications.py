@@ -5,6 +5,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QSystemTrayIcon, QMenu
 from .theme import theme_settings
 from .spellcheck import spell_engine
+from .presentation import task_notification_text
 
 
 class Notifications(QObject):
@@ -18,6 +19,9 @@ class Notifications(QObject):
         self.exiting = False
         self.loading = False
         self.last_board = None
+        self.last_task = None
+        self.task_cursor = None
+        self.task_pending = []
         self.available = QSystemTrayIcon.isSystemTrayAvailable()
         self.tray = QSystemTrayIcon(QIcon(str(Path(__file__).parent / 'assets/teamsync-logo.png')), window)
         self.tray.setToolTip('TeamSync — чаты досок')
@@ -35,6 +39,10 @@ class Notifications(QObject):
         self.timer.setSingleShot(True)
         self.timer.setInterval(1200)
         self.timer.timeout.connect(self.flush)
+        self.task_timer = QTimer(self)
+        self.task_timer.setSingleShot(True)
+        self.task_timer.setInterval(1200)
+        self.task_timer.timeout.connect(self.flush_tasks)
         self.poll_timer = QTimer(self)
         self.poll_timer.setInterval(3000)
         self.poll_timer.timeout.connect(self.poll)
@@ -42,6 +50,9 @@ class Notifications(QObject):
 
     def enabled(self):
         return self.settings.value('notifications/enabled', True, type=bool)
+
+    def tasks_enabled(self):
+        return self.settings.value('notifications/tasks', True, type=bool)
 
     def background(self):
         return self.available and self.settings.value('notifications/close_to_tray', True, type=bool)
@@ -51,6 +62,11 @@ class Notifications(QObject):
         action.setCheckable(True)
         action.setChecked(self.enabled())
         action.toggled.connect(lambda value: self.settings.setValue('notifications/enabled', value))
+        tasks = menu.addAction('Уведомления об изменениях задач')
+        tasks.setCheckable(True)
+        tasks.setChecked(self.tasks_enabled())
+        tasks.toggled.connect(lambda value: self.settings.setValue('notifications/tasks', value))
+        menu.aboutToShow.connect(lambda: tasks.setChecked(self.tasks_enabled()))
         spelling = menu.addAction('Проверять орфографию')
         spelling.setCheckable(True)
         spelling.setChecked(spell_engine().enabled())
@@ -68,7 +84,7 @@ class Notifications(QObject):
         if reason in (QSystemTrayIcon.Trigger, QSystemTrayIcon.DoubleClick):
             self.open_chat()
 
-    def open_chat(self):
+    def restore_window(self):
         w = self.window
         if w.isMinimized():
             w.setWindowState(w.windowState() & ~Qt.WindowMinimized)
@@ -77,11 +93,17 @@ class Notifications(QObject):
             w.show()
         w.raise_()
         w.activateWindow()
-        w.messenger.open_chat()
+    def open_chat(self):
+        self.restore_window()
+        self.window.messenger.open_chat()
         self.pending.clear()
         self.timer.stop()
 
     def open_notification(self):
+        if self.last_task is not None:
+            self.restore_window()
+            self.window.show_task_notification(self.last_task)
+            return
         self.open_chat()
         if self.last_board is not None and hasattr(self.window, 'show_board_chat'):
             self.window.show_board_chat(self.last_board)
@@ -91,11 +113,14 @@ class Notifications(QObject):
         if self.loading or store is None:
             return
         self.loading = True
-        def done(messages, error):
+        def done(result, error):
             self.loading = False
             if not error:
-                self.observe(messages, store.login)
-        self.window.work(lambda: store.chat_updates(self.cursor), done)
+                self.observe(result['chat'], store.login)
+                self.observe_tasks(result['tasks'])
+        def read():
+            return {'chat': store.chat_updates(self.cursor), 'tasks': store.task_updates(self.task_cursor)}
+        self.window.work(read, done)
 
     def chat_active(self, board_id=None):
         w = self.window
@@ -134,12 +159,60 @@ class Notifications(QObject):
             if error or not self.enabled() or self.chat_active(board_id):
                 return
             self.last_board = board_id
+            self.last_task = None
             self.tray.showMessage(title[:100], text[:240], QSystemTrayIcon.Information, 6000)
         store = getattr(self.window, 'store', None)
         if store is not None and board_id is not None:
             self.window.work(lambda: store.team_chat(board_id=board_id), show)
         else:
             show()
+
+    def observe_tasks(self, result):
+        fresh = [e for e in result['events'] if self.task_cursor is not None and e['id'] > self.task_cursor]
+        self.task_cursor = max(self.task_cursor or 0, result['cursor'])
+        if not self.tasks_enabled():
+            return
+        self.task_pending.extend(fresh)
+        if self.task_pending and not self.task_timer.isActive():
+            self.task_timer.start(1200)
+
+    def flush_tasks(self):
+        events, self.task_pending = self.task_pending, []
+        if not events or not self.available or not self.tasks_enabled():
+            return
+        store = getattr(self.window, 'store', None)
+        if store is None:
+            return
+        # Recheck access to every queued task before constructing desktop text.
+        def read():
+            allowed = []
+            for event in events:
+                try:
+                    detail = store.detail(event['task_id'])
+                    with store.connection() as c:
+                        store.active_board(c, detail['board_id'])
+                    allowed.append(event)
+                except ValueError:
+                    continue
+            return allowed
+        def show(allowed, error):
+            if error:
+                if self.tasks_enabled():
+                    self.task_pending = events + self.task_pending
+                    self.task_timer.start(3000)
+                return
+            if not allowed or not self.tasks_enabled():
+                return
+            last = allowed[-1]
+            title = 'TeamSync · ' + last['board_name']
+            text = task_notification_text(last, store.login)
+            if len(allowed) > 1:
+                tasks = len({event['task_id'] for event in allowed})
+                title = 'TeamSync · изменений: {}, задач: {}'.format(len(allowed), tasks)
+            self.last_task = last['task_id']
+            self.last_board = last['board_id']
+            self.tray.showMessage(title[:100], text[:240], QSystemTrayIcon.Information, 6000)
+        self.window.work(read, show)
 
     def exit_app(self):
         self.exiting = True
@@ -152,4 +225,6 @@ class Notifications(QObject):
         self.poll_timer.stop()
         self.timer.stop()
         self.pending.clear()
+        self.task_timer.stop()
+        self.task_pending.clear()
         self.tray.hide()

@@ -1347,7 +1347,7 @@ class MainWindow(QMainWindow, Async):
                 action.setEnabled(permissions.get('create_board', False))
             elif text == 'Участники доски':
                 action.setEnabled(bool(self.board_id) and permissions.get('manage', False) and permissions.get('share', False))
-            elif text not in ('Обновить', 'Уведомления чатов досок', 'Закрывать окно в трей', 'Проверять орфографию') and not action.isSeparator():
+            elif text not in ('Обновить', 'Уведомления чатов досок', 'Уведомления об изменениях задач', 'Закрывать окно в трей', 'Проверять орфографию') and not action.isSeparator():
                 action.setEnabled(bool(self.board_id) and permissions.get('manage', False))
 
     def open_access(self, board_id=None):
@@ -1488,6 +1488,19 @@ class MainWindow(QMainWindow, Async):
                 return
         self.status.setText('Доступ к доске отозван или доска архивирована. Обновите список досок.')
         self.refresh()
+
+    def show_task_notification(self, task_id):
+        def done(task, error):
+            if error:
+                self.status.setText('Не удалось открыть задачу: ' + error_text(error))
+                return
+            for dialog in self.dialogs:
+                if dialog.data.get('id') == task_id and dialog.isVisible():
+                    dialog.raise_()
+                    dialog.activateWindow()
+                    return
+            self.open_personal_task(task)
+        self.work(lambda: self.store.detail(task_id), done)
 
     def select_board_tab(self, index):
         if index < 0:
