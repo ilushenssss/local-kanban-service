@@ -68,10 +68,55 @@ class UITest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.store = Store(Path(self.tmp.name) / 'data', 'tester')
+        self.store.initialize_admin('tester')
         self.bid = self.store.board_action('Проектный отдел')
         self.columns = self.store.columns(self.bid)
+        import getpass
+        for login in dict.fromkeys(['colleague', 'designer', 'another', getpass.getuser()]):
+            if login != 'tester':
+                uid = self.store.save_user(login, login)
+                self.store.set_role(uid, 'manager')
+        self.grant_all(self.bid)
         self.result = self.store.save_task({'board_id': self.bid, 'column_id': self.columns[0]['id'], 'title': 'Подготовить договор', 'description': 'Согласовать условия', 'due_date': '2020-01-01', 'priority': 'Высокий', 'assignees': ['tester'], 'labels': ['Документы'], 'checklist': [{'text': 'Проверить реквизиты', 'done': 1}, {'text': 'Подписать', 'done': 0}]})
         self.windows = []
+    def grant_all(self, board_id):
+        users = self.store.access_users()
+        self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
+
+    def test_role_and_board_access_dialogs(self):
+        from kanban.ui import AccessDialog
+        from unittest.mock import patch
+        from PyQt5.QtWidgets import QMessageBox
+        dialog = AccessDialog(self.store, self.bid)
+        self.windows.append(dialog)
+        dialog.show()
+        wait_for(lambda: not dialog.jobs)
+        self.assertGreater(dialog.list.count(), 1)
+        self.assertTrue(dialog.choice.isEnabled())
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        dialog.grab().save(str(evidence / 'access-board-linux.png'))
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+            dialog.save()
+            wait_for(lambda: not dialog.jobs)
+        roles = AccessDialog(self.store)
+        self.windows.append(roles)
+        roles.show()
+        wait_for(lambda: not roles.jobs)
+        colleague = next(i for i in range(roles.list.count()) if roles.list.item(i).data(Qt.UserRole)['login'] == 'colleague')
+        roles.list.setCurrentRow(colleague)
+        roles.choice.setCurrentIndex(roles.choice.findData('employee'))
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+            roles.save()
+            wait_for(lambda: not roles.jobs)
+        self.assertEqual(Store(self.store.folder, 'colleague').profile()['role'], 'employee')
+        employee_dialog = AccessDialog(Store(self.store.folder, 'colleague'), self.bid)
+        self.windows.append(employee_dialog)
+        employee_dialog.show()
+        wait_for(lambda: not employee_dialog.jobs)
+        self.assertFalse(employee_dialog.save_button.isEnabled())
+        self.assertIn('Недостаточно прав', employee_dialog.status.text())
+
     def tearDown(self):
         for w in list(self.windows):
             if sip.isdeleted(w):
@@ -208,6 +253,7 @@ class UITest(unittest.TestCase):
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
         board = self.store.board_action('Разработка / Релиз платформы', column_names=names)
+        self.grant_all(board)
         cols = self.store.columns(board)
         labels = ['Frontend', 'Спринт 4']
         titles = ['Обновить форму регистрации пользователей', 'Добавить поиск по проектам',
@@ -283,6 +329,7 @@ class UITest(unittest.TestCase):
         import getpass
         login = getpass.getuser()
         second = self.store.board_action('Вторая доска')
+        self.grant_all(second)
         second_columns = self.store.columns(second)
         own = self.store.save_task(dict(board_id=second, column_id=second_columns[0]['id'], title='Личная задача', assignees=[login]))
         self.store.save_task(dict(board_id=second, column_id=second_columns[0]['id'], title='Чужая задача', assignees=['another']))
@@ -600,6 +647,7 @@ class UITest(unittest.TestCase):
         self.assertTrue(d.grab().save(str(evidence / 'task-linux.png')))
     def test_new_task_catalog_selection_calendar_and_close(self):
         self.store.save_user('ivanov', 'Иванов Иван')
+        self.grant_all(self.bid)
         self.store.add_label(self.bid, 'На проверку')
         d = TaskDialog(self.store, self.columns, {'board_id': self.bid, 'column_id': self.columns[0]['id']})
         self.windows.append(d)
@@ -767,6 +815,7 @@ class UITest(unittest.TestCase):
             self.assertLess(add.geometry().bottom(), cards.geometry().top())
         long_name = 'Иванов Иван Иванович — ведущий специалист проектного отдела'
         self.store.save_user('ivanov', long_name)
+        self.grant_all(self.bid)
         d = self.dialog()
         choose_option(d.assignees.combo, 'ivanov')
         APP.processEvents()
@@ -819,6 +868,7 @@ class UITest(unittest.TestCase):
         QTest.mouseClick(d.save_button, Qt.LeftButton)
         wait_for(lambda: not d.jobs)
         self.assertTrue(any('Петров Пётр' in d.list.item(i).text() for i in range(d.list.count())))
+        self.grant_all(self.bid)
         task = self.dialog()
         self.assertTrue(any(task.assignees.combo.itemData(i) == 'petrov' for i in range(task.assignees.combo.count())))
         label = CatalogDialog(self.store, self.bid, 'labels')
@@ -848,7 +898,7 @@ class UITest(unittest.TestCase):
         self.assertIn('tester', d.assignees.values())
 
     def test_readable_history_and_all_priorities(self):
-        self.store.save_user('tester', 'Тестировщик', self.store.catalogs(self.bid)['users'][0]['id'])
+        self.store.save_user('tester', 'Тестировщик', self.store.profile()['id'])
         data = self.store.detail(self.result['id'])
         data['due_date'] = '2027-04-01'
         data['column_id'] = self.columns[2]['id']
@@ -903,6 +953,7 @@ class UITest(unittest.TestCase):
         d.description.setPlainText('Мой текст')
         selected = d.assignees.values()
         self.store.save_user('new-colleague', 'Новый сотрудник')
+        self.grant_all(self.bid)
         self.store.add_label(self.bid, 'Новая метка коллеги')
         other = self.store.detail(self.result['id'])
         other['description'] = 'Текст коллеги'

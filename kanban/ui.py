@@ -141,7 +141,7 @@ class CatalogDialog(QDialog, Async):
         heading = QLabel(self.windowTitle())
         heading.setObjectName('Heading')
         root.addWidget(heading)
-        hint = QLabel('Имя Windows связывает сотрудника с фильтром «Мои задачи».\nЭто справочник исполнителей, а не система входа.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
+        hint = QLabel('Имя Windows связывает сотрудника с фильтром «Мои задачи».\nРоли и доступ настраиваются отдельно администратором.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
         hint.setObjectName('Muted')
         hint.setWordWrap(True)
         root.addWidget(hint)
@@ -185,7 +185,7 @@ class CatalogDialog(QDialog, Async):
                 item.setData(Qt.UserRole, row)
                 self.list.addItem(item)
             self.status.setText('Записей: {}'.format(len(rows)))
-        self.work(lambda: self.store.catalogs(self.board_id), done)
+        self.work(lambda: {'users': self.store.access_users()} if self.kind == 'users' else self.store.catalogs(self.board_id), done)
 
     def edit_entry(self):
         if self.jobs or self.retry or not self.list.currentItem():
@@ -244,6 +244,111 @@ class CatalogDialog(QDialog, Async):
         else:
             event.ignore()
             self.reject()
+
+
+class AccessDialog(QDialog, Async):
+    """Shared native list/form workflow for roles and board membership."""
+    changed = pyqtSignal()
+    ROLE_NAMES = {'admin': 'Администратор', 'manager': 'Менеджер', 'employee': 'Сотрудник'}
+
+    def __init__(self, store, board_id=None, parent=None):
+        super().__init__(parent)
+        self.init_async()
+        self.store, self.board_id = store, board_id
+        self.setWindowTitle('Участники доски' if board_id else 'Роли сотрудников')
+        self.resize(560, 520)
+        root = QVBoxLayout(self)
+        hint = QLabel('Отметьте сотрудников, которым доступна вся доска.' if board_id else
+                      'Администратор один. Назначение нового передаст ему все права; прежний станет менеджером.')
+        hint.setWordWrap(True)
+        root.addWidget(hint)
+        self.list = QListWidget()
+        root.addWidget(self.list, 1)
+        self.choice = QComboBox()
+        form = QFormLayout()
+        form.addRow('Владелец доски' if board_id else 'Роль сотрудника', self.choice)
+        root.addLayout(form)
+        self.list.currentItemChanged.connect(self.select_user)
+        actions = QHBoxLayout()
+        self.save_button = button('Сохранить доступ' if board_id else 'Назначить роль', self.save, actions, 'primary')
+        button('Закрыть', self.reject, actions)
+        root.addLayout(actions)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.PlainText)
+        root.addWidget(self.status)
+        self.load()
+
+    def select_user(self, item, previous):
+        if item and self.board_id is None:
+            self.choice.setCurrentIndex(self.choice.findData(item.data(Qt.UserRole)['role']))
+
+    def load(self):
+        self.save_button.setEnabled(False)
+        self.status.setText('Загрузка…')
+        def done(data, error):
+            if error:
+                self.status.setText(error_text(error) + '. Закройте и откройте окно для повтора.')
+                return
+            self.list.clear()
+            self.choice.clear()
+            if self.board_id is None:
+                for role, title in self.ROLE_NAMES.items():
+                    self.choice.addItem(title, role)
+                rows = data
+            else:
+                rows = data['users']
+                self.choice.setEnabled(data['can_transfer'])
+            for row in rows:
+                item = QListWidgetItem(row['display_name'] + ' · ' + row['login'] + ' · ' + self.ROLE_NAMES[row['role']])
+                item.setData(Qt.UserRole, row)
+                if self.board_id:
+                    item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
+                    item.setCheckState(Qt.Checked if row['member'] or row['id'] == data['owner_id'] or row['role'] == 'admin' else Qt.Unchecked)
+                    if row['id'] == data['owner_id'] or row['role'] == 'admin':
+                        item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+                    if row['role'] in ('manager', 'admin'):
+                        self.choice.addItem(row['display_name'] + ' · ' + row['login'], row['id'])
+                self.list.addItem(item)
+            if self.board_id:
+                self.choice.setCurrentIndex(self.choice.findData(data['owner_id']))
+            elif self.list.count():
+                self.list.setCurrentRow(0)
+            self.save_button.setEnabled(True)
+            self.status.setText('Пользователей: ' + str(len(rows)))
+        self.work(lambda: self.store.board_access(self.board_id) if self.board_id else self.store.access_users(), done)
+
+    def save(self):
+        if self.jobs or (not self.board_id and not self.list.currentItem()):
+            return
+        if self.board_id:
+            members = [self.list.item(i).data(Qt.UserRole)['id'] for i in range(self.list.count()) if self.list.item(i).checkState() == Qt.Checked]
+            owner = self.choice.currentData()
+            action = lambda: self.store.set_board_access(self.board_id, members, owner)
+            text = 'Сохранить выбранный доступ к доске? Снятые отметки отзовут доступ сотрудников.'
+        else:
+            row = self.list.currentItem().data(Qt.UserRole)
+            role = self.choice.currentData()
+            action = lambda: self.store.set_role(row['id'], role)
+            text = 'Назначить сотруднику «{}» роль «{}»?'.format(row['display_name'], self.ROLE_NAMES[role])
+        if QMessageBox.question(self, self.windowTitle(), text, QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            return
+        self.save_button.setEnabled(False)
+        self.status.setText('Сохранение…')
+        def done(result, error):
+            self.save_button.setEnabled(True)
+            if error:
+                self.status.setText(error_text(error))
+                return
+            self.changed.emit()
+            self.load()
+        self.work(action, done)
+
+    def reject(self):
+        if self.jobs:
+            self.status.setText('Дождитесь завершения операции')
+            return
+        super().reject()
 
 
 class TaskDialog(QDialog, Async):
@@ -510,6 +615,7 @@ class TaskDialog(QDialog, Async):
             self.catalog_ready = True
             self.save_button.setEnabled(not self.pending)
             self.catalog_data = data
+            self.archived.setEnabled(data.get('permissions', {}).get('create', False))
             columns = data['columns']
             if columns != self.columns:
                 selected, caption = self.column.currentData(), self.column.currentText()
@@ -1014,7 +1120,7 @@ class MainWindow(QMainWindow, Async):
         self.my_nav.setCheckable(True)
         self.report_nav = button('Отчёты', lambda: self.pages.setCurrentWidget(self.statistics), side, 'quiet')
         self.report_nav.setCheckable(True)
-        button('Сотрудники', lambda: self.open_catalog('users'), side, 'quiet')
+        self.users_button = button('Сотрудники', lambda: self.open_catalog('users'), side, 'quiet')
         self.theme_button = button('Тёмная тема', self.toggle_theme, side, 'quiet')
         self.theme_button.setCheckable(True)
         self.theme_button.setChecked(theme_settings().value('dark', False, type=bool))
@@ -1185,8 +1291,28 @@ class MainWindow(QMainWindow, Async):
             current = self.boards_list.currentItem()
             self.board_title.setText(current.text() if current else 'Выберите доску')
 
+    def apply_menu_permissions(self, menu):
+        permissions = getattr(self, 'permissions', {})
+        for action in menu.actions():
+            text = action.text()
+            if text in ('Роли сотрудников', 'Резервная копия'):
+                action.setEnabled(permissions.get('admin', False))
+            elif text == 'Создать доску':
+                action.setEnabled(permissions.get('create', False))
+            elif text != 'Обновить' and not action.isSeparator():
+                action.setEnabled(bool(self.board_id) and permissions.get('manage', False))
+
+    def open_access(self, board_id=None):
+        if not self.store:
+            return
+        dialog = AccessDialog(self.store, board_id, self)
+        dialog.changed.connect(self.refresh)
+        dialog.exec_()
+
     def workspace_menu(self):
         menu = QMenu(self)
+        menu.addAction('Участники доски', lambda: self.open_access(self.board_id))
+        menu.addAction('Роли сотрудников', lambda: self.open_access())
         menu.addAction('Колонки доски', self.edit_columns)
         menu.addAction('Стикеры доски', lambda: self.open_catalog('labels'))
         menu.addSeparator()
@@ -1195,6 +1321,7 @@ class MainWindow(QMainWindow, Async):
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh)
         menu.addAction('Резервная копия', self.backup)
+        self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
 
     def board_settings_menu(self):
@@ -1202,6 +1329,7 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Создать доску', lambda: self.board_action('create'))
         menu.addAction('Переименовать доску', lambda: self.board_action('rename'))
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
+        self.apply_menu_permissions(menu)
         menu.exec_(self.sidebar.mapToGlobal(self.sidebar.rect().center()))
 
     def collapse_sidebar(self):
@@ -1254,6 +1382,9 @@ class MainWindow(QMainWindow, Async):
         self.filters_changed()
 
     def new_task_in_column(self, column_id):
+        if not getattr(self, 'permissions', {}).get('create', False):
+            self.status.setText('Создавать задачи могут менеджер и администратор')
+            return
         if not self.store or not self.board_id:
             return
         self.open_task({'board_id': self.board_id, 'column_id': column_id, 'title': ''})
@@ -1362,6 +1493,9 @@ class MainWindow(QMainWindow, Async):
                 return
             self.last_snapshot = copy.deepcopy(snapshot)
             boards, selected, columns, tasks, all_tasks, catalogs, personal = result
+            self.permissions = catalogs.get('permissions', {})
+            self.users_button.setEnabled(self.permissions.get('admin', False))
+            self.new_task_button.setEnabled(self.permissions.get('create', False) and bool(selected))
             self.my_tasks.update_data(personal)
             self.list_view.update_data(tasks, columns)
             self.gantt_view.update_data(tasks, columns)
@@ -1449,6 +1583,7 @@ class MainWindow(QMainWindow, Async):
                 header_row.addWidget(counter)
                 layout.addLayout(header_row)
                 add_task = button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
+                add_task.setEnabled(self.permissions.get('create', False))
                 add_task.setObjectName('AddColumnTask')
                 add_task.setCursor(Qt.PointingHandCursor)
                 cards = Cards(column['id'], self.expanded_task_ids)
@@ -1538,6 +1673,9 @@ class MainWindow(QMainWindow, Async):
         d.show()
 
     def new_task(self):
+        if not getattr(self, 'permissions', {}).get('create', False):
+            self.status.setText('Создавать задачи могут менеджер и администратор')
+            return
         if not self.board_id or not self.columns_data:
             self.status.setText('Сначала создайте или выберите доску')
             return
@@ -1631,7 +1769,7 @@ class MainWindow(QMainWindow, Async):
         cards.setCurrentItem(item)
         menu = QMenu(self)
         menu.addAction('Переместить в…', self.move_selected)
-        menu.addAction('Восстановить' if item.data(Qt.UserRole)['archived'] else 'Архивировать', self.archive_selected)
+        menu.addAction('Восстановить' if item.data(Qt.UserRole)['archived'] else 'Архивировать', self.archive_selected).setEnabled(getattr(self, 'permissions', {}).get('create', False))
         self.drag_state_changed(True)
         try:
             menu.exec_(cards.viewport().mapToGlobal(point))

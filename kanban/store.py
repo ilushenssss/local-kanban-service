@@ -22,6 +22,10 @@ class Conflict(Exception):
         self.current = current
 
 
+class AccessDenied(ValueError):
+    pass
+
+
 class Busy(Exception):
     pass
 
@@ -66,7 +70,7 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 2:
+                if version > 3:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
@@ -75,8 +79,133 @@ class Store:
                     c.execute('CREATE TABLE IF NOT EXISTS team_messages(id INTEGER PRIMARY KEY, user_id INTEGER NOT NULL REFERENCES users(id), body TEXT NOT NULL, created_at TEXT NOT NULL)')
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(2,?)', (now(),))
                     c.execute('PRAGMA user_version=2')
+                if version < 3 and 'role' not in {r[1] for r in c.execute('PRAGMA table_info(users)')}:
+                    c.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'employee' CHECK(role IN ('admin','manager','employee'))")
+                    c.execute('ALTER TABLE boards ADD COLUMN owner_id INTEGER REFERENCES users(id)')
+                    c.execute("CREATE UNIQUE INDEX one_admin ON users(role) WHERE role='admin'")
+                    c.execute('CREATE TABLE access_history(id INTEGER PRIMARY KEY, actor TEXT NOT NULL, created_at TEXT NOT NULL, operation TEXT NOT NULL, payload TEXT NOT NULL)')
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(3,?)', (now(),))
+                    c.execute('PRAGMA user_version=3')
+                c.execute('PRAGMA user_version=3')
                 self.user(c, self.login)
                 c.commit()
+
+    def actor(self, c):
+        if not c.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
+            raise AccessDenied('Администратор не назначен. Выполните tools/init_admin.py на сервере.')
+        row = c.execute('SELECT * FROM users WHERE login=?', (self.login,)).fetchone()
+        if not row:
+            raise AccessDenied('Пользователь не зарегистрирован')
+        return row
+
+    def require(self, c, action='read', board_id=None):
+        actor = self.actor(c)
+        if actor['role'] == 'admin':
+            return actor
+        allowed = action == 'read' and board_id is None
+        if board_id is not None:
+            board = c.execute('SELECT * FROM boards WHERE id=?', (board_id,)).fetchone()
+            member = c.execute('SELECT 1 FROM board_members WHERE board_id=? AND user_id=?', (board_id, actor['id'])).fetchone()
+            owner = board and board['owner_id'] == actor['id']
+            allowed = bool(board and (member or owner))
+            if action == 'manage':
+                allowed = bool(owner and actor['role'] == 'manager')
+            elif action in ('create_task', 'archive_task'):
+                allowed = allowed and actor['role'] == 'manager'
+        elif action == 'create_board':
+            allowed = actor['role'] == 'manager'
+        if not allowed:
+            raise AccessDenied('Недостаточно прав или доступ к доске отозван')
+        return actor
+
+    def profile(self):
+        with self.connection() as c:
+            return dict(self.actor(c))
+
+    def audit_access(self, c, operation, payload):
+        c.execute('INSERT INTO access_history(actor,created_at,operation,payload) VALUES(?,?,?,?)',
+                  (self.login, now(), operation, json.dumps(payload, ensure_ascii=False)))
+
+    def initialize_admin(self, login):
+        """Offline bootstrap only. Existing administrator cannot be replaced here."""
+        with self.exclusive(), self.connection() as c:
+            c.execute('BEGIN IMMEDIATE')
+            if c.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
+                raise ValueError('Администратор уже назначен. Передайте права из приложения.')
+            uid = self.user(c, login)
+            c.execute("UPDATE users SET role='admin' WHERE id=?", (uid,))
+            c.execute('UPDATE boards SET owner_id=? WHERE owner_id IS NULL', (uid,))
+            self.audit_access(c, 'initialize_admin', {'login': login})
+            c.commit()
+        return uid
+
+    def access_users(self):
+        with self.connection() as c:
+            self.require(c, 'admin')
+            return [dict(r) for r in c.execute('SELECT * FROM users ORDER BY display_name')]
+
+    def set_role(self, user_id, role, request_id=None):
+        if role not in ('admin', 'manager', 'employee'):
+            raise ValueError('Неизвестная роль')
+        def apply(c, uid):
+            target = c.execute('SELECT * FROM users WHERE id=?', (user_id,)).fetchone()
+            if not target:
+                raise ValueError('Сотрудник не найден')
+            if target['role'] == 'admin' and role != 'admin':
+                raise ValueError('Передайте роль администратора другому сотруднику')
+            if role == 'employee' and c.execute('SELECT 1 FROM boards WHERE owner_id=? AND archived=0', (user_id,)).fetchone():
+                raise ValueError('Сначала передайте доски другому менеджеру')
+            if role == 'admin' and target['role'] != 'admin':
+                c.execute("UPDATE users SET role='manager' WHERE role='admin'")
+            c.execute('UPDATE users SET role=? WHERE id=?', (role, user_id))
+            self.audit_access(c, 'role', [user_id, role])
+            return True
+        return self.write('role', [user_id, role], apply, request_id)
+
+    def board_access(self, board_id):
+        with self.connection() as c:
+            self.require(c, 'manage', board_id)
+            owner = c.execute('SELECT owner_id FROM boards WHERE id=?', (board_id,)).fetchone()[0]
+            rows = c.execute('SELECT u.*, EXISTS(SELECT 1 FROM board_members m WHERE m.board_id=? AND m.user_id=u.id) AS member FROM users u ORDER BY display_name', (board_id,))
+            return {'owner_id': owner, 'can_transfer': self.actor(c)['role'] == 'admin', 'users': [dict(r) for r in rows]}
+
+    def set_board_access(self, board_id, members, owner_id, request_id=None):
+        members = sorted(set(members))
+        def apply(c, uid):
+            self.require(c, 'manage', board_id)
+            board = c.execute('SELECT * FROM boards WHERE id=?', (board_id,)).fetchone()
+            if owner_id != board['owner_id']:
+                self.require(c, 'admin')
+            owner = c.execute('SELECT role FROM users WHERE id=?', (owner_id,)).fetchone()
+            if not owner or owner['role'] not in ('admin', 'manager'):
+                raise ValueError('Владелец должен быть менеджером или администратором')
+            for member in members:
+                if not c.execute('SELECT 1 FROM users WHERE id=?', (member,)).fetchone():
+                    raise ValueError('Сотрудник не найден')
+            c.execute('UPDATE boards SET owner_id=? WHERE id=?', (owner_id, board_id))
+            c.execute('DELETE FROM board_members WHERE board_id=?', (board_id,))
+            c.executemany('INSERT INTO board_members(board_id,user_id) VALUES(?,?)', [(board_id, x) for x in members])
+            self.audit_access(c, 'board_access', [board_id, members, owner_id])
+            return True
+        return self.write('access', [board_id, members, owner_id], apply, request_id)
+
+    def authorize_write(self, c, operation, payload):
+        self.actor(c)
+        if operation in ('role', 'user'):
+            self.require(c, 'admin')
+        elif operation == 'board':
+            self.require(c, 'create_board' if payload[1] is None else 'manage', payload[1])
+        elif operation in ('columns', 'label', 'access'):
+            self.require(c, 'manage', payload[0])
+        elif operation == 'task':
+            old = self.detail_in(c, payload['id']) if payload.get('id') else None
+            self.require(c, 'edit' if old else 'create_task', payload['board_id'])
+            if old and old['board_id'] != payload['board_id']:
+                raise AccessDenied('Перенос между досками не поддерживается')
+            if old and old['archived'] != bool(payload.get('archived', False)):
+                self.require(c, 'archive_task', old['board_id'])
+        elif operation in ('comment', 'attachment', 'read'):
+            self.detail_in(c, payload[0])
 
     def connection(self):
         c = sqlite3.connect(str(self.db), timeout=self.timeout)
@@ -116,10 +245,11 @@ class Store:
 
     def write(self, operation, payload, fn, request_id=None):
         request_id = request_id or uuid.uuid4().hex
-        fingerprint = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        fingerprint = hashlib.sha256(json.dumps([self.login, payload], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         with self.exclusive(), self.connection() as c:
             c.execute('BEGIN IMMEDIATE')
             try:
+                self.authorize_write(c, operation, payload)
                 old = c.execute('SELECT * FROM request_deduplication WHERE id=?', (request_id,)).fetchone()
                 if old:
                     if old['operation'] != operation or old['fingerprint'] != fingerprint:
@@ -140,9 +270,14 @@ class Store:
     def catalogs(self, board_id):
         with self.connection() as c:
             c.execute('BEGIN')
-            users = [dict(r) for r in c.execute('SELECT id,login,display_name FROM users ORDER BY display_name COLLATE NOCASE,login')]
+            self.require(c, 'read', board_id)
+            users = [dict(r) for r in c.execute('SELECT id,login,display_name FROM users WHERE ? IS NULL OR id IN (SELECT user_id FROM board_members WHERE board_id=?) OR id=(SELECT owner_id FROM boards WHERE id=?) OR role="admin" ORDER BY display_name COLLATE NOCASE,login', (board_id, board_id, board_id))]
             labels = [dict(r) for r in c.execute('SELECT id,name FROM labels WHERE board_id=? ORDER BY name COLLATE NOCASE', (board_id,))]
-            return {'users': users, 'labels': labels}
+            actor = self.actor(c)
+            board = c.execute('SELECT owner_id FROM boards WHERE id=?', (board_id,)).fetchone()
+            permissions = {'admin': actor['role'] == 'admin', 'create': actor['role'] in ('admin', 'manager'),
+                           'manage': actor['role'] == 'admin' or bool(board and board[0] == actor['id'] and actor['role'] == 'manager')}
+            return {'users': users, 'labels': labels, 'permissions': permissions}
 
     def save_user(self, login, display_name, user_id=None, request_id=None):
         login, display_name = login.strip(), display_name.strip()
@@ -175,6 +310,7 @@ class Store:
     def team_chat(self, after=0):
         with self.connection() as c:
             c.execute('BEGIN')
+            self.actor(c)
             key = 'team_read:' + self.login
             row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
             last = int(row[0]) if row else 0
@@ -193,6 +329,7 @@ class Store:
         def apply(c, uid):
             if not c.execute('SELECT 1 FROM team_messages WHERE id=?', (message_id,)).fetchone():
                 raise ValueError('Сообщение не найдено')
+            self.actor(c)
             key = 'team_read:' + self.login
             old = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
             value = max(message_id, int(old[0]) if old else 0)
@@ -202,7 +339,8 @@ class Store:
 
     def boards(self):
         with self.connection() as c:
-            return [dict(r) for r in c.execute('SELECT * FROM boards WHERE archived=0 ORDER BY id')]
+            actor = self.actor(c)
+            return [dict(r) for r in c.execute('SELECT * FROM boards WHERE archived=0 AND (?="admin" OR owner_id=? OR id IN (SELECT board_id FROM board_members WHERE user_id=?)) ORDER BY id', (actor['role'], actor['id'], actor['id']))]
 
     def next_column_id(self, c):
         maximum = c.execute('SELECT COALESCE(MAX(id),0) FROM columns').fetchone()[0]
@@ -219,6 +357,7 @@ class Store:
         def apply(c, uid):
             if board_id is None:
                 bid = c.execute('INSERT INTO boards(name,created_at) VALUES(?,?)', (name.strip(), now())).lastrowid
+                c.execute('UPDATE boards SET owner_id=? WHERE id=?', (uid, bid))
                 names = column_names if column_names is not None else ['Входящие', 'Запланировано', 'В работе', 'На проверке', 'Завершено']
                 for i, title in enumerate(names):
                     c.execute('INSERT INTO columns(id,board_id,name,position,is_done) VALUES(?,?,?,?,?)', (self.next_column_id(c), bid, title, i, int(i == len(names)-1)))
@@ -231,6 +370,7 @@ class Store:
 
     def columns(self, board_id):
         with self.connection() as c:
+            self.require(c, 'read', board_id)
             return [dict(r) for r in c.execute('SELECT * FROM columns WHERE board_id=? ORDER BY position,id', (board_id,))]
 
     def save_columns(self, board_id, columns, request_id=None, removed=None):
@@ -282,6 +422,7 @@ class Store:
         row = c.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         if not row:
             raise ValueError('Задача не найдена')
+        self.require(c, 'read', row['board_id'])
         d = dict(row)
         d['assignees'] = [r[0] for r in c.execute('SELECT u.login FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.login', (task_id,))]
         d['assignee_names'] = [r[0] for r in c.execute('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.login', (task_id,))]
@@ -338,6 +479,7 @@ class Store:
                 args.append(f[key])
         with self.connection() as c:
             c.execute('BEGIN')
+            self.require(c, 'read', board_id)
             c.create_function('lower', 1, lambda s: s.casefold() if s else '')
             return [self.detail_in(c, r[0]) for r in c.execute('SELECT t.id FROM tasks t WHERE ' + ' AND '.join(where) + ' ORDER BY t.position,t.id', args).fetchall()]
 
@@ -371,10 +513,17 @@ class Store:
                 tid = c.execute('INSERT INTO tasks(column_id,title,description,priority,due_date,position,updated_at,completed_at,archived,board_id,number,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', values + (bid, number, now())).lastrowid
             c.execute('DELETE FROM task_assignees WHERE task_id=?', (tid,))
             for name in sorted(set(data.get('assignees', []))):
-                c.execute('INSERT INTO task_assignees VALUES(?,?)', (tid, self.user(c, name)))
+                person = c.execute('SELECT * FROM users WHERE login=?', (name,)).fetchone()
+                if not person:
+                    raise ValueError('Сначала добавьте исполнителя в справочник сотрудников')
+                if person['role'] != 'admin' and not c.execute('SELECT 1 FROM board_members WHERE board_id=? AND user_id=?', (bid, person['id'])).fetchone() and c.execute('SELECT owner_id FROM boards WHERE id=?', (bid,)).fetchone()[0] != person['id']:
+                    raise ValueError('Исполнителю необходимо выдать доступ к доске')
+                c.execute('INSERT INTO task_assignees VALUES(?,?)', (tid, person['id']))
             c.execute('DELETE FROM task_labels WHERE task_id=?', (tid,))
             for name in sorted(set(data.get('labels', []))):
                 if name.strip():
+                    if not c.execute('SELECT 1 FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone():
+                        self.require(c, 'manage', bid)
                     c.execute('INSERT OR IGNORE INTO labels(board_id,name) VALUES(?,?)', (bid, name.strip()))
                     lid = c.execute('SELECT id FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone()[0]
                     c.execute('INSERT INTO task_labels VALUES(?,?)', (tid, lid))
@@ -437,6 +586,7 @@ class Store:
             r = c.execute('SELECT * FROM attachments WHERE id=?', (attachment_id,)).fetchone()
             if not r:
                 raise FileNotFoundError('Вложение отсутствует в базе')
+            self.detail_in(c, r['task_id'])
             source = self.folder / 'attachments' / r['stored_name']
             digest = hashlib.sha256()
             dest = Path(destination)
@@ -467,6 +617,7 @@ class Store:
         root.mkdir(parents=True, exist_ok=True)
         target = root / ('kanban-' + dt.datetime.now(dt.timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:8])
         with self.exclusive(), self.connection() as c:
+            self.require(c, 'admin')
             target.mkdir()
             with sqlite3.connect(str(target / 'kanban.db')) as dest:
                 c.backup(dest)

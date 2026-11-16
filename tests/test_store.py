@@ -18,7 +18,10 @@ class StoreTest(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = Path(self.temp.name)
         self.s = Store(self.root / 'data', 'alice')
+        self.s.initialize_admin('alice')
         self.bid = self.s.board_action('Отдел')
+        bob = self.s.save_user('bob', 'bob')
+        self.s.set_board_access(self.bid, [bob], self.s.profile()['id'])
         self.cols = self.s.columns(self.bid)
         self.base = {'board_id': self.bid, 'column_id': self.cols[0]['id'], 'title': 'Проверить договор', 'description': 'Описание', 'assignees': ['alice', 'bob'], 'labels': ['Документы'], 'checklist': [{'text': 'Подписать', 'done': 0}]}
     def tearDown(self):
@@ -130,7 +133,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(upgraded.detail(task['id'])['title'], task['title'])
         upgraded.team_send('После обновления')
         with upgraded.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 2)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 3)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
 
     def test_create_and_history(self):
@@ -250,7 +253,7 @@ class StoreTest(unittest.TestCase):
         self.assertNotEqual(backup, self.s.backup(self.root / 'backups'))
         restored = self.root / 'restored'
         restore(backup, restored)
-        self.assertEqual(Store(restored).detail(d['id'])['title'], d['title'])
+        self.assertEqual(Store(restored, 'alice').detail(d['id'])['title'], d['title'])
         with self.assertRaises(ValueError):
             restore(backup, restored)
     def test_stale_lock_not_automatically_removed(self):
@@ -272,6 +275,8 @@ class StoreTest(unittest.TestCase):
         self.s.save_user('ivanov', 'Иванов И. И.', uid)
         with self.assertRaises(ValueError):
             self.s.save_user('new-login', 'Иванов', uid)
+        members = [r['id'] for r in self.s.board_access(self.bid)['users'] if r['member']]
+        self.s.set_board_access(self.bid, members + [uid], self.s.profile()['id'])
         d['assignees'] = ['ivanov']
         self.s.save_task(d)
         reopened = Store(self.s.folder, 'alice')
@@ -297,6 +302,12 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.s.tasks(self.bid, {'label': 'На согласование'})[0]['id'], d['id'])
 
     def test_concurrent_processes(self):
+        members = []
+        for i in range(4):
+            uid = self.s.save_user('user' + str(i), 'User ' + str(i))
+            self.s.set_role(uid, 'manager')
+            members.append(uid)
+        self.s.set_board_access(self.bid, members, self.s.profile()['id'])
         ctx = multiprocessing.get_context('spawn')
         processes = [ctx.Process(target=create_concurrent, args=(str(self.s.folder), 'user' + str(i))) for i in range(4)]
         for p in processes:
