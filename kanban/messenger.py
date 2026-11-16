@@ -188,6 +188,8 @@ class Messenger(QWidget):
                 return
             if not self.retry and not self.sticker_retry and not self.preparing:
                 self.status.setText('Некоторые стикеры недоступны. Загрузка повторится автоматически.' if result.get('image_errors') else '')
+            if hasattr(self.window, 'notifications'):
+                self.window.notifications.observe(result['messages'], self.window.store.login)
             self.messages.extend(result['messages'])
             self.stickers.update(result.get('stickers', {}))
             self.bubble.unread = result['unread']
@@ -234,7 +236,7 @@ class Messenger(QWidget):
             QTimer.singleShot(0, self.end)
 
     def mark_read(self):
-        if not self.isVisible() or not self.messages or self.reading:
+        if not self.isVisible() or self.window.isMinimized() or not self.window.isActiveWindow() or not self.messages or self.reading:
             return
         bar = self.timeline.verticalScrollBar()
         if bar.value() < bar.maximum()-4:

@@ -83,6 +83,25 @@ class UITest(unittest.TestCase):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
 
+    def test_close_to_tray_keeps_polling_and_explicit_exit_stops(self):
+        w = MainWindow(str(self.store.folder))
+        self.windows.append(w)
+        w.show()
+        wait_for(lambda: not w.loading and not w.jobs)
+        w.notifications.available = True
+        settings = QSettings(str(Path(self.tmp.name) / 'desktop.ini'), QSettings.IniFormat)
+        settings.setValue('notifications/close_to_tray', True)
+        w.notifications.settings = settings
+        self.assertFalse(w.close())
+        self.assertFalse(w.isVisible())
+        self.assertTrue(w.messenger.timer.isActive())
+        w.notifications.open_chat()
+        self.assertTrue(w.isVisible())
+        wait_for(lambda: not w.jobs)
+        w.notifications.exit_app()
+        self.assertFalse(w.messenger.timer.isActive())
+        self.assertFalse(w.timer.isActive())
+
     def test_sticker_preview_retry_and_inline_image(self):
         from test_stickers import image_bytes
         from PyQt5.QtCore import QUrl, QTimer, QMimeData

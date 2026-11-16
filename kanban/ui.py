@@ -19,6 +19,8 @@ from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
 from .messenger import Messenger
+from .notifications import Notifications
+from .spellcheck import SpellTextEdit, SpellLineEdit, spell_engine
 from .theme import apply_theme, theme_settings, symbol_icon
 
 
@@ -151,7 +153,7 @@ class CatalogDialog(QDialog, Async):
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
         self.login = QLineEdit()
         self.login.setPlaceholderText('Например, ivanov')
-        self.name = QLineEdit()
+        self.name = SpellLineEdit()
         self.name.setPlaceholderText('Иванов Иван' if kind == 'users' else 'Например, Документы')
         if kind == 'users':
             form.addRow('Пользователь Windows', self.login)
@@ -399,9 +401,9 @@ class TaskDialog(QDialog, Async):
         form.setVerticalSpacing(8)
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
         form.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
-        self.title = QLineEdit(data.get('title', ''))
+        self.title = SpellLineEdit(data.get('title', ''))
         self.title.setPlaceholderText('Что нужно сделать?')
-        self.description = QTextEdit()
+        self.description = SpellTextEdit()
         self.description.setPlaceholderText('Подробности, контекст и ожидаемый результат…')
         self.description.setMinimumHeight(110)
         self.description.setMaximumHeight(160)
@@ -1262,6 +1264,7 @@ class MainWindow(QMainWindow, Async):
         self.timer.start(5000)
         self.card_lists = []
         self.messenger = Messenger(self)
+        self.notifications = Notifications(self)
         self.connect_store()
 
     def resizeEvent(self, event):
@@ -1299,7 +1302,7 @@ class MainWindow(QMainWindow, Async):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Создать доску':
                 action.setEnabled(permissions.get('create', False))
-            elif text != 'Обновить' and not action.isSeparator():
+            elif text not in ('Обновить', 'Уведомления общего чата', 'Закрывать окно в трей', 'Проверять орфографию') and not action.isSeparator():
                 action.setEnabled(bool(self.board_id) and permissions.get('manage', False))
 
     def open_access(self, board_id=None):
@@ -1320,6 +1323,7 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh)
+        self.notifications.add_settings(menu)
         menu.addAction('Резервная копия', self.backup)
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
@@ -1364,6 +1368,7 @@ class MainWindow(QMainWindow, Async):
         dark = self.theme_button.isChecked()
         theme_settings().setValue('dark', dark)
         apply_theme(QApplication.instance(), dark)
+        spell_engine().changed.emit()
         caption = 'Светлая тема' if dark else 'Тёмная тема'
         if self.sidebar.width() < 100:
             self.theme_button.setProperty('fullText', caption)
@@ -1817,6 +1822,10 @@ class MainWindow(QMainWindow, Async):
             self.mutate(lambda rid: self.store.backup(folder), 'Проверенная резервная копия создана')
 
     def closeEvent(self, event):
+        if self.notifications.background() and not self.notifications.exiting:
+            self.hide()
+            event.ignore()
+            return
         if self.jobs or self.mutating or any(d.pending for d in self.dialogs):
             self.status.setText('Дождитесь завершения операций перед выходом')
             event.ignore()
@@ -1824,7 +1833,7 @@ class MainWindow(QMainWindow, Async):
         if self.pending_action and QMessageBox.question(self, 'Незавершённая запись', 'Результат записи неизвестен. Перед выходом рекомендуется повторить запись. Всё равно выйти?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             event.ignore()
             return
-        if (self.messenger.input.toPlainText().strip() or self.messenger.retry) and QMessageBox.question(self, 'Неотправленное сообщение', 'Закрыть TeamSync без отправки сообщения общего чата?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+        if (self.messenger.input.toPlainText().strip() or self.messenger.retry or self.messenger.sticker or self.messenger.sticker_retry) and QMessageBox.question(self, 'Неотправленное сообщение', 'Закрыть TeamSync без отправки сообщения общего чата?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
             event.ignore()
             return
         for dialog in list(self.dialogs):
@@ -1833,4 +1842,5 @@ class MainWindow(QMainWindow, Async):
                 return
         self.timer.stop()
         self.messenger.timer.stop()
+        self.notifications.shutdown()
         event.accept()

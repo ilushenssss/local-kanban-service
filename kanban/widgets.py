@@ -3,8 +3,10 @@ from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal, QEvent, QPointF, QSize
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
     QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QRadioButton, QButtonGroup, QToolButton, QSizePolicy)
 
+from .spellcheck import SpellTextEdit, SpellLineEdit, SpellItemDelegate
 
-class MessageEdit(QTextEdit):
+
+class MessageEdit(SpellTextEdit):
     """Shared chat keyboard behavior; leave ordinary form editors unchanged."""
     sendRequested = pyqtSignal()
 
@@ -312,12 +314,13 @@ class ChecklistEditor(QWidget):
         layout.addLayout(header)
         self.list = QListWidget()
         self.list.setObjectName('Checklist')
+        self.list.setItemDelegate(SpellItemDelegate(self.list))
         self.list.setAccessibleName('Пункты чек-листа')
         self.list.setMinimumHeight(96)
         self.list.setMaximumHeight(190)
         layout.addWidget(self.list)
         add = QHBoxLayout()
-        self.entry = QLineEdit()
+        self.entry = SpellLineEdit()
         self.entry.setPlaceholderText('Добавить пункт чек-листа…')
         self.entry.setAccessibleName('Новый пункт чек-листа')
         self.add_button = QPushButton('Добавить')
