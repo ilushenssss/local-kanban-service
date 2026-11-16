@@ -70,7 +70,7 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 5:
+                if version > 6:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
@@ -110,7 +110,10 @@ class Store:
                 c.execute('CREATE INDEX IF NOT EXISTS team_messages_board ON team_messages(board_id,id)')
                 c.execute('CREATE TABLE IF NOT EXISTS retired_labels(board_id INTEGER NOT NULL REFERENCES boards(id),name TEXT NOT NULL,PRIMARY KEY(board_id,name))')
                 c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(5,?)', (now(),))
-                c.execute('PRAGMA user_version=5')
+                if 'personal' not in {r[1] for r in c.execute('PRAGMA table_info(boards)')}:
+                    c.execute('ALTER TABLE boards ADD COLUMN personal INTEGER NOT NULL DEFAULT 0 CHECK(personal IN (0,1))')
+                c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(6,?)', (now(),))
+                c.execute('PRAGMA user_version=6')
                 self.user(c, self.login)
                 c.commit()
 
@@ -122,8 +125,24 @@ class Store:
             raise AccessDenied('Пользователь не зарегистрирован')
         return row
 
+    def visible_boards(self, c):
+        actor = self.actor(c)
+        return [dict(r) for r in c.execute('SELECT b.* FROM boards b WHERE b.archived=0 AND (' + self.board_visibility() + ') ORDER BY b.id', {'uid': actor['id'], 'role': actor['role']})]
+
+    @staticmethod
+    def board_visibility():
+        return '(b.personal=1 AND b.owner_id=:uid) OR (b.personal=0 AND (:role="admin" OR b.owner_id=:uid OR EXISTS(SELECT 1 FROM board_members m WHERE m.board_id=b.id AND m.user_id=:uid)))'
+
     def require(self, c, action='read', board_id=None):
         actor = self.actor(c)
+        if board_id is not None:
+            board = c.execute('SELECT * FROM boards WHERE id=?', (board_id,)).fetchone()
+            if board and board['personal']:
+                if board['owner_id'] != actor['id'] or action not in ('read', 'edit', 'manage', 'create_task', 'archive_task'):
+                    raise AccessDenied('Личная доска доступна только владельцу')
+                return actor
+        if action == 'create_personal_board':
+            return actor
         if actor['role'] == 'admin':
             return actor
         allowed = action == 'read' and board_id is None
@@ -177,7 +196,7 @@ class Store:
                 raise ValueError('Сотрудник не найден')
             if target['role'] == 'admin' and role != 'admin':
                 raise ValueError('Передайте роль администратора другому сотруднику')
-            if role == 'employee' and c.execute('SELECT 1 FROM boards WHERE owner_id=? AND archived=0', (user_id,)).fetchone():
+            if role == 'employee' and c.execute('SELECT 1 FROM boards WHERE owner_id=? AND archived=0 AND personal=0', (user_id,)).fetchone():
                 raise ValueError('Сначала передайте доски другому менеджеру')
             if role == 'admin' and target['role'] != 'admin':
                 c.execute("UPDATE users SET role='manager' WHERE role='admin'")
@@ -189,7 +208,10 @@ class Store:
     def board_access(self, board_id):
         with self.connection() as c:
             self.require(c, 'manage', board_id)
-            owner = c.execute('SELECT owner_id FROM boards WHERE id=?', (board_id,)).fetchone()[0]
+            board = c.execute('SELECT owner_id,personal FROM boards WHERE id=?', (board_id,)).fetchone()
+            if board['personal']:
+                raise AccessDenied('У личной доски нельзя менять владельца или участников')
+            owner = board['owner_id']
             rows = c.execute('SELECT u.*, EXISTS(SELECT 1 FROM board_members m WHERE m.board_id=? AND m.user_id=u.id) AS member FROM users u ORDER BY display_name', (board_id,))
             return {'owner_id': owner, 'can_transfer': self.actor(c)['role'] == 'admin', 'users': [dict(r) for r in rows]}
 
@@ -198,6 +220,8 @@ class Store:
         def apply(c, uid):
             self.require(c, 'manage', board_id)
             board = c.execute('SELECT * FROM boards WHERE id=?', (board_id,)).fetchone()
+            if board['personal']:
+                raise AccessDenied('У личной доски нельзя менять владельца или участников')
             if owner_id != board['owner_id']:
                 self.require(c, 'admin')
             owner = c.execute('SELECT role FROM users WHERE id=?', (owner_id,)).fetchone()
@@ -218,9 +242,11 @@ class Store:
         if operation in ('role', 'user'):
             self.require(c, 'admin')
         elif operation == 'board':
-            self.require(c, 'create_board' if payload[1] is None else 'manage', payload[1])
+            self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
         elif operation in ('columns', 'label', 'label_change', 'access'):
             self.require(c, 'manage', payload[0])
+        elif operation == 'personal_restore':
+            self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
         elif operation == 'task':
@@ -298,11 +324,15 @@ class Store:
             c.execute('BEGIN')
             self.require(c, 'read', board_id)
             users = [dict(r) for r in c.execute('SELECT id,login,display_name FROM users WHERE ? IS NULL OR id IN (SELECT user_id FROM board_members WHERE board_id=?) OR id=(SELECT owner_id FROM boards WHERE id=?) OR role="admin" ORDER BY display_name COLLATE NOCASE,login', (board_id, board_id, board_id))]
+            personal = c.execute('SELECT personal FROM boards WHERE id=?', (board_id,)).fetchone()
+            is_personal = bool(personal and personal[0])
+            if is_personal:
+                users = [u for u in users if u['id'] == self.actor(c)['id']]
             labels = [dict(r) for r in c.execute('SELECT l.id,l.name,COUNT(t.task_id) AS task_count FROM labels l LEFT JOIN task_labels t ON t.label_id=l.id WHERE l.board_id=? GROUP BY l.id ORDER BY l.name COLLATE NOCASE', (board_id,))]
             actor = self.actor(c)
             board = c.execute('SELECT owner_id FROM boards WHERE id=?', (board_id,)).fetchone()
-            permissions = {'admin': actor['role'] == 'admin', 'create': actor['role'] in ('admin', 'manager'),
-                           'manage': actor['role'] == 'admin' or bool(board and board[0] == actor['id'] and actor['role'] == 'manager')}
+            permissions = {'admin': actor['role'] == 'admin', 'personal': is_personal, 'share': not is_personal, 'create_board': actor['role'] in ('admin', 'manager'), 'create': is_personal or actor['role'] in ('admin', 'manager'),
+                           'manage': is_personal or actor['role'] == 'admin' or bool(board and board[0] == actor['id'] and actor['role'] == 'manager')}
             return {'users': users, 'labels': labels, 'permissions': permissions}
 
     def save_user(self, login, display_name, user_id=None, request_id=None):
@@ -375,8 +405,7 @@ class Store:
 
     def chat_board(self, c, board_id):
         if board_id is None:
-            actor = self.actor(c)
-            available = c.execute('SELECT id FROM boards b WHERE b.archived=0 AND (?="admin" OR b.owner_id=? OR EXISTS(SELECT 1 FROM board_members m WHERE m.board_id=b.id AND m.user_id=?))', (actor["role"], actor["id"], actor["id"])).fetchall()
+            available = self.visible_boards(c)
             if len(available) != 1:
                 raise ValueError('Выберите доску для чата')
             board_id = available[0]['id']
@@ -388,8 +417,9 @@ class Store:
         with self.connection() as c:
             c.execute('BEGIN')
             actor = self.actor(c)
-            sql = 'SELECT m.*,u.login,u.display_name AS author,b.name AS board_name FROM team_messages m JOIN users u ON u.id=m.user_id JOIN boards b ON b.id=m.board_id WHERE m.id>? AND b.archived=0 AND (?="admin" OR b.owner_id=? OR EXISTS(SELECT 1 FROM board_members x WHERE x.board_id=b.id AND x.user_id=?)) ORDER BY m.id'
-            return [dict(r) for r in c.execute(sql, (after, actor['role'], actor['id'], actor['id']))]
+            sql = 'SELECT m.*,u.login,u.display_name AS author,b.name AS board_name FROM team_messages m JOIN users u ON u.id=m.user_id JOIN boards b ON b.id=m.board_id WHERE m.id>:after AND b.archived=0 AND (' + self.board_visibility() + ') ORDER BY m.id'
+            return [dict(r) for r in c.execute(sql, {'after': after, 'role': actor['role'], 'uid': actor['id']})]
+
 
     def team_chat(self, after=0, board_id=None):
         with self.connection() as c:
@@ -464,8 +494,21 @@ class Store:
 
     def boards(self):
         with self.connection() as c:
+            return self.visible_boards(c)
+
+    def archived_personal_boards(self):
+        with self.connection() as c:
             actor = self.actor(c)
-            return [dict(r) for r in c.execute('SELECT * FROM boards WHERE archived=0 AND (?="admin" OR owner_id=? OR id IN (SELECT board_id FROM board_members WHERE user_id=?)) ORDER BY id', (actor['role'], actor['id'], actor['id']))]
+            return [dict(r) for r in c.execute('SELECT * FROM boards WHERE personal=1 AND owner_id=? AND archived=1 ORDER BY id', (actor['id'],))]
+
+    def restore_personal_board(self, board_id, request_id=None):
+        def apply(c, uid):
+            board = c.execute('SELECT * FROM boards WHERE id=?', (board_id,)).fetchone()
+            if not board or not board['personal']:
+                raise ValueError('Личная доска не найдена')
+            c.execute('UPDATE boards SET archived=0 WHERE id=?', (board_id,))
+            return board_id
+        return self.write('personal_restore', board_id, apply, request_id)
 
     def next_column_id(self, c):
         maximum = c.execute('SELECT COALESCE(MAX(id),0) FROM columns').fetchone()[0]
@@ -474,7 +517,7 @@ class Store:
         c.execute("INSERT OR REPLACE INTO settings(key,value) VALUES('column_sequence',?)", (str(value),))
         return value
 
-    def board_action(self, name, board_id=None, archive=False, request_id=None, column_names=None):
+    def board_action(self, name, board_id=None, archive=False, request_id=None, column_names=None, personal=False):
         if not name.strip() and not archive:
             raise ValueError('Введите название доски')
         if column_names is not None and (not column_names or any(not x.strip() for x in column_names)):
@@ -482,7 +525,7 @@ class Store:
         def apply(c, uid):
             if board_id is None:
                 bid = c.execute('INSERT INTO boards(name,created_at) VALUES(?,?)', (name.strip(), now())).lastrowid
-                c.execute('UPDATE boards SET owner_id=? WHERE id=?', (uid, bid))
+                c.execute('UPDATE boards SET owner_id=?,personal=? WHERE id=?', (uid, int(personal), bid))
                 names = column_names if column_names is not None else ['Входящие', 'Запланировано', 'В работе', 'На проверке', 'Завершено']
                 for i, title in enumerate(names):
                     c.execute('INSERT INTO columns(id,board_id,name,position,is_done) VALUES(?,?,?,?,?)', (self.next_column_id(c), bid, title, i, int(i == len(names)-1)))
@@ -491,7 +534,7 @@ class Store:
                 raise ValueError('Доска недоступна')
             c.execute('UPDATE boards SET name=?,archived=? WHERE id=?', (name.strip(), int(archive), board_id))
             return board_id
-        return self.write('board', [name, board_id, archive] + ([column_names] if column_names is not None else []), apply, request_id)
+        return self.write('board', [name, board_id, archive, column_names, bool(personal)], apply, request_id)
 
     def columns(self, board_id):
         with self.connection() as c:
@@ -618,6 +661,7 @@ class Store:
             raise ValueError('Неизвестный приоритет')
         def apply(c, uid):
             bid = data['board_id']
+            board = c.execute('SELECT personal,owner_id FROM boards WHERE id=?', (bid,)).fetchone()
             self.active_board(c, bid)
             old = self.detail_in(c, data['id']) if data.get('id') else None
             if old and (old['board_id'] != bid or old['version'] != data.get('version')):
@@ -641,6 +685,8 @@ class Store:
                 person = c.execute('SELECT * FROM users WHERE login=?', (name,)).fetchone()
                 if not person:
                     raise ValueError('Сначала добавьте исполнителя в справочник сотрудников')
+                if board['personal'] and person['id'] != board['owner_id']:
+                    raise AccessDenied('На личной доске исполнителем может быть только её владелец')
                 if person['role'] != 'admin' and not c.execute('SELECT 1 FROM board_members WHERE board_id=? AND user_id=?', (bid, person['id'])).fetchone() and c.execute('SELECT owner_id FROM boards WHERE id=?', (bid,)).fetchone()[0] != person['id']:
                     raise ValueError('Исполнителю необходимо выдать доступ к доске')
                 c.execute('INSERT INTO task_assignees VALUES(?,?)', (tid, person['id']))

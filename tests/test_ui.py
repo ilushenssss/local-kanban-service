@@ -83,6 +83,52 @@ class UITest(unittest.TestCase):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
 
+    def test_personal_section_employee_creation_management_and_restore(self):
+        from PyQt5.QtWidgets import QInputDialog, QMenu
+        self.store.save_user('private-user', 'Личный пользователь')
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'private-user')):
+            w = MainWindow(str(self.store.folder))
+            self.windows.append(w)
+            w.show()
+            wait_for(lambda: not w.loading and not w.jobs)
+        root = next(w.board_tree.topLevelItem(i) for i in range(w.board_tree.topLevelItemCount()) if w.board_tree.topLevelItem(i).text(0) == 'Личное')
+        self.assertFalse(w.create_board_button.isEnabled())
+        with patch.object(QInputDialog, 'getText', return_value=('Планы на неделю', True)):
+            w.select_tree_board(root.child(0), 0)
+            wait_for(lambda: not w.mutating and not w.loading and not w.jobs)
+        private = w.board_id
+        self.assertIsNotNone(private)
+        self.assertTrue(w.permissions['personal'])
+        self.assertTrue(w.new_task_button.isEnabled())
+        self.assertFalse(w.create_board_button.isEnabled())
+        self.assertFalse(any(b['id'] == private for b in self.store.boards()))
+        menu = QMenu(w)
+        share = menu.addAction('Участники доски')
+        settings = menu.addAction('Колонки доски')
+        w.apply_menu_permissions(menu)
+        self.assertFalse(share.isEnabled())
+        self.assertTrue(settings.isEnabled())
+        w.new_task_button.click()
+        wait_for(lambda: bool(w.dialogs) and not any(d.jobs for d in w.dialogs))
+        dialog = next(iter(w.dialogs))
+        self.windows.append(dialog)
+        dialog.title.setText('Запланировать личные дела')
+        dialog.save_button.click()
+        wait_for(lambda: not dialog.pending and not w.jobs and not w.loading)
+        self.assertEqual(w.store.tasks(private)[0]['title'], 'Запланировать личные дела')
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        w.grab().save(str(evidence / 'personal-boards-linux.png'))
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+            w.board_action('archive')
+            wait_for(lambda: not w.mutating and not w.loading and not w.jobs)
+        self.assertEqual(w.store.archived_personal_boards()[0]['id'], private)
+        with patch.object(QInputDialog, 'getItem', side_effect=lambda *args: (args[3][0], True)):
+            w.restore_personal_board()
+            wait_for(lambda: not w.mutating and not w.loading and not w.jobs)
+        self.assertEqual(w.board_id, private)
+        self.assertEqual(len(w.store.tasks(private)), 1)
+
     def test_board_chat_switch_keeps_drafts_and_late_results_separate(self):
         second = self.store.board_action('Вторая переписка')
         self.grant_all(second)

@@ -1153,9 +1153,12 @@ class MainWindow(QMainWindow, Async):
         self.board_tree = QTreeWidget()
         self.board_tree.setHeaderHidden(True)
         self.board_tree.setIndentation(14)
+        self.board_tree.setAccessibleName('Рабочие и личные доски')
         self.board_tree.itemClicked.connect(self.select_tree_board)
+        self.board_tree.itemActivated.connect(self.select_tree_board)
         side.addWidget(self.board_tree, 1)
-        button('Создать доску', lambda: self.board_action('create'), side, 'quiet')
+        self.create_board_button = button('Создать доску', lambda: self.board_action('create'), side, 'quiet')
+        self.create_board_button.setToolTip('Создание рабочей доски доступно менеджеру и администратору. Личную доску можно создать в разделе «Личное».')
         side.addSpacing(18)
         self.my_nav = button('Мои задачи', lambda: self.pages.setCurrentWidget(self.my_tasks), side, 'quiet')
         self.my_nav.setCheckable(True)
@@ -1341,7 +1344,9 @@ class MainWindow(QMainWindow, Async):
             if text in ('Роли сотрудников', 'Резервная копия'):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Создать доску':
-                action.setEnabled(permissions.get('create', False))
+                action.setEnabled(permissions.get('create_board', False))
+            elif text == 'Участники доски':
+                action.setEnabled(bool(self.board_id) and permissions.get('manage', False) and permissions.get('share', False))
             elif text not in ('Обновить', 'Уведомления чатов досок', 'Закрывать окно в трей', 'Проверять орфографию') and not action.isSeparator():
                 action.setEnabled(bool(self.board_id) and permissions.get('manage', False))
 
@@ -1395,6 +1400,12 @@ class MainWindow(QMainWindow, Async):
         self.sidebar.layout().activate()
 
     def select_tree_board(self, item, column):
+        if item.data(0, Qt.UserRole + 1) == 'create_personal':
+            self.board_action('create_personal')
+            return
+        if item.data(0, Qt.UserRole + 1) == 'personal_archive':
+            self.restore_personal_board()
+            return
         board_id = item.data(0, Qt.UserRole)
         if board_id is not None:
             index = next((i for i in range(self.board_tabs.count()) if self.board_tabs.tabData(i) == board_id), -1)
@@ -1566,23 +1577,42 @@ class MainWindow(QMainWindow, Async):
             boards, selected, columns, tasks, all_tasks, catalogs, personal = result
             self.permissions = catalogs.get('permissions', {})
             self.users_button.setEnabled(self.permissions.get('admin', False))
+            self.create_board_button.setEnabled(self.permissions.get('create_board', False))
             self.new_task_button.setEnabled(self.permissions.get('create', False) and bool(selected))
             self.my_tasks.update_data(personal)
             self.list_view.update_data(tasks, columns)
             self.gantt_view.update_data(tasks, columns)
-            structure = [(b['id'], b['name']) for b in boards]
+            structure = [(b['id'], b['name'], b['personal']) for b in boards]
             if structure != getattr(self, 'tree_structure', None):
                 self.tree_structure = structure
                 self.board_tree.clear()
                 groups = {}
-                for board_id, name in structure:
+                for board_id, name, personal_board in structure:
+                    if personal_board:
+                        continue
                     project, separator, title = name.partition(' / ')
                     group_name = project if separator else 'Рабочие доски'
+                    if group_name == 'Личное':
+                        group_name = 'Личное (рабочие доски)'
                     if group_name not in groups:
                         groups[group_name] = QTreeWidgetItem(self.board_tree, [group_name])
                         groups[group_name].setExpanded(True)
                     item = QTreeWidgetItem(groups[group_name], [title if separator else name])
                     item.setData(0, Qt.UserRole, board_id)
+                if not groups:
+                    QTreeWidgetItem(self.board_tree, ['Рабочие доски'])
+                private = QTreeWidgetItem(self.board_tree, ['Личное'])
+                private.setToolTip(0, 'Доски видны только вам')
+                private.setExpanded(True)
+                create = QTreeWidgetItem(private, ['＋ Создать доску'])
+                create.setData(0, Qt.UserRole + 1, 'create_personal')
+                create.setToolTip(0, 'Создать личную доску — доступна только вам')
+                for board_id, name, personal_board in structure:
+                    if personal_board:
+                        item = QTreeWidgetItem(private, [name])
+                        item.setData(0, Qt.UserRole, board_id)
+                archive = QTreeWidgetItem(private, ['Архив личных досок…'])
+                archive.setData(0, Qt.UserRole + 1, 'personal_archive')
             wanted = [(b['id'], b['name']) for b in boards]
             current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
             self.board_tabs.blockSignals(True)
@@ -1621,7 +1651,7 @@ class MainWindow(QMainWindow, Async):
                 group = self.board_tree.topLevelItem(group_index)
                 for child_index in range(group.childCount()):
                     child = group.child(child_index)
-                    if child.data(0, Qt.UserRole) == selected:
+                    if selected is not None and child.data(0, Qt.UserRole) == selected:
                         self.board_tree.setCurrentItem(child)
             self.update_navigation()
             self.columns_data = columns
@@ -1784,6 +1814,9 @@ class MainWindow(QMainWindow, Async):
                     self.open_task(error.current)
             else:
                 self.pending_action = None
+                if isinstance(result, dict) and 'select_personal_board' in result:
+                    self.board_id = result['select_personal_board']
+                    self.pages.setCurrentIndex(0)
                 self.status.setText(success)
                 self.refresh()
         self.work(lambda: fn(rid), done)
@@ -1794,17 +1827,39 @@ class MainWindow(QMainWindow, Async):
         else:
             self.status.setText('Нет незавершённой записи')
 
+    def restore_personal_board(self):
+        if not self.store:
+            return
+        def done(boards, error):
+            if error:
+                self.status.setText(error_text(error))
+                return
+            if not boards:
+                self.status.setText('В архиве нет личных досок')
+                return
+            choices = ['{} · №{}'.format(b['name'], b['id']) for b in boards]
+            choice, ok = QInputDialog.getItem(self, 'Архив личных досок', 'Восстановить доску:', choices, 0, False)
+            if ok:
+                bid = boards[choices.index(choice)]['id']
+                self.mutate(lambda rid: {'select_personal_board': self.store.restore_personal_board(bid, rid)}, 'Личная доска восстановлена')
+        self.work(self.store.archived_personal_boards, done)
+
     def board_action(self, action):
         if not self.store:
             self.status.setText('Сначала подключитесь к общей папке')
             return
         item = self.boards_list.currentItem()
-        if action != 'create' and not item:
+        if action not in ('create', 'create_personal') and not item:
             return
         bid = item.data(Qt.UserRole) if item else None
+        if action == 'create_personal':
+            name, ok = QInputDialog.getText(self, 'Личная доска', 'Название личной доски:')
+            if ok:
+                self.mutate(lambda rid: {'select_personal_board': self.store.board_action(name, request_id=rid, column_names=['Бэклог', 'В работе', 'На проверке', 'Готово'], personal=True)}, 'Личная доска создана')
+            return
         if action == 'archive':
             name = item.text()
-            if QMessageBox.question(self, 'Архивирование доски', 'Архивировать «' + name + '»? Доска будет скрыта у всех сотрудников.', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            if QMessageBox.question(self, 'Архивирование доски', 'Архивировать «' + name + ('»? Её можно будет восстановить из архива личных досок.' if getattr(self, 'permissions', {}).get('personal') else '»? Доска будет скрыта у всех сотрудников.'), QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
             self.mutate(lambda rid: self.store.board_action(name, bid, True, rid))
         else:
