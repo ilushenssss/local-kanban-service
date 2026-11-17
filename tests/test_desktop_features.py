@@ -121,6 +121,22 @@ class DesktopFeaturesTest(unittest.TestCase):
             n.flush_tasks()
             self.assertEqual(show.call_count, 1)
 
+    def test_read_task_does_not_show_queued_toast_and_badges_update(self):
+        creator, board = self.prepare_task_feed()
+        n = self.notifications
+        self.window.update_board_badges = Mock()
+        n.poll()
+        tid = creator.save_task({'board_id': board, 'column_id': creator.columns(board)[0]['id'], 'title': 'Назначенная', 'assignees': ['alice']})['id']
+        n.poll()
+        self.assertEqual(self.window.update_board_badges.call_args.args[0][board]['tasks'], 1)
+        snapshot = self.window.store.detail(tid)
+        self.window.store.mark_task_notifications_read(tid, snapshot['notification_cursor'])
+        with patch.object(n.tray, 'showMessage') as show:
+            n.flush_tasks()
+            show.assert_not_called()
+        n.poll()
+        self.assertEqual(self.window.update_board_badges.call_args.args[0][board]['total'], 0)
+
     def test_task_notification_rechecks_access_before_desktop_display(self):
         creator, board = self.prepare_task_feed()
         n = self.notifications

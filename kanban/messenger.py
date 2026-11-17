@@ -277,6 +277,8 @@ class Messenger(QWidget):
             if not error:
                 self.read_cursor = value
                 self.poll()
+                if hasattr(self.window, 'notifications'):
+                    self.window.notifications.poll()
         self.window.work(lambda: self.window.store.team_mark_read(latest, board_id=self.board_id), done)
 
     def send(self):

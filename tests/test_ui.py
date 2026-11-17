@@ -83,6 +83,46 @@ class UITest(unittest.TestCase):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
 
+    def test_sidebar_badges_show_source_and_clear_only_read_events(self):
+        self.store.save_user('badge-user', 'Получатель')
+        self.grant_all(self.bid)
+        second = self.store.board_action('Другая доска')
+        self.grant_all(second)
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'badge-user')):
+            w = MainWindow(str(self.store.folder))
+            self.windows.append(w)
+            w.show()
+            wait_for(lambda: not w.loading and not w.jobs)
+        current = self.store.detail(self.result['id'])
+        current['assignees'] = sorted(set(current['assignees'] + [w.store.login]))
+        self.store.save_task(current)
+        self.store.team_send('Сообщение первой доски', board_id=self.bid)
+        self.store.team_send('Сообщение второй доски', board_id=second)
+        w.notifications.poll()
+        def node(bid):
+            return next(w.board_tree.topLevelItem(i).child(j) for i in range(w.board_tree.topLevelItemCount()) for j in range(w.board_tree.topLevelItem(i).childCount()) if w.board_tree.topLevelItem(i).child(j).data(0, Qt.UserRole) == bid)
+        wait_for(lambda: node(self.bid).text(1) == '2' and node(second).text(1) == '1')
+        self.assertEqual(node(self.bid).text(0), 'Проектный отдел')
+        self.assertIn('Чат: 1 · Задачи: 1', node(self.bid).toolTip(0))
+        self.assertEqual(node(self.bid).parent().text(1), '3')
+        board_widget = w.card_lists[0]
+        evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
+        evidence.mkdir(parents=True, exist_ok=True)
+        w.grab().save(str(evidence / 'sidebar-board-badges-linux.png'))
+        w.update_board_badges({self.bid: {'chat': 120, 'tasks': 0, 'total': 120}, second: {'chat': 1, 'tasks': 0, 'total': 1}})
+        self.assertEqual(node(self.bid).text(1), '99+')
+        self.assertIn('120', node(self.bid).toolTip(1))
+        self.assertIs(w.card_lists[0], board_widget)
+        w.notifications.poll()
+        wait_for(lambda: not w.notifications.loading and not w.jobs)
+        w.messenger.open_chat()
+        wait_for(lambda: node(self.bid).text(1) == '1')
+        self.assertEqual(node(second).text(1), '1')
+        w.show_task_notification(self.result['id'])
+        wait_for(lambda: node(self.bid).text(1) == '' and not w.jobs)
+        self.assertEqual(node(second).text(1), '1')
+        self.assertEqual(w.store.board_badges()[self.bid]['total'], 0)
+
     def test_task_notification_opens_card_and_keeps_existing_draft(self):
         w = MainWindow(str(self.store.folder))
         self.windows.append(w)

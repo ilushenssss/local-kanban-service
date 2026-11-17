@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize
+from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent
 from PyQt5.QtGui import QDesktopServices, QDrag, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
@@ -20,6 +20,7 @@ from .my_tasks import MyTasksPage
 from .board_views import BoardView
 from .messenger import Messenger
 from .notifications import Notifications
+from .board_badges import BoardBadgeDelegate
 from .spellcheck import SpellTextEdit, SpellLineEdit, spell_engine
 from .theme import apply_theme, theme_settings, symbol_icon
 
@@ -399,6 +400,9 @@ class TaskDialog(QDialog, Async):
         self.init_async()
         self.store, self.columns = store, columns
         self.data = copy.deepcopy(data)
+        self.notice_pending = False
+        self.notice_snapshot = data.get("notification_cursor", 0)
+        self.notice_read = data.get("notification_read", 0)
         self.setAttribute(Qt.WA_DeleteOnClose)
         self.setWindowTitle('Задача №' + str(data['number']) if data.get('id') else 'Новая задача')
         self.resize(1180, 740)
@@ -566,6 +570,8 @@ class TaskDialog(QDialog, Async):
         return p
 
     def render_extras(self, d):
+        self.notice_snapshot = max(self.notice_snapshot, d.get('notification_cursor', 0))
+        QTimer.singleShot(0, self.acknowledge_task_notifications)
         self.dates.setText('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(date_text(d.get('created_at'), True), date_text(d.get('updated_at'), True), date_text(d.get('completed_at'), True)))
         self.history_entries = d.get('history', [])
         self.comment_entries = d.get('comments', [])
@@ -594,6 +600,31 @@ class TaskDialog(QDialog, Async):
         super().showEvent(event)
         QTimer.singleShot(0, self.scroll_chat_to_end)
         self.initial_scroll_timer.start(50)
+        QTimer.singleShot(0, self.acknowledge_task_notifications)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and hasattr(self, 'notice_snapshot'):
+            QTimer.singleShot(0, self.acknowledge_task_notifications)
+
+    def acknowledge_task_notifications(self):
+        if not self.isVisible() or not self.isActiveWindow() or self.isMinimized() or self.notice_pending or not self.data.get('id'):
+            return
+        snapshot = self.notice_snapshot
+        if snapshot <= self.notice_read:
+            return
+        self.notice_pending = True
+        def done(value, error):
+            self.notice_pending = False
+            if not error:
+                self.notice_read = value
+                self.changed.emit()
+                owner = self.parentWidget()
+                if hasattr(owner, 'notifications'):
+                    owner.notifications.poll()
+                if self.notice_snapshot > self.notice_read:
+                    QTimer.singleShot(0, self.acknowledge_task_notifications)
+        self.work(lambda: self.store.mark_task_notifications_read(self.data['id'], snapshot), done)
 
     def scroll_chat_to_end(self):
         # Resolve the layout at the viewport width before reading its range.
@@ -1111,6 +1142,7 @@ class MainWindow(QMainWindow, Async):
         self.refresh_deferred = False
         self.last_snapshot = None
         self.expanded_task_ids = set()
+        self.board_counts = {}
         self.setWindowTitle('TeamSync')
         self.resize(1400, 850)
         self.setMinimumSize(900, 600)
@@ -1151,7 +1183,14 @@ class MainWindow(QMainWindow, Async):
         self.boards_list.hide()
         self.boards_list.currentItemChanged.connect(self.select_board)
         self.board_tree = QTreeWidget()
+        self.board_tree.setColumnCount(2)
+        self.board_tree.setHeaderLabels(['Доска', 'Уведомления'])
         self.board_tree.setHeaderHidden(True)
+        self.board_tree.header().setStretchLastSection(False)
+        self.board_tree.header().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.board_tree.header().setSectionResizeMode(1, QHeaderView.Fixed)
+        self.board_tree.setColumnWidth(1, 42)
+        self.board_tree.setItemDelegate(BoardBadgeDelegate(self.board_tree))
         self.board_tree.setIndentation(14)
         self.board_tree.setAccessibleName('Рабочие и личные доски')
         self.board_tree.itemClicked.connect(self.select_tree_board)
@@ -1465,6 +1504,27 @@ class MainWindow(QMainWindow, Async):
         self.generation += 1
         self.debounce.start(300)
 
+    def update_board_badges(self, counts):
+        self.board_counts = counts
+        for row in range(self.board_tree.topLevelItemCount()):
+            group = self.board_tree.topLevelItem(row)
+            total = 0
+            for index in range(group.childCount()):
+                item = group.child(index)
+                bid = item.data(0, Qt.UserRole)
+                if bid is None:
+                    continue
+                badge = counts.get(bid, {'chat': 0, 'tasks': 0, 'total': 0})
+                count = badge['total']
+                item.setText(1, '99+' if count > 99 else (str(count) if count else ''))
+                title = item.data(0, Qt.UserRole + 2) or item.text(0)
+                tooltip = '{}\nЧат: {} · Задачи: {}'.format(title, badge['chat'], badge['tasks'])
+                item.setToolTip(0, tooltip)
+                item.setToolTip(1, tooltip)
+                total += count
+            group.setText(1, '99+' if total > 99 else (str(total) if total else ''))
+            group.setToolTip(1, 'Непрочитанных уведомлений: {}'.format(total))
+
     def activate_board_chat(self, board_id, name=''):
         if self.messenger.board_id == board_id:
             if name:
@@ -1496,8 +1556,10 @@ class MainWindow(QMainWindow, Async):
                 return
             for dialog in self.dialogs:
                 if dialog.data.get('id') == task_id and dialog.isVisible():
+                    dialog.notice_snapshot = max(dialog.notice_snapshot, task.get('notification_cursor', 0))
                     dialog.raise_()
                     dialog.activateWindow()
+                    QTimer.singleShot(0, dialog.acknowledge_task_notifications)
                     return
             self.open_personal_task(task)
         self.work(lambda: self.store.detail(task_id), done)
@@ -1612,19 +1674,23 @@ class MainWindow(QMainWindow, Async):
                         groups[group_name].setExpanded(True)
                     item = QTreeWidgetItem(groups[group_name], [title if separator else name])
                     item.setData(0, Qt.UserRole, board_id)
+                    item.setData(0, Qt.UserRole + 2, name)
                 if not groups:
                     QTreeWidgetItem(self.board_tree, ['Рабочие доски'])
                 private = QTreeWidgetItem(self.board_tree, ['Личное'])
                 private.setToolTip(0, 'Доски видны только вам')
                 private.setExpanded(True)
                 create = QTreeWidgetItem(private, ['＋ Создать доску'])
+                create.setFirstColumnSpanned(True)
                 create.setData(0, Qt.UserRole + 1, 'create_personal')
                 create.setToolTip(0, 'Создать личную доску — доступна только вам')
                 for board_id, name, personal_board in structure:
                     if personal_board:
                         item = QTreeWidgetItem(private, [name])
                         item.setData(0, Qt.UserRole, board_id)
+                        item.setData(0, Qt.UserRole + 2, name)
                 archive = QTreeWidgetItem(private, ['Архив личных досок…'])
+                archive.setFirstColumnSpanned(True)
                 archive.setData(0, Qt.UserRole + 1, 'personal_archive')
             wanted = [(b['id'], b['name']) for b in boards]
             current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
@@ -1666,6 +1732,7 @@ class MainWindow(QMainWindow, Async):
                     child = group.child(child_index)
                     if selected is not None and child.data(0, Qt.UserRole) == selected:
                         self.board_tree.setCurrentItem(child)
+            self.update_board_badges(self.board_counts)
             self.update_navigation()
             self.columns_data = columns
             self.statistics.update_data(all_tasks, columns)

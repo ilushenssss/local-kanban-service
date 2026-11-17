@@ -118,8 +118,10 @@ class Notifications(QObject):
             if not error:
                 self.observe(result['chat'], store.login)
                 self.observe_tasks(result['tasks'])
+                if hasattr(self.window, 'update_board_badges'):
+                    self.window.update_board_badges(result['badges'])
         def read():
-            return {'chat': store.chat_updates(self.cursor), 'tasks': store.task_updates(self.task_cursor)}
+            return {'chat': store.chat_updates(self.cursor), 'tasks': store.task_updates(self.task_cursor), 'badges': store.board_badges()}
         self.window.work(read, done)
 
     def chat_active(self, board_id=None):
@@ -191,7 +193,8 @@ class Notifications(QObject):
                     detail = store.detail(event['task_id'])
                     with store.connection() as c:
                         store.active_board(c, detail['board_id'])
-                    allowed.append(event)
+                    if event['id'] > detail.get('notification_read', 0):
+                        allowed.append(event)
                 except ValueError:
                     continue
             return allowed

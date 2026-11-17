@@ -259,7 +259,7 @@ class Store:
                 raise AccessDenied('Перенос между досками не поддерживается')
             if old and old['archived'] != bool(payload.get('archived', False)):
                 self.require(c, 'archive_task', old['board_id'])
-        elif operation in ('comment', 'attachment', 'read'):
+        elif operation in ('comment', 'attachment', 'read', 'task_notice_read'):
             self.detail_in(c, payload[0])
 
     def connection(self):
@@ -342,7 +342,7 @@ class Store:
             cursor = c.execute('SELECT COALESCE(MAX(id),0) FROM task_notifications').fetchone()[0]
             if after is None:
                 return {'cursor': cursor, 'events': []}
-            sql = 'SELECT n.id,h.id AS history_id,h.task_id,h.operation,h.changes,h.created_at,t.board_id,t.title,t.number,b.name AS board_name,u.login,u.display_name AS author FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id JOIN users u ON u.id=h.user_id WHERE n.id>:after AND n.user_id=:uid AND h.user_id<>:uid AND b.archived=0 AND (' + self.board_visibility() + ') ORDER BY n.id'
+            sql = "SELECT n.id,h.id AS history_id,h.task_id,h.operation,h.changes,h.created_at,t.board_id,t.title,t.number,b.name AS board_name,u.login,u.display_name AS author FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id JOIN users u ON u.id=h.user_id LEFT JOIN settings reads ON reads.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.id>COALESCE(CAST(reads.value AS INTEGER),0) AND n.id>:after AND n.user_id=:uid AND h.user_id<>:uid AND b.archived=0 AND (" + self.board_visibility() + ') ORDER BY n.id'
             events = [dict(r) for r in c.execute(sql, {'after': after, 'uid': actor['id'], 'role': actor['role']})]
             columns = {}
             for event in events:
@@ -354,6 +354,33 @@ class Store:
                         columns[key] = row[0] if row else None
                     event['status_name'] = columns[key]
             return {'cursor': cursor, 'events': events}
+
+    def board_badges(self):
+        """Unread chat messages plus unread task events, only on visible active boards."""
+        with self.connection() as c:
+            c.execute('BEGIN')
+            actor = self.actor(c)
+            boards = self.visible_boards(c)
+            sql = "SELECT t.board_id,COUNT(*) AS count FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id LEFT JOIN settings s ON s.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.user_id=:uid AND h.user_id<>:uid AND n.id>COALESCE(CAST(s.value AS INTEGER),0) AND b.archived=0 AND (" + self.board_visibility() + ') GROUP BY t.board_id'
+            tasks = {r['board_id']: r['count'] for r in c.execute(sql, {'uid': actor['id'], 'role': actor['role']})}
+            result = {}
+            for board in boards:
+                bid = board['id']
+                key = 'board_read:' + json.dumps([self.login, bid])
+                count = c.execute('SELECT COUNT(*) FROM team_messages WHERE board_id=? AND user_id<>? AND id>COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key=?),0)', (bid, actor['id'], key)).fetchone()[0]
+                result[bid] = {'chat': count, 'tasks': tasks.get(bid, 0), 'total': count + tasks.get(bid, 0)}
+            return result
+
+    def mark_task_notifications_read(self, task_id, notification_id):
+        def apply(c, uid):
+            if not c.execute('SELECT 1 FROM task_notifications n JOIN task_history h ON h.id=n.history_id WHERE n.id=? AND n.user_id=? AND h.task_id=?', (notification_id, uid, task_id)).fetchone():
+                raise ValueError('Уведомление не принадлежит этой задаче или пользователю')
+            key = 'task_notice_read:{}:{}'.format(uid, task_id)
+            previous = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            value = max(notification_id, int(previous[0]) if previous else 0)
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, str(value)))
+            return value
+        return self.write('task_notice_read', [task_id, notification_id], apply)
 
     def catalogs(self, board_id):
         with self.connection() as c:
@@ -626,8 +653,11 @@ class Store:
         row = c.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         if not row:
             raise ValueError('Задача не найдена')
-        self.require(c, 'read', row['board_id'])
+        actor = self.require(c, 'read', row['board_id'])
         d = dict(row)
+        d['notification_cursor'] = c.execute('SELECT COALESCE(MAX(n.id),0) FROM task_notifications n JOIN task_history h ON h.id=n.history_id WHERE n.user_id=? AND h.task_id=?', (actor['id'], task_id)).fetchone()[0]
+        marker = c.execute('SELECT value FROM settings WHERE key=?', ('task_notice_read:{}:{}'.format(actor['id'], task_id),)).fetchone()
+        d['notification_read'] = int(marker[0]) if marker else 0
         d['assignees'] = [r[0] for r in c.execute('SELECT u.login FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.login', (task_id,))]
         d['assignee_names'] = [r[0] for r in c.execute('SELECT u.display_name FROM task_assignees a JOIN users u ON u.id=a.user_id WHERE a.task_id=? ORDER BY u.login', (task_id,))]
         d['labels'] = [r[0] for r in c.execute('SELECT l.name FROM task_labels a JOIN labels l ON l.id=a.label_id WHERE a.task_id=? ORDER BY l.name', (task_id,))]
