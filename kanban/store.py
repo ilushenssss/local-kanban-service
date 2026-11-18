@@ -242,7 +242,7 @@ class Store:
 
     def authorize_write(self, c, operation, payload):
         self.actor(c)
-        if operation in ('role', 'user'):
+        if operation in ('role', 'user', 'timezone'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -261,6 +261,21 @@ class Store:
                 self.require(c, 'archive_task', old['board_id'])
         elif operation in ('comment', 'attachment', 'read', 'task_notice_read'):
             self.detail_in(c, payload[0])
+
+    def timezone(self):
+        with self.connection() as c:
+            row = c.execute("SELECT value FROM settings WHERE key='timezone'").fetchone()
+            return row[0] if row else 'UTC'
+
+    def set_timezone(self, name):
+        from PyQt5.QtCore import QTimeZone
+        if not QTimeZone.isTimeZoneIdAvailable(name.encode('utf-8')):
+            raise ValueError('Выберите часовой пояс из списка')
+        def apply(c, uid):
+            c.execute("INSERT OR REPLACE INTO settings VALUES('timezone',?)", (name,))
+            self.audit_access(c, 'timezone', name)
+            return name
+        return self.write('timezone', name, apply)
 
     def connection(self):
         c = sqlite3.connect(str(self.db), timeout=self.timeout)
@@ -476,12 +491,16 @@ class Store:
         self.active_board(c, board_id)
         return board_id
 
-    def chat_updates(self, after=0):
+    def chat_updates(self, after=0, unread_only=False):
         with self.connection() as c:
             c.execute('BEGIN')
             actor = self.actor(c)
-            sql = 'SELECT m.*,u.login,u.display_name AS author,b.name AS board_name FROM team_messages m JOIN users u ON u.id=m.user_id JOIN boards b ON b.id=m.board_id WHERE m.id>:after AND b.archived=0 AND (' + self.board_visibility() + ') ORDER BY m.id'
-            return [dict(r) for r in c.execute(sql, {'after': after, 'role': actor['role'], 'uid': actor['id']})]
+            sql = 'SELECT m.*,u.login,u.display_name AS author,b.name AS board_name FROM team_messages m JOIN users u ON u.id=m.user_id JOIN boards b ON b.id=m.board_id WHERE m.id>:after AND b.archived=0 AND (' + self.board_visibility() + ')'
+            params = {'after': after, 'role': actor['role'], 'uid': actor['id']}
+            if unread_only:
+                params['read_prefix'] = 'board_read:' + json.dumps([self.login])[:-1] + ', '
+                sql += " AND m.user_id<>:uid AND m.id>COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key=:read_prefix || m.board_id || ']'),0)"
+            return [dict(r) for r in c.execute(sql + ' ORDER BY m.id', params)]
 
 
     def team_chat(self, after=0, board_id=None):

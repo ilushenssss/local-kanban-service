@@ -2,7 +2,7 @@
 import hashlib
 from pathlib import Path
 from PyQt5.QtCore import QSettings, Qt
-from PyQt5.QtGui import QColor, QPalette, QFontDatabase, QIcon
+from PyQt5.QtGui import QColor, QPalette, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 LIGHT = dict(background='#FFFFFF', canvas='#F4F5F8', sidebar='#FFFFFF',
              text='#1B1F2A', secondary='#4A5264', muted='#5E6678',
@@ -55,6 +55,25 @@ def avatar_color(name):
 
 
 def symbol_icon(name):
+    if name == 'bell':
+        pixmap = QPixmap(48, 48)
+        pixmap.setDevicePixelRatio(2)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(TOKENS['text']), 1.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        outline = QPainterPath()
+        outline.moveTo(4, 17)
+        outline.cubicTo(7, 15, 6, 12, 7, 9)
+        outline.cubicTo(8, 4, 16, 4, 17, 9)
+        outline.cubicTo(18, 12, 17, 15, 20, 17)
+        outline.closeSubpath()
+        outline.moveTo(10, 20)
+        outline.quadTo(12, 22, 14, 20)
+        painter.drawPath(outline)
+        painter.drawLine(12, 3, 12, 5)
+        painter.end()
+        return QIcon(pixmap)
     theme = 'dark' if TOKENS['background'] == DARK['background'] else 'light'
     return QIcon(str(Path(__file__).parent / 'assets' / 'controls' / (name + '-' + theme + '.png')))
 
@@ -103,6 +122,7 @@ QRadioButton { spacing: 10px; padding: 5px 0; min-height: 22px; }
 QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid %(field_border)s; border-radius: 9px; background: %(background)s; }
 QRadioButton::indicator:checked { border: 5px solid %(accent)s; width: 8px; height: 8px; border-radius: 9px; }
 QRadioButton:focus { color: %(accent)s; }
+QPushButton#NotificationLauncher { padding: 7px 4px; color: %(danger)s; font-weight: 600; }
 QPushButton#ChatLauncher { background: %(accent)s; color: %(on_accent)s; border: 1px solid %(accent)s; border-radius: 28px; padding: 0; }
 QPushButton#ChatLauncher:hover { background: %(accent_hover)s; }
 QPushButton#ChatLauncher:pressed { background: %(accent_pressed)s; }

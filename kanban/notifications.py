@@ -2,10 +2,10 @@
 from pathlib import Path
 from PyQt5.QtCore import QObject, QTimer, Qt
 from PyQt5.QtGui import QIcon
-from PyQt5.QtWidgets import QSystemTrayIcon, QMenu
+from PyQt5.QtWidgets import QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QVBoxLayout
 from .theme import theme_settings
 from .spellcheck import spell_engine
-from .presentation import task_notification_text
+from .presentation import date_text, task_notification_text
 
 
 class Notifications(QObject):
@@ -22,6 +22,7 @@ class Notifications(QObject):
         self.last_task = None
         self.task_cursor = None
         self.task_pending = []
+        self.inbox = None
         self.available = QSystemTrayIcon.isSystemTrayAvailable()
         self.tray = QSystemTrayIcon(QIcon(str(Path(__file__).parent / 'assets/teamsync-logo.png')), window)
         self.tray.setToolTip('TeamSync — чаты досок')
@@ -115,14 +116,88 @@ class Notifications(QObject):
         self.loading = True
         def done(result, error):
             self.loading = False
-            if not error:
+            if error:
+                if self.inbox is not None:
+                    self.fill_inbox([], 'Не удалось обновить уведомления. Повторим автоматически.')
+            else:
                 self.observe(result['chat'], store.login)
                 self.observe_tasks(result['tasks'])
+                if hasattr(self.window, 'update_unread_notifications'):
+                    self.window.update_unread_notifications(result['tasks']['events'], result['unread_chat'], result['timezone'])
+                    if self.inbox is not None:
+                        self.fill_inbox(result['tasks']['events'] + result['unread_chat'])
                 if hasattr(self.window, 'update_board_badges'):
                     self.window.update_board_badges(result['badges'])
         def read():
-            return {'chat': store.chat_updates(self.cursor), 'tasks': store.task_updates(self.task_cursor), 'badges': store.board_badges()}
+            return {'chat': store.chat_updates(self.cursor), 'tasks': store.task_updates(0),
+                    'unread_chat': store.chat_updates(unread_only=True), 'badges': store.board_badges(),
+                    'timezone': store.timezone()}
         self.window.work(read, done)
+
+    def open_inbox(self):
+        dialog = QDialog(self.window)
+        dialog.setWindowTitle('Непрочитанные уведомления')
+        dialog.resize(530, 420)
+        layout = QVBoxLayout(dialog)
+        self.inbox_status = QLabel(
+            'Загрузка уведомлений…' if getattr(self.window, 'store', None)
+            else 'Уведомления появятся после подключения к базе.')
+        self.inbox_status.setWordWrap(True)
+        layout.addWidget(self.inbox_status)
+        self.inbox = QListWidget(dialog)
+        self.inbox.setAccessibleName('Непрочитанные уведомления')
+        self.inbox.setWordWrap(True)
+        self.inbox.setSpacing(4)
+        layout.addWidget(self.inbox, 1)
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dialog)
+        buttons.button(QDialogButtonBox.Close).setText('Закрыть')
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        selected = []
+        def activate(item):
+            selected.append(item.data(Qt.UserRole))
+            dialog.accept()
+        self.inbox.itemActivated.connect(activate)
+        self.inbox.setFocus()
+        self.poll()
+        dialog.exec_()
+        self.inbox = None
+        dialog.deleteLater()
+        if selected:
+            task_id, board_id = selected[0]
+            if task_id is not None:
+                self.window.show_task_notification(task_id)
+            else:
+                self.window.show_board_chat(board_id)
+
+    def fill_inbox(self, events, error=None):
+        rows = []
+        for event in sorted(events, key=lambda e: (e['created_at'], e['id']), reverse=True):
+            if 'task_id' in event:
+                summary = task_notification_text(event, self.window.store.login)
+            else:
+                body = 'Отправил фотостикер' if event.get('kind') == 'sticker' else ' '.join(event['body'].split())
+                if len(body) > 180:
+                    body = body[:179] + '…'
+                summary = 'Чат · {}: {}'.format(event['author'], body)
+            text = '{} · {}\n{}'.format(event['board_name'], date_text(event['created_at'], True, self.window.timezone), summary)
+            key = ('task' if 'task_id' in event else 'chat', event['id'])
+            rows.append((key, text, (event.get('task_id'), event['board_id'])))
+        self.inbox_status.setText(error or ('Непрочитанных: {}'.format(len(rows)) if rows else 'Нет непрочитанных уведомлений'))
+        if rows == getattr(self.inbox, 'rows', None):
+            return
+        current = self.inbox.currentItem()
+        selected = current.data(Qt.UserRole + 1) if current else None
+        self.inbox.rows = rows
+        self.inbox.clear()
+        for key, text, target in rows:
+            item = QListWidgetItem(text, self.inbox)
+            item.setData(Qt.UserRole, target)
+            item.setData(Qt.UserRole + 1, key)
+            if key == selected:
+                self.inbox.setCurrentItem(item)
+        if rows and self.inbox.currentRow() == -1:
+            self.inbox.setCurrentRow(0)
 
     def chat_active(self, board_id=None):
         w = self.window

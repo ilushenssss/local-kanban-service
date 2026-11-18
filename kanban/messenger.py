@@ -248,7 +248,7 @@ class Messenger(QWidget):
             self.timeline.document().addResource(QTextDocument.ImageResource, url, image)
             size = image.size().scaled(180, 180, Qt.KeepAspectRatio)
             return '<a href="sticker:{0}"><img src="sticker:{0}" width="{1}" height="{2}" alt="Фотостикер — открыть" /></a>'.format(mid, size.width(), size.height())
-        markup = comments_html(self.messages, self.window.store.login, sticker_html)
+        markup = comments_html(self.messages, self.window.store.login, sticker_html, getattr(self.window, 'timezone', 'UTC'))
         if markup == self.markup:
             return
         bar = self.timeline.verticalScrollBar()

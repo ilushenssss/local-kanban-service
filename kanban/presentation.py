@@ -2,21 +2,29 @@
 import datetime as dt
 import html
 import json
+from PyQt5.QtCore import QDateTime, QTimeZone, Qt
 from .theme import TOKENS
 
 
-def date_text(value, with_time=False):
+def date_text(value, with_time=False, timezone='UTC'):
     if not value:
         return 'не задано'
     try:
         if with_time:
-            return dt.datetime.fromisoformat(value.replace('Z', '+00:00')).strftime('%d.%m.%Y в %H:%M') + ' UTC'
+            stamp = dt.datetime.fromisoformat(value.replace('Z', '+00:00'))
+            if stamp.tzinfo is None:
+                stamp = stamp.replace(tzinfo=dt.timezone.utc)
+            zone = QTimeZone(timezone.encode('utf-8'))
+            if not zone.isValid():
+                zone = QTimeZone.utc()
+            local = QDateTime.fromSecsSinceEpoch(int(stamp.timestamp()), Qt.UTC).toTimeZone(zone)
+            return local.toString("dd.MM.yyyy 'в' HH:mm") + ' ' + local.timeZoneAbbreviation()
         return dt.date.fromisoformat(value).strftime('%d.%m.%Y')
     except (ValueError, AttributeError):
         return str(value)
 
 
-def history_text(entry, columns=(), users=()):
+def history_text(entry, columns=(), users=(), timezone='UTC'):
     col_names = {c['id']: c['name'] for c in columns}
     user_names = {u['login']: u['display_name'] for u in users}
     try:
@@ -33,7 +41,7 @@ def history_text(entry, columns=(), users=()):
         if key == 'column_id':
             return col_names.get(value, 'Колонка №' + str(value))
         if key in ['due_date', 'completed_at']:
-            return date_text(value, key == 'completed_at')
+            return date_text(value, key == 'completed_at', timezone)
         if key == 'assignees':
             return ', '.join(user_names.get(x, x) for x in value)
         if key == 'labels':
@@ -61,20 +69,20 @@ def history_text(entry, columns=(), users=()):
     return lines or ['Поля задачи сохранены без изменений']
 
 
-def history_html(entries, columns=(), users=()):
+def history_html(entries, columns=(), users=(), timezone='UTC'):
     if not entries:
         return '<p>История появится после сохранения задачи.</p>'
     result = []
     for entry in sorted(entries, key=lambda e: (e.get('created_at', ''), e.get('id', 0))):
         heading = '{} · {}'.format(entry['author'], entry['operation'])
-        result.append('<p style="margin-top:18px; margin-bottom:4px"><b>{}</b><br><span style="color:{muted}">{}</span></p>'.format(html.escape(heading), html.escape(date_text(entry['created_at'], True)), muted=TOKENS['muted']))
-        for line in history_text(entry, columns, users):
+        result.append('<p style="margin-top:18px; margin-bottom:4px"><b>{}</b><br><span style="color:{muted}">{}</span></p>'.format(html.escape(heading), html.escape(date_text(entry['created_at'], True, timezone)), muted=TOKENS['muted']))
+        for line in history_text(entry, columns, users, timezone):
             result.append('<p style="margin-top:4px; margin-bottom:7px">{}</p>'.format(html.escape(line).replace('\n', '<br>')))
         result.append('<hr>')
     return ''.join(result)
 
 
-def comments_html(entries, login, sticker_html=None):
+def comments_html(entries, login, sticker_html=None, timezone='UTC'):
     if not entries:
         return '<p style="color:{}">Пока нет комментариев.</p>'.format(TOKENS['muted'])
     result = []
@@ -87,26 +95,26 @@ def comments_html(entries, login, sticker_html=None):
         background = '' if entry.get('kind') == 'sticker' else ' bgcolor="{}"'.format(TOKENS['selection'] if own else TOKENS['hover'])
         bubble = '<td width="78%"{bg} style="padding:10px"><b>{author}</b><br>{body}<br><span style="color:{muted};font-size:9pt">{date}</span></td>'.format(
             bg=background, author=html.escape(author),
-            body=body, muted=TOKENS['muted'], date=html.escape(date_text(entry['created_at'], True)))
+            body=body, muted=TOKENS['muted'], date=html.escape(date_text(entry['created_at'], True, timezone)))
         spacer = '<td width="22%"></td>'
         result.append('<table width="100%" cellspacing="0" cellpadding="9"><tr>{}</tr></table><br>'.format(spacer+bubble if own else bubble+spacer))
     return ''.join(result)
 
 
-def conversation_html(comments, events, login, columns=()):
+def conversation_html(comments, events, login, columns=(), timezone='UTC'):
     timeline = [(x['created_at'], 1, x['id'], x) for x in comments]
     timeline += [(x['created_at'], 0, x['id'], x) for x in events if x['operation'] != 'Комментарий']
     result = []
     for date, kind, identifier, entry in sorted(timeline, key=lambda item: item[:3]):
         if kind:
-            result.append(comments_html([entry], login))
+            result.append(comments_html([entry], login, timezone=timezone))
         else:
             text = entry['author'] + ' · ' + entry['operation']
-            changes = history_text(entry, columns)
+            changes = history_text(entry, columns, timezone=timezone)
             if entry['operation'] != 'Создание':
                 text += ' · ' + '; '.join(changes)
             result.append('<p align="center" style="color:{color};font-size:9pt">{text}<br>{date}</p>'.format(
-                color=TOKENS['muted'], text=html.escape(text), date=html.escape(date_text(date, True))))
+                color=TOKENS['muted'], text=html.escape(text), date=html.escape(date_text(date, True, timezone))))
     return ''.join(result) or comments_html([], login)
 
 

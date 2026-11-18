@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent
+from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone
 from PyQt5.QtGui import QDesktopServices, QDrag, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
 from .store import Store, Conflict
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
-from .cards import CardDelegate, EXPANDED_ROLE
+from .cards import CardDelegate, EXPANDED_ROLE, TASK_NOTICE_ROLE
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -572,7 +572,8 @@ class TaskDialog(QDialog, Async):
     def render_extras(self, d):
         self.notice_snapshot = max(self.notice_snapshot, d.get('notification_cursor', 0))
         QTimer.singleShot(0, self.acknowledge_task_notifications)
-        self.dates.setText('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(date_text(d.get('created_at'), True), date_text(d.get('updated_at'), True), date_text(d.get('completed_at'), True)))
+        self.timestamps = [d.get(key) for key in ('created_at', 'updated_at', 'completed_at')]
+        self.render_dates()
         self.history_entries = d.get('history', [])
         self.comment_entries = d.get('comments', [])
         self.render_comments()
@@ -651,9 +652,16 @@ class TaskDialog(QDialog, Async):
                 self.changed.emit()
         self.work(lambda: self.store.mark_read(self.data['id'], latest), done)
 
+    def display_timezone(self):
+        return getattr(self.parentWidget(), 'timezone', 'UTC')
+
+    def render_dates(self):
+        dates = [date_text(value, True, self.display_timezone()) for value in self.timestamps]
+        self.dates.setText('Создано: {}\nИзменено: {}\nЗавершено: {}'.format(*dates))
+
     def render_comments(self):
         from .presentation import conversation_html
-        markup = conversation_html(self.comment_entries, self.history_entries, self.store.login, self.columns)
+        markup = conversation_html(self.comment_entries, self.history_entries, self.store.login, self.columns, self.display_timezone())
         if markup != getattr(self, 'comments_markup', None):
             bar = self.comments.verticalScrollBar()
             at_bottom = getattr(self, 'chat_initial_scroll', True) or bar.value() >= bar.maximum() - 4
@@ -665,7 +673,7 @@ class TaskDialog(QDialog, Async):
                 QTimer.singleShot(0, self.scroll_chat_to_end)
 
     def render_history(self):
-        markup = history_html(self.history_entries, self.columns, self.catalog_data['users'])
+        markup = history_html(self.history_entries, self.columns, self.catalog_data['users'], self.display_timezone())
         if markup != self.history_markup:
             scroll = self.history.verticalScrollBar().value()
             self.history.setHtml(markup)
@@ -1143,6 +1151,8 @@ class MainWindow(QMainWindow, Async):
         self.last_snapshot = None
         self.expanded_task_ids = set()
         self.board_counts = {}
+        self.task_notice_counts = {}
+        self.timezone = 'UTC'
         self.setWindowTitle('TeamSync')
         self.resize(1400, 850)
         self.setMinimumSize(900, 600)
@@ -1255,6 +1265,13 @@ class MainWindow(QMainWindow, Async):
         settings_button.setMinimumWidth(112)
         settings_button.setToolTip('Настройки доски и обслуживание')
         settings_button.setAccessibleName('Настройки доски')
+        self.notification_button = button('', self.open_notifications, top)
+        self.notification_button.setObjectName('NotificationLauncher')
+        self.notification_button.setProperty('symbol', 'bell')
+        self.notification_button.setIcon(symbol_icon('bell'))
+        self.notification_button.setIconSize(QSize(22, 22))
+        self.notification_button.setFixedWidth(66)
+        self.update_notification_button(0)
         self.retry_button = button('Повторить', self.retry_mutation, top)
         self.retry_button.hide()
         workspace.addWidget(header)
@@ -1380,7 +1397,7 @@ class MainWindow(QMainWindow, Async):
         permissions = getattr(self, 'permissions', {})
         for action in menu.actions():
             text = action.text()
-            if text in ('Роли сотрудников', 'Резервная копия'):
+            if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…'):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Создать доску':
                 action.setEnabled(permissions.get('create_board', False))
@@ -1408,9 +1425,69 @@ class MainWindow(QMainWindow, Async):
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh)
         self.notifications.add_settings(menu)
+        menu.addAction('Часовой пояс…', self.change_timezone)
         menu.addAction('Резервная копия', self.backup)
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
+
+    def change_timezone(self):
+        zones = sorted({bytes(zone).decode('ascii') for zone in QTimeZone.availableTimeZoneIds()})
+        if 'UTC' not in zones:
+            zones.insert(0, 'UTC')
+        index = zones.index(self.timezone) if self.timezone in zones else zones.index('UTC')
+        name, accepted = QInputDialog.getItem(self, 'Часовой пояс', 'Часовой пояс для всех сотрудников', zones, index, False)
+        if not accepted or name == self.timezone:
+            return
+
+        def done(value, error):
+            if error:
+                self.status.setText('Часовой пояс не сохранён: ' + error_text(error))
+                return
+            self.set_display_timezone(value)
+            self.status.setText('Часовой пояс сохранён: ' + value)
+        self.work(lambda: self.store.set_timezone(name), done)
+
+    def set_display_timezone(self, name):
+        if name == self.timezone:
+            return
+        self.timezone = name
+        for dialog in self.dialogs:
+            dialog.render_dates()
+            dialog.render_history()
+            dialog.render_comments()
+        for chat in self.board_chats.values():
+            chat.render()
+
+    def open_notifications(self):
+        self.notifications.open_inbox()
+
+    def update_notification_button(self, count):
+        self.notification_button.setText('99+' if count > 99 else str(count) if count else '')
+        label = 'Уведомления · непрочитанных: {}'.format(count)
+        self.notification_button.setAccessibleName(label)
+        self.notification_button.setToolTip(label)
+
+    def update_unread_notifications(self, tasks, chat, timezone):
+        counts = {}
+        for event in tasks:
+            tid = event['task_id']
+            counts[tid] = counts.get(tid, 0) + 1
+        if counts != self.task_notice_counts:
+            self.task_notice_counts = counts
+            for cards in self.card_lists:
+                for row in range(cards.count()):
+                    self.update_card_notice(cards.item(row))
+        self.update_notification_button(len(tasks) + len(chat))
+        self.set_display_timezone(timezone)
+
+    def update_card_notice(self, item):
+        count = self.task_notice_counts.get(item.data(Qt.UserRole)['id'], 0)
+        item.setData(TASK_NOTICE_ROLE, count)
+        summary = item.text()
+        if count:
+            summary += '\nНепрочитанных уведомлений: {}'.format(count)
+        item.setData(Qt.AccessibleTextRole, summary)
+        item.setToolTip(summary + '\nСтрелка или пробел — раскрыть подробности')
 
     def board_settings_menu(self):
         menu = QMenu(self)
@@ -1556,10 +1633,9 @@ class MainWindow(QMainWindow, Async):
                 return
             for dialog in self.dialogs:
                 if dialog.data.get('id') == task_id and dialog.isVisible():
-                    dialog.notice_snapshot = max(dialog.notice_snapshot, task.get('notification_cursor', 0))
+                    dialog.render_extras(task)
                     dialog.raise_()
                     dialog.activateWindow()
-                    QTimer.singleShot(0, dialog.acknowledge_task_notifications)
                     return
             self.open_personal_task(task)
         self.work(lambda: self.store.detail(task_id), done)
@@ -1791,7 +1867,7 @@ class MainWindow(QMainWindow, Async):
                     item = QListWidgetItem(text)
                     item.setData(Qt.UserRole, task)
                     item.setData(EXPANDED_ROLE, task['id'] in self.expanded_task_ids)
-                    item.setToolTip(text + '\nСтрелка или пробел — раскрыть подробности')
+                    self.update_card_notice(item)
                     cards.addItem(item)
                     if selected_task and selected_task['id'] == task['id']:
                         cards.setCurrentItem(item)

@@ -6,6 +6,7 @@ from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
+TASK_NOTICE_ROLE = Qt.UserRole + 2
 
 
 def card_height(task):
@@ -54,7 +55,9 @@ class CardDelegate(QStyledItemDelegate):
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(20, 25, 40, 16))
         p.drawRoundedRect(box.translated(0, 1), 8, 8)
-        p.setPen(QPen(QColor(TOKENS['accent'] if selected else TOKENS['border']), 1))
+        notices = index.data(TASK_NOTICE_ROLE) or 0
+        border = 'accent' if selected else 'danger' if notices else 'border'
+        p.setPen(QPen(QColor(TOKENS[border]), 2 if notices else 1))
         p.setBrush(QColor(TOKENS['background']))
         p.drawRoundedRect(box, 8, 8)
         p.setClipRect(box)
@@ -75,16 +78,25 @@ class CardDelegate(QStyledItemDelegate):
             p.drawPolyline(QPointF(x+3, y+9), QPointF(x+5, y+11), QPointF(x+10, y+6))
         p.setPen(QColor(TOKENS['muted'] if done else TOKENS['text']))
         f = p.font(); f.setStrikeOut(done); p.setFont(f)
+        title_width = w - 24 - (34 if notices else 0)
         words = t['title'].split(); lines = []
         while words and len(lines) < 2:
             line = words.pop(0)
             if len(lines) == 1:
                 line = ' '.join([line]+words); words = []
             else:
-                while words and p.fontMetrics().horizontalAdvance(line+' '+words[0]) < w-24:
+                while words and p.fontMetrics().horizontalAdvance(line+' '+words[0]) < title_width:
                     line += ' '+words.pop(0)
-            lines.append(p.fontMetrics().elidedText(line, Qt.ElideRight, w-24))
+            lines.append(p.fontMetrics().elidedText(line, Qt.ElideRight, title_width))
         p.drawText(QRect(x+20, y, w-20, 34), Qt.AlignTop, '\n'.join(lines))
+        if notices:
+            badge_rect = QRect(x+w-30, y, 30, 18)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(TOKENS['danger']))
+            p.drawRoundedRect(badge_rect, 9, 9)
+            p.setPen(QColor(TOKENS['background']))
+            font(10, True)
+            p.drawText(badge_rect, Qt.AlignCenter, '99+' if notices > 99 else str(notices))
         font(10)
         cursor = x+20
         names = t.get('assignee_names') or t.get('assignees', [])

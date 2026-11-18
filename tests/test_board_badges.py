@@ -2,6 +2,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from kanban.store import Store, AccessDenied
+from kanban.presentation import date_text
 
 
 class BoardBadgesTest(unittest.TestCase):
@@ -21,6 +22,19 @@ class BoardBadgesTest(unittest.TestCase):
 
     def create(self, board):
         return self.creator.save_task({'board_id': board, 'column_id': self.creator.columns(board)[0]['id'], 'title': 'Задача', 'assignees': ['alice']})['id']
+
+    def test_shared_timezone_requires_admin_and_handles_daylight_saving(self):
+        self.assertEqual(self.alice.timezone(), 'UTC')
+        with self.assertRaises(AccessDenied):
+            self.alice.set_timezone('Europe/Berlin')
+        with self.assertRaises(ValueError):
+            self.creator.set_timezone('invalid')
+        self.creator.set_timezone('Europe/Berlin')
+        zone = self.alice.timezone()
+        self.assertEqual(zone, 'Europe/Berlin')
+        self.assertIn('01.01.2026 в 13:00', date_text('2026-01-01T12:00:00Z', True, zone))
+        self.assertIn('01.07.2026 в 14:00', date_text('2026-07-01T12:00:00Z', True, zone))
+        self.assertEqual(date_text('2026-07-01', timezone=zone), '01.07.2026')
 
     def test_separate_chat_and_task_counts_and_snapshot_reading(self):
         first = self.creator.team_send('Раз', board_id=self.a)

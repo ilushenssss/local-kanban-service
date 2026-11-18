@@ -9,8 +9,9 @@ from unittest.mock import patch
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QDate, QPoint, QSettings
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QMessageBox, QScrollArea
+from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea
 from kanban.store import Store
+from kanban.cards import TASK_NOTICE_ROLE
 from kanban.theme import stylesheet
 from kanban.ui import MainWindow, TaskDialog, CatalogDialog
 from kanban.theme import PRIORITIES
@@ -106,6 +107,30 @@ class UITest(unittest.TestCase):
         self.assertIn('Чат: 1 · Задачи: 1', node(self.bid).toolTip(0))
         self.assertEqual(node(self.bid).parent().text(1), '3')
         board_widget = w.card_lists[0]
+        self.assertEqual(board_widget.item(0).data(TASK_NOTICE_ROLE), 1)
+        self.assertEqual(w.notification_button.text(), '3')
+
+        def inbox_items(expected, activate_task=False):
+            captured = []
+
+            def inspect(dialog):
+                inbox = w.notifications.inbox
+                wait_for(lambda: inbox.count() == expected)
+                items = [inbox.item(i) for i in range(expected)]
+                captured.extend(item.text() for item in items)
+                if activate_task:
+                    task_item = next(item for item in items if item.data(Qt.UserRole)[0] is not None)
+                    inbox.itemActivated.emit(task_item)
+                return dialog.result()
+
+            with patch.object(QDialog, 'exec_', new=inspect):
+                w.open_notifications()
+            return captured
+
+        entries = '\n'.join(inbox_items(3))
+        self.assertIn('Подготовить договор', entries)
+        self.assertIn('Сообщение первой доски', entries)
+        self.assertIn('Сообщение второй доски', entries)
         evidence = Path(__file__).resolve().parent.parent / 'docs/screenshots'
         evidence.mkdir(parents=True, exist_ok=True)
         w.grab().save(str(evidence / 'sidebar-board-badges-linux.png'))
@@ -118,10 +143,13 @@ class UITest(unittest.TestCase):
         w.messenger.open_chat()
         wait_for(lambda: node(self.bid).text(1) == '1')
         self.assertEqual(node(second).text(1), '1')
-        w.show_task_notification(self.result['id'])
+        inbox_items(2, activate_task=True)
         wait_for(lambda: node(self.bid).text(1) == '' and not w.jobs)
         self.assertEqual(node(second).text(1), '1')
         self.assertEqual(w.store.board_badges()[self.bid]['total'], 0)
+        self.assertEqual(w.card_lists[0].item(0).data(TASK_NOTICE_ROLE), 0)
+        remaining = inbox_items(1)
+        self.assertIn('Сообщение второй доски', remaining[0])
 
     def test_task_notification_opens_card_and_keeps_existing_draft(self):
         w = MainWindow(str(self.store.folder))
