@@ -151,6 +151,45 @@ class UITest(unittest.TestCase):
         remaining = inbox_items(1)
         self.assertIn('Сообщение второй доски', remaining[0])
 
+    def test_manual_read_in_inbox_retries_and_clears_badges(self):
+        self.store.save_user('badge-user', 'Получатель')
+        self.grant_all(self.bid)
+        task = self.store.detail(self.result['id'])
+        task['assignees'].append('badge-user')
+        self.store.save_task(task)
+        self.store.team_send('Сообщение', board_id=self.bid)
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'badge-user')):
+            w = MainWindow(str(self.store.folder))
+            self.windows.append(w)
+            w.show()
+            wait_for(lambda: not w.loading and not w.jobs)
+
+        def inspect(dialog):
+            inbox = w.notifications.inbox
+            mark = w.notifications.read_button
+            wait_for(lambda: inbox.count() == 2)
+            row = next(i for i in range(inbox.count()) if inbox.item(i).data(Qt.UserRole + 1)[0] == 'chat')
+            inbox.setCurrentRow(row)
+            with patch.object(w.store, 'mark_notification_read', side_effect=OSError('SMB unavailable')):
+                mark.click()
+                wait_for(mark.isEnabled)
+            self.assertIn('Не удалось', w.notifications.inbox_status.text())
+            self.assertEqual(inbox.count(), 2)
+            mark.click()
+            wait_for(lambda: inbox.count() == 1 and w.notification_button.text() == '1')
+            self.assertEqual(w.messenger.bubble.unread, 0)
+            mark.click()
+            wait_for(lambda: inbox.count() == 0 and not w.notification_button.text())
+            self.assertFalse(mark.isEnabled())
+            self.assertEqual(w.card_lists[0].item(0).data(TASK_NOTICE_ROLE), 0)
+            self.assertEqual(w.board_counts[self.bid]['total'], 0)
+            self.assertFalse(w.messenger.isVisible())
+            self.assertFalse(w.dialogs)
+            return QDialog.Rejected
+
+        with patch.object(QDialog, 'exec_', new=inspect):
+            w.open_notifications()
+
     def test_task_notification_opens_card_and_keeps_existing_draft(self):
         w = MainWindow(str(self.store.folder))
         self.windows.append(w)

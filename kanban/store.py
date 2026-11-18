@@ -12,6 +12,11 @@ import time
 import uuid
 
 
+# Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
+TASK_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:task:' || :uid || ':' || n.id)"
+CHAT_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:chat:' || :uid || ':' || m.id)"
+
+
 def now():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
 
@@ -357,7 +362,7 @@ class Store:
             cursor = c.execute('SELECT COALESCE(MAX(id),0) FROM task_notifications').fetchone()[0]
             if after is None:
                 return {'cursor': cursor, 'events': []}
-            sql = "SELECT n.id,h.id AS history_id,h.task_id,h.operation,h.changes,h.created_at,t.board_id,t.title,t.number,b.name AS board_name,u.login,u.display_name AS author FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id JOIN users u ON u.id=h.user_id LEFT JOIN settings reads ON reads.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.id>COALESCE(CAST(reads.value AS INTEGER),0) AND n.id>:after AND n.user_id=:uid AND h.user_id<>:uid AND b.archived=0 AND (" + self.board_visibility() + ') ORDER BY n.id'
+            sql = "SELECT n.id,h.id AS history_id,h.task_id,h.operation,h.changes,h.created_at,t.board_id,t.title,t.number,b.name AS board_name,u.login,u.display_name AS author FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id JOIN users u ON u.id=h.user_id LEFT JOIN settings reads ON reads.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.id>COALESCE(CAST(reads.value AS INTEGER),0) AND n.id>:after AND n.user_id=:uid AND h.user_id<>:uid AND b.archived=0 AND (" + self.board_visibility() + ')' + TASK_NOTICE_UNREAD + ' ORDER BY n.id'
             events = [dict(r) for r in c.execute(sql, {'after': after, 'uid': actor['id'], 'role': actor['role']})]
             columns = {}
             for event in events:
@@ -376,15 +381,31 @@ class Store:
             c.execute('BEGIN')
             actor = self.actor(c)
             boards = self.visible_boards(c)
-            sql = "SELECT t.board_id,COUNT(*) AS count FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id LEFT JOIN settings s ON s.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.user_id=:uid AND h.user_id<>:uid AND n.id>COALESCE(CAST(s.value AS INTEGER),0) AND b.archived=0 AND (" + self.board_visibility() + ') GROUP BY t.board_id'
+            sql = "SELECT t.board_id,COUNT(*) AS count FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id LEFT JOIN settings s ON s.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.user_id=:uid AND h.user_id<>:uid AND n.id>COALESCE(CAST(s.value AS INTEGER),0) AND b.archived=0 AND (" + self.board_visibility() + ')' + TASK_NOTICE_UNREAD + ' GROUP BY t.board_id'
             tasks = {r['board_id']: r['count'] for r in c.execute(sql, {'uid': actor['id'], 'role': actor['role']})}
             result = {}
             for board in boards:
                 bid = board['id']
                 key = 'board_read:' + json.dumps([self.login, bid])
-                count = c.execute('SELECT COUNT(*) FROM team_messages WHERE board_id=? AND user_id<>? AND id>COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key=?),0)', (bid, actor['id'], key)).fetchone()[0]
+                count = c.execute('SELECT COUNT(*) FROM team_messages m WHERE m.board_id=:board AND m.user_id<>:uid AND m.id>COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key=:key),0)' + CHAT_NOTICE_UNREAD, {'board': bid, 'uid': actor['id'], 'key': key}).fetchone()[0]
                 result[bid] = {'chat': count, 'tasks': tasks.get(bid, 0), 'total': count + tasks.get(bid, 0)}
             return result
+
+    def mark_notification_read(self, source, notification_id):
+        def apply(c, uid):
+            if source == 'task':
+                row = c.execute('SELECT t.board_id FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id WHERE n.id=? AND n.user_id=? AND h.user_id<>?', (notification_id, uid, uid)).fetchone()
+            elif source == 'chat':
+                row = c.execute('SELECT board_id FROM team_messages WHERE id=? AND user_id<>?', (notification_id, uid)).fetchone()
+            else:
+                raise ValueError('Неизвестный тип уведомления')
+            if not row or row['board_id'] is None:
+                raise ValueError('Уведомление недоступно')
+            self.chat_board(c, row['board_id'])
+            key = 'notice_read:{}:{}:{}'.format(source, uid, notification_id)
+            c.execute('INSERT OR IGNORE INTO settings VALUES(?,?)', (key, '1'))
+            return True
+        return self.write('notice_read', [source, notification_id], apply)
 
     def mark_task_notifications_read(self, task_id, notification_id):
         def apply(c, uid):
@@ -499,7 +520,7 @@ class Store:
             params = {'after': after, 'role': actor['role'], 'uid': actor['id']}
             if unread_only:
                 params['read_prefix'] = 'board_read:' + json.dumps([self.login])[:-1] + ', '
-                sql += " AND m.user_id<>:uid AND m.id>COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key=:read_prefix || m.board_id || ']'),0)"
+                sql += " AND m.user_id<>:uid AND m.id>COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key=:read_prefix || m.board_id || ']'),0)" + CHAT_NOTICE_UNREAD
             return [dict(r) for r in c.execute(sql + ' ORDER BY m.id', params)]
 
 
@@ -510,7 +531,8 @@ class Store:
             key = 'board_read:' + json.dumps([self.login, board_id])
             row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
             last = int(row[0]) if row else 0
-            unread = c.execute('SELECT COUNT(*) FROM team_messages m JOIN users u ON u.id=m.user_id WHERE m.board_id=? AND m.id>? AND u.login<>?', (board_id, last, self.login)).fetchone()[0]
+            uid = self.actor(c)['id']
+            unread = c.execute('SELECT COUNT(*) FROM team_messages m WHERE m.board_id=:board AND m.id>:last AND m.user_id<>:uid' + CHAT_NOTICE_UNREAD, {'board': board_id, 'last': last, 'uid': uid}).fetchone()[0]
             messages = [dict(r) for r in c.execute('SELECT m.*,s.width,s.height,u.login,u.display_name AS author FROM team_messages m JOIN users u ON u.id=m.user_id LEFT JOIN team_stickers s ON s.message_id=m.id WHERE m.board_id=? AND m.id>? ORDER BY m.id', (board_id, after))]
             return {'messages': messages, 'unread': unread}
 

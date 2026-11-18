@@ -1583,6 +1583,8 @@ class MainWindow(QMainWindow, Async):
 
     def update_board_badges(self, counts):
         self.board_counts = counts
+        for board_id, chat in self.board_chats.items():
+            chat.update_unread(counts.get(board_id, {}).get('chat', 0))
         for row in range(self.board_tree.topLevelItemCount()):
             group = self.board_tree.topLevelItem(row)
             total = 0

@@ -217,9 +217,7 @@ class Messenger(QWidget):
                 self.status.setText('Некоторые стикеры недоступны. Загрузка повторится автоматически.' if result.get('image_errors') else '')
             self.messages.extend(result['messages'])
             self.stickers.update(result.get('stickers', {}))
-            self.bubble.unread = result['unread']
-            self.bubble.setToolTip('Чат доски · непрочитанных: {}'.format(result['unread']))
-            self.bubble.update()
+            self.update_unread(result['unread'])
             self.render()
             self.mark_read()
         missing = [m['id'] for m in self.messages if m.get('kind') == 'sticker' and m['id'] not in self.stickers]
@@ -234,6 +232,10 @@ class Messenger(QWidget):
                     result['image_errors'] = True
             return result
         self.window.work(read, done)
+
+    def update_unread(self, count):
+        if self.bubble.unread != count:
+            self.bubble.unread = count
 
     def render(self):
         if not self.window.store:

@@ -23,6 +23,8 @@ class Notifications(QObject):
         self.task_cursor = None
         self.task_pending = []
         self.inbox = None
+        self.read_pending = False
+        self.read_revision = 0
         self.available = QSystemTrayIcon.isSystemTrayAvailable()
         self.tray = QSystemTrayIcon(QIcon(str(Path(__file__).parent / 'assets/teamsync-logo.png')), window)
         self.tray.setToolTip('TeamSync — чаты досок')
@@ -114,8 +116,12 @@ class Notifications(QObject):
         if self.loading or store is None:
             return
         self.loading = True
+        revision = self.read_revision
         def done(result, error):
             self.loading = False
+            if revision != self.read_revision:
+                self.poll()
+                return
             if error:
                 if self.inbox is not None:
                     self.fill_inbox([], 'Не удалось обновить уведомления. Повторим автоматически.')
@@ -138,6 +144,7 @@ class Notifications(QObject):
         dialog = QDialog(self.window)
         dialog.setWindowTitle('Непрочитанные уведомления')
         dialog.resize(530, 420)
+        self.read_error = ''
         layout = QVBoxLayout(dialog)
         self.inbox_status = QLabel(
             'Загрузка уведомлений…' if getattr(self.window, 'store', None)
@@ -150,6 +157,13 @@ class Notifications(QObject):
         self.inbox.setSpacing(4)
         layout.addWidget(self.inbox, 1)
         buttons = QDialogButtonBox(QDialogButtonBox.Close, parent=dialog)
+        self.read_button = buttons.addButton('Отметить прочитанным', QDialogButtonBox.ActionRole)
+        self.read_button.setObjectName('MarkNotificationRead')
+        self.read_button.setAutoDefault(False)
+        self.read_button.setEnabled(False)
+        self.read_button.setCursor(Qt.PointingHandCursor)
+        self.read_button.clicked.connect(self.mark_selected_read)
+        self.inbox.currentItemChanged.connect(self.update_read_button)
         buttons.button(QDialogButtonBox.Close).setText('Закрыть')
         buttons.rejected.connect(dialog.reject)
         layout.addWidget(buttons)
@@ -170,6 +184,45 @@ class Notifications(QObject):
             else:
                 self.window.show_board_chat(board_id)
 
+    def update_read_button(self):
+        if self.inbox is not None:
+            self.read_button.setEnabled(not self.read_pending and self.inbox.currentItem() is not None)
+
+    def mark_selected_read(self):
+        inbox = self.inbox
+        item = inbox.currentItem()
+        if item is None or self.read_pending:
+            return
+        source, notification_id = item.data(Qt.UserRole + 1)
+        store = self.window.store
+        self.read_pending = True
+        self.read_error = ''
+        self.inbox_status.setText('Сохраняем отметку о прочтении…')
+        self.update_read_button()
+
+        def done(result, error):
+            self.read_pending = False
+            if error:
+                if self.inbox is inbox:
+                    self.read_error = 'Не удалось отметить уведомление прочитанным. Повторите попытку.'
+                    self.inbox_status.setText(self.read_error)
+            else:
+                self.read_revision += 1
+                if self.inbox is not None:
+                    for row in range(self.inbox.count()):
+                        if self.inbox.item(row).data(Qt.UserRole + 1) == (source, notification_id):
+                            self.inbox.takeItem(row)
+                            break
+                if source == 'chat':
+                    self.pending = [m for m in self.pending if m['id'] != notification_id]
+                else:
+                    self.task_pending = [e for e in self.task_pending if e['id'] != notification_id]
+                self.poll()
+            if self.inbox is not None:
+                self.update_read_button()
+
+        self.window.work(lambda: store.mark_notification_read(source, notification_id), done)
+
     def fill_inbox(self, events, error=None):
         rows = []
         for event in sorted(events, key=lambda e: (e['created_at'], e['id']), reverse=True):
@@ -183,7 +236,8 @@ class Notifications(QObject):
             text = '{} · {}\n{}'.format(event['board_name'], date_text(event['created_at'], True, self.window.timezone), summary)
             key = ('task' if 'task_id' in event else 'chat', event['id'])
             rows.append((key, text, (event.get('task_id'), event['board_id'])))
-        self.inbox_status.setText(error or ('Непрочитанных: {}'.format(len(rows)) if rows else 'Нет непрочитанных уведомлений'))
+        if not self.read_pending:
+            self.inbox_status.setText(self.read_error or error or ('Непрочитанных: {}'.format(len(rows)) if rows else 'Нет непрочитанных уведомлений'))
         if rows == getattr(self.inbox, 'rows', None):
             return
         current = self.inbox.currentItem()
@@ -222,27 +276,31 @@ class Notifications(QObject):
         messages = [m for m in messages if not self.chat_active(m.get('board_id'))]
         if not messages:
             return
-        last = messages[-1]
-        text = 'Отправил фотостикер' if last.get('kind') == 'sticker' else ' '.join(last['body'].split())
-        title = 'TeamSync · ' + last.get('board_name', last['author'])
-        if last.get('board_name'):
-            text = last['author'] + ': ' + text
-        if len(messages) > 1:
-            title = 'TeamSync · новых сообщений: {}'.format(len(messages))
-            if not last.get('board_name'):
-                text = last['author'] + ': ' + text
-        board_id = last.get('board_id')
-        def show(result=None, error=None):
-            if error or not self.enabled() or self.chat_active(board_id):
+        def show(allowed, error=None):
+            if error or not self.enabled():
                 return
-            self.last_board = board_id
+            allowed = [m for m in allowed if not self.chat_active(m.get('board_id'))]
+            if not allowed:
+                return
+            last = allowed[-1]
+            text = 'Отправил фотостикер' if last.get('kind') == 'sticker' else ' '.join(last['body'].split())
+            title = 'TeamSync · ' + last.get('board_name', last['author'])
+            if last.get('board_name') or len(allowed) > 1:
+                text = last['author'] + ': ' + text
+            if len(allowed) > 1:
+                title = 'TeamSync · новых сообщений: {}'.format(len(allowed))
+            self.last_board = last.get('board_id')
             self.last_task = None
             self.tray.showMessage(title[:100], text[:240], QSystemTrayIcon.Information, 6000)
+
         store = getattr(self.window, 'store', None)
-        if store is not None and board_id is not None:
-            self.window.work(lambda: store.team_chat(board_id=board_id), show)
-        else:
-            show()
+        if store is None:
+            show(messages)
+            return
+        def read():
+            candidates = {m['id'] for m in messages}
+            return [m for m in store.chat_updates(min(candidates) - 1, unread_only=True) if m['id'] in candidates]
+        self.window.work(read, show)
 
     def observe_tasks(self, result):
         fresh = [e for e in result['events'] if self.task_cursor is not None and e['id'] > self.task_cursor]
@@ -260,19 +318,10 @@ class Notifications(QObject):
         store = getattr(self.window, 'store', None)
         if store is None:
             return
-        # Recheck access to every queued task before constructing desktop text.
+        # Use the same access and read-state checks as the inbox.
         def read():
-            allowed = []
-            for event in events:
-                try:
-                    detail = store.detail(event['task_id'])
-                    with store.connection() as c:
-                        store.active_board(c, detail['board_id'])
-                    if event['id'] > detail.get('notification_read', 0):
-                        allowed.append(event)
-                except ValueError:
-                    continue
-            return allowed
+            candidates = {event['id'] for event in events}
+            return [event for event in store.task_updates(min(candidates) - 1)['events'] if event['id'] in candidates]
         def show(allowed, error):
             if error:
                 if self.tasks_enabled():

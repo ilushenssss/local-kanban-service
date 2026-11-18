@@ -100,7 +100,7 @@ class DesktopFeaturesTest(unittest.TestCase):
             self.assertEqual(n.task_cursor, 0)
             n.poll()
             self.assertEqual(len(n.task_pending), 1)
-            with patch.object(self.window.store, 'detail', side_effect=OSError('SMB unavailable')):
+            with patch.object(self.window.store, 'task_updates', side_effect=OSError('SMB unavailable')):
                 n.flush_tasks()
             show.assert_not_called()
             self.assertEqual(len(n.task_pending), 1)

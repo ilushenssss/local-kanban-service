@@ -64,6 +64,34 @@ class BoardBadgesTest(unittest.TestCase):
         self.assertEqual(reopened.detail(task)['version'], latest['version'])
         self.assertEqual(reopened.task_updates(0)['events'], [])
 
+    def test_manual_read_is_individual_persistent_and_checks_access(self):
+        first = self.creator.team_send('Первое', board_id=self.a)
+        second = self.creator.team_send('Второе', board_id=self.a)
+        task = self.create(self.a)
+        old_event = self.alice.task_updates(0)['events'][0]['id']
+        current = self.creator.detail(task)
+        current['priority'] = 'Высокий'
+        self.creator.save_task(current)
+        new_event = self.alice.task_updates(0)['events'][-1]['id']
+
+        with self.assertRaises(ValueError):
+            self.bob.mark_notification_read('task', new_event)
+        self.alice.mark_notification_read('task', new_event)
+        self.alice.mark_notification_read('chat', second)
+        self.alice.mark_notification_read('chat', second)
+        reopened = Store(self.creator.folder, 'alice')
+        self.assertEqual([m['id'] for m in reopened.chat_updates(unread_only=True)], [first])
+        self.assertEqual([e['id'] for e in reopened.task_updates(0)['events']], [old_event])
+        self.assertEqual(reopened.board_badges()[self.a], {'chat': 1, 'tasks': 1, 'total': 2})
+        self.assertEqual(reopened.team_chat(board_id=self.a)['unread'], 1)
+        self.assertEqual(self.bob.team_chat(board_id=self.a)['unread'], 2)
+
+        self.creator.set_board_access(self.a, [self.bid], self.creator.profile()['id'])
+        with self.assertRaises(AccessDenied):
+            reopened.mark_notification_read('chat', first)
+        with self.assertRaises(AccessDenied):
+            reopened.mark_notification_read('task', old_event)
+
     def test_private_archived_and_revoked_boards_are_excluded(self):
         private = self.alice.board_action('Личное', personal=True)
         self.alice.team_send('Заметка', board_id=private)
