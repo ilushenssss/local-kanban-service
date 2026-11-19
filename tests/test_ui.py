@@ -859,6 +859,34 @@ class UITest(unittest.TestCase):
             wait_for(lambda: not w.notifications.loading)
             self.assertEqual(w.notification_button.text(), str(page + 1))
 
+    def test_two_line_card_title_leaves_space_for_badges(self):
+        from PyQt5.QtCore import QRect
+        from PyQt5.QtGui import QPainter, QPixmap
+        from kanban.cards import Cards, set_card_data
+        from PyQt5.QtWidgets import QListWidgetItem
+        cards = Cards(self.columns[0]['id'])
+        task = self.store.board_cards(self.bid)[0]
+        task['title'] = 'Длинный заголовок карточки с важным контекстом для исполнителя'
+        item = QListWidgetItem()
+        set_card_data(item, task, 2)
+        cards.addItem(item)
+        option = cards.viewOptions()
+        index = cards.model().index(0, 0)
+        delegate = cards.itemDelegate()
+        option.rect = QRect(0, 0, 220, delegate.sizeHint(option, index).height())
+        pixmap = QPixmap(option.rect.size())
+        painter = QPainter(pixmap)
+        try:
+            with patch.object(painter, 'drawText', wraps=painter.drawText) as draw_text:
+                delegate.paint(painter, option, index)
+            first, second, notice, due = (call.args for call in draw_text.call_args_list[:4])
+            self.assertTrue(task['title'].startswith(first[2]))
+            self.assertTrue(second[2])
+            self.assertEqual(notice[2], '2')
+            self.assertGreaterEqual(due[0].top() - second[0].bottom(), 7)
+        finally:
+            painter.end()
+
     def test_card_reconciliation_and_narrow_themes(self):
         from kanban.cards import EXPANDED_ROLE, DETAILS_ROLE
         from kanban.theme import apply_theme, theme_settings
@@ -1226,7 +1254,8 @@ class UITest(unittest.TestCase):
         task = item.data(Qt.UserRole)
         original = self.store.detail(task['id'])
         height = cards.height()
-        arrow = CardDelegate.disclosure_rect(cards.visualItemRect(item), task)
+        rect = cards.visualItemRect(item)
+        arrow = CardDelegate.disclosure_rect(rect, rect.height())
         QTest.mouseClick(cards.viewport(), Qt.LeftButton, pos=arrow.center())
         self.assertTrue(item.data(EXPANDED_ROLE))
         self.assertGreater(cards.height(), height)

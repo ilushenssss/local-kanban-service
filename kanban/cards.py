@@ -1,7 +1,7 @@
 """Compact task cards with semantic badges and optional inline details."""
 import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QPen, QTextDocument, QDrag
+from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
 from .theme import TOKENS, STICKERS, avatar_color
 
@@ -10,8 +10,20 @@ TASK_NOTICE_ROLE = Qt.UserRole + 2
 DETAILS_ROLE = Qt.UserRole + 3
 
 
-def card_height(task):
-    return 124 + (24 if task.get('labels') else 0) + (18 if task.get('board_name') else 0)
+def title_font(base_font):
+    font = QFont(base_font)
+    font.setPixelSize(15)
+    font.setBold(True)
+    return font
+
+
+def title_extra_height(metrics):
+    # Reserve two lines and leave six pixels before the metadata badges.
+    return max(0, metrics.height() + metrics.lineSpacing() + 6 - 38)
+
+
+def card_height(task, metrics):
+    return 124 + title_extra_height(metrics) + (24 if task.get('labels') else 0) + (18 if task.get('board_name') else 0)
 
 
 def details_document(task, width):
@@ -35,15 +47,15 @@ def details_document(task, width):
 class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         task = index.data(Qt.UserRole) or {}
-        height = card_height(task)
+        height = card_height(task, QFontMetrics(title_font(option.font)))
         if index.data(EXPANDED_ROLE):
             width = max(220, self.parent().viewport().width() - 32)
             height += min(260, int(details_document(index.data(DETAILS_ROLE) or task, width).size().height()) + 24)
         return QSize(292, height)
 
     @staticmethod
-    def disclosure_rect(rect, task):
-        return QRect(rect.right()-30, rect.y()+card_height(task)-32, 26, 26)
+    def disclosure_rect(rect, height):
+        return QRect(rect.right()-30, rect.y()+height-32, 26, 26)
 
     def paint(self, p, option, index):
         t = index.data(Qt.UserRole)
@@ -71,14 +83,17 @@ class CardDelegate(QStyledItemDelegate):
             p.setFont(f)
 
         done = bool(t.get('completed_at'))
-        font(15, True)
+        heading = title_font(option.font)
+        heading.setStrikeOut(done)
+        p.setFont(heading)
+        metrics = p.fontMetrics()
+        height = card_height(t, metrics)
         p.setPen(QPen(QColor(TOKENS['muted']), 1))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(QRectF(x, y+3, 12, 12))
         if done:
             p.drawPolyline(QPointF(x+3, y+9), QPointF(x+5, y+11), QPointF(x+10, y+6))
         p.setPen(QColor(TOKENS['muted'] if done else TOKENS['text']))
-        f = p.font(); f.setStrikeOut(done); p.setFont(f)
         title_width = w - 24 - (34 if notices else 0)
         words = t['title'].split(); lines = []
         while words and len(lines) < 2:
@@ -86,10 +101,11 @@ class CardDelegate(QStyledItemDelegate):
             if len(lines) == 1:
                 line = ' '.join([line]+words); words = []
             else:
-                while words and p.fontMetrics().horizontalAdvance(line+' '+words[0]) < title_width:
+                while words and metrics.horizontalAdvance(line+' '+words[0]) < title_width:
                     line += ' '+words.pop(0)
-            lines.append(p.fontMetrics().elidedText(line, Qt.ElideRight, title_width))
-        p.drawText(QRect(x+20, y, title_width, 36), Qt.AlignTop, '\n'.join(lines))
+            lines.append(metrics.elidedText(line, Qt.ElideRight, title_width))
+        for i, line in enumerate(lines):
+            p.drawText(QRect(x+20, y+i*metrics.lineSpacing(), title_width, metrics.height()), Qt.AlignTop, line)
         if notices:
             badge_rect = QRect(x+w-30, y, 30, 18)
             p.setPen(Qt.NoPen)
@@ -98,6 +114,7 @@ class CardDelegate(QStyledItemDelegate):
             p.setPen(QColor(TOKENS['background']))
             font(10, True)
             p.drawText(badge_rect, Qt.AlignCenter, '99+' if notices > 99 else str(notices))
+        y += title_extra_height(metrics)
         font(11)
         cursor = x+20
         names = t.get('assignee_names') or t.get('assignees', [])
@@ -166,7 +183,7 @@ class CardDelegate(QStyledItemDelegate):
             board_y = y + (105 if t.get('labels') else 81)
             p.drawText(QRect(x+20, board_y, w-20, 17), Qt.AlignVCenter,
                        p.fontMetrics().elidedText(t['board_name'], Qt.ElideRight, w-20))
-        footer=option.rect.y()+card_height(t)-25
+        footer=option.rect.y()+height-25
         total, checked = t.get('check_total', 0), t.get('check_done', 0)
         unread = t.get('unread_count', 0)
         status = '{}/{}'.format(checked,total) if total else ''
@@ -183,12 +200,12 @@ class CardDelegate(QStyledItemDelegate):
                 p.drawRoundedRect(QRectF(track.x(), track.y(), track.width()*checked/total, 4), 2, 2)
         p.setPen(QColor(TOKENS['muted']));font(10)
         p.drawText(QRect(x+w-status_width-30,footer,status_width,20),Qt.AlignCenter,status)
-        arrow=self.disclosure_rect(option.rect,t);expanded=bool(index.data(EXPANDED_ROLE))
+        arrow=self.disclosure_rect(option.rect,height);expanded=bool(index.data(EXPANDED_ROLE))
         p.setPen(QPen(QColor(TOKENS['muted']),1.5));p.setBrush(Qt.NoBrush)
         cx,cy=arrow.center().x(),arrow.center().y()
         p.drawPolyline(QPointF(cx-4,cy+(2 if expanded else -2)),QPointF(cx,cy+(-2 if expanded else 2)),QPointF(cx+4,cy+(2 if expanded else -2)))
         if expanded:
-            top=option.rect.y()+card_height(t)
+            top=option.rect.y()+height
             p.setPen(QPen(QColor(TOKENS['border']),1));p.drawLine(x,top-4,x+w,top-4)
             details = index.data(DETAILS_ROLE)
             doc = details_document(details or dict(t, description='Загрузка подробностей…'), w)
@@ -247,7 +264,8 @@ class Cards(QListWidget):
         item = self.itemAt(event.pos())
         if item and event.button() == Qt.LeftButton:
             task = item.data(Qt.UserRole)
-            if CardDelegate.disclosure_rect(self.visualItemRect(item), task).contains(event.pos()):
+            metrics = QFontMetrics(title_font(self.viewOptions().font))
+            if CardDelegate.disclosure_rect(self.visualItemRect(item), card_height(task, metrics)).contains(event.pos()):
                 self.toggle_details(item)
                 event.accept()
                 return
