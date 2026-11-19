@@ -3,7 +3,7 @@ from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
-from kanban.store import Store, Conflict
+from kanban.store import Store, Conflict, AccessDenied
 from kanban.presentation import task_notification_text
 
 
@@ -26,6 +26,42 @@ class TaskNotificationsTest(unittest.TestCase):
 
     def create(self):
         return self.creator.save_task({'board_id': self.board, 'column_id': self.column, 'title': 'Договор', 'assignees': ['alice']}, 'create')['id']
+
+    def test_mention_subscription_deduplication_and_access(self):
+        task = self.create()
+        self.alice.subscribe(task, True)
+        self.bob.subscribe(task, True)
+        self.assertTrue(Store(self.creator.folder, 'bob').detail(task)['subscribed'])
+        outsider_id = self.creator.save_user('hidden', 'Скрытый')
+        outsider = Store(self.creator.folder, 'hidden')
+        with self.assertRaises(AccessDenied):
+            outsider.subscribe(task, True)
+        before = self.alice.task_updates()['cursor']
+        for _ in range(2):
+            self.creator.comment(task, '@alice @alice @[observer] @hidden', 'mentions')
+        alice = self.alice.task_updates(before)['events']
+        self.assertEqual(len(alice), 1)
+        self.assertIn('Вас упомянули', task_notification_text(alice[0], 'alice'))
+        self.assertEqual(len(self.bob.task_updates(before)['events']), 1)
+        self.assertEqual(len(self.observer.notification_snapshot(0)['tasks']['events']), 1)
+        with self.creator.connection() as c:
+            self.assertIsNone(c.execute('SELECT 1 FROM task_notifications WHERE user_id=?', (outsider_id,)).fetchone())
+        self.alice.mark_notification_read('task', alice[0]['id'])
+        self.assertEqual(self.alice.task_updates(before)['events'], [])
+        self.assertEqual(self.alice.board_badges()[self.board]['tasks'], 1)
+        bob_notice = self.bob.task_updates(before)['events'][0]['id']
+        self.creator.set_board_access(self.board, [self.aid, self.oid], self.creator.profile()['id'])
+        self.assertFalse(self.bob.notification_snapshot(0)['tasks']['events'])
+        with self.assertRaises(AccessDenied):
+            self.bob.mark_notification_read('task', bob_notice)
+        self.creator.comment(task, '@bob Больше нет доступа')
+        self.creator.set_board_access(self.board, [self.aid, self.bid, self.oid], self.creator.profile()['id'])
+        self.assertEqual(len(self.bob.task_updates(before)['events']), 1)
+        self.bob.subscribe(task, False)
+        cursor = self.bob.task_updates()['cursor']
+        current = self.creator.detail(task)
+        self.creator.save_task(dict(current, title='Новое название'))
+        self.assertFalse(self.bob.task_updates(cursor)['events'])
 
     def test_assignment_creator_and_removed_assignee_recipients(self):
         baseline = self.alice.task_updates()['cursor']
@@ -130,7 +166,7 @@ class TaskNotificationsTest(unittest.TestCase):
         upgraded = Store(self.creator.folder, 'alice')
         self.assertEqual(upgraded.task_updates(0)['events'], [])
         with upgraded.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 7)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 8)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM task_history').fetchone()[0], count)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
         current = self.creator.detail(task)

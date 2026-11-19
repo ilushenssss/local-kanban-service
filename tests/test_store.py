@@ -1,10 +1,12 @@
+import contextlib
 import copy
 import multiprocessing
 from pathlib import Path
 import sqlite3
 import tempfile
 import unittest
-from kanban.store import Store, Conflict, Busy
+from kanban.store import Store, Conflict, Busy, AccessDenied
+from unittest.mock import patch
 from tools.restore import restore
 
 
@@ -29,6 +31,40 @@ class StoreTest(unittest.TestCase):
     def create(self):
         r = self.s.save_task(self.base)
         return self.s.detail(r['id'])
+    def test_board_cards_batch_filters_counts_and_access(self):
+        original = self.create()
+        bob = Store(self.s.folder, 'bob')
+        cid = bob.comment(original['id'], 'Обсуждение')
+        self.s.save_task(dict(self.base, checklist=[{'text': 'Готово', 'done': True}]))
+        trace = []
+        connection = self.s.connection
+
+        @contextlib.contextmanager
+        def traced():
+            with connection() as c:
+                c.set_trace_callback(trace.append)
+                yield c
+
+        with patch.object(self.s, 'connection', traced):
+            filters = {'query': 'ОПИСАНИЕ', 'assignee': 'bob', 'label': 'Документы'}
+            cards = self.s.board_cards(self.bid, filters)
+            small = len(trace)
+            self.assertEqual(len(cards), 2)
+            for _ in range(12):
+                self.s.save_task(self.base)
+            trace.clear()
+            self.assertEqual(len(self.s.board_cards(self.bid, filters)), 14)
+            self.assertEqual(len(trace), small)
+        self.assertFalse({'description', 'history', 'comments', 'attachments', 'checklist'} & cards[0].keys())
+        self.assertEqual((cards[0]['check_total'], cards[1]['check_done'], cards[0]['unread_count']), (1, 1, 1))
+        self.s.mark_read(original['id'], cid)
+        self.assertEqual(self.s.board_cards(self.bid)[0]['unread_count'], 0)
+        self.assertEqual(self.s.card_details(original['id'])['description'], 'Описание')
+        self.s.set_board_access(self.bid, [], self.s.profile()['id'])
+        with self.assertRaises(AccessDenied):
+            bob.board_cards(self.bid)
+        self.assertFalse(bob.board_snapshot(self.bid, {}, 'personal')[-1])
+
     def test_delete_column_moves_active_and_archived_with_history_and_retry(self):
         original = self.create()
         archived = self.create()
@@ -133,7 +169,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(upgraded.detail(task['id'])['title'], task['title'])
         upgraded.team_send('После обновления')
         with upgraded.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 7)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 8)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
 
     def test_create_and_history(self):

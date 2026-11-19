@@ -1,7 +1,10 @@
 """Shared native Qt form controls; no network or external resources."""
+import re
+
+from PyQt5.QtGui import QTextCursor
 from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal, QEvent, QPointF, QSize
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
-    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QRadioButton, QButtonGroup, QToolButton, QSizePolicy)
+    QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QRadioButton, QButtonGroup, QToolButton, QSizePolicy, QCompleter)
 
 from .spellcheck import SpellTextEdit, SpellLineEdit, SpellItemDelegate
 
@@ -13,19 +16,72 @@ class MessageEdit(SpellTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._composing = False
+        self.mention_popup = None
         self.setAcceptRichText(False)
         self.setToolTip('Enter — отправить, Shift+Enter — новая строка')
         self.setAccessibleDescription(self.toolTip())
+
+    def set_mention_users(self, users):
+        options = {'@{} · {}'.format(u['login'], u['display_name']): u['login'] for u in users}
+        if self.mention_popup and options == self.mention_options:
+            return
+        if self.mention_popup:
+            self.mention_popup.deleteLater()
+        else:
+            self.textChanged.connect(self.complete_mention)
+            self.cursorPositionChanged.connect(self.complete_mention)
+        self.mention_options = options
+        self.mention_popup = QCompleter(list(options), self)
+        self.mention_popup.setWidget(self)
+        self.mention_popup.setCaseSensitivity(Qt.CaseInsensitive)
+        self.mention_popup.popup().setAccessibleName('Участники для упоминания')
+        self.mention_popup.activated[str].connect(self.insert_mention)
+        self.setToolTip(self.toolTip().split('\n')[0] + '\n@ — упомянуть участника')
+        self.setAccessibleDescription(self.toolTip())
+
+    def mention_prefix(self):
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.StartOfBlock, QTextCursor.KeepAnchor)
+        match = re.search(r'(?<![\w@])@[\w.\\-]*$', cursor.selectedText())
+        return match[0] if match else ''
+
+    def complete_mention(self):
+        prefix = self.mention_prefix()
+        if not prefix or not self.hasFocus() or self._composing:
+            self.mention_popup.popup().hide()
+            return
+        self.mention_popup.setCompletionPrefix(prefix)
+        rect = self.cursorRect()
+        rect.setWidth(min(self.viewport().width(), 300))
+        self.mention_popup.complete(rect)
+        self.mention_popup.popup().setCurrentIndex(self.mention_popup.completionModel().index(0, 0))
+
+    def insert_mention(self, option):
+        login = self.mention_options[option]
+        token = '@' + (login if re.fullmatch(r'[\w-]+(?:[.\\][\w-]+)*', login) else '[' + login + ']')
+        cursor = self.textCursor()
+        cursor.movePosition(QTextCursor.Left, QTextCursor.KeepAnchor, len(self.mention_prefix()))
+        cursor.insertText(token + ' ')
+        self.setTextCursor(cursor)
 
     def inputMethodEvent(self, event):
         self._composing = bool(event.preeditString())
         super().inputMethodEvent(event)
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            if self._composing:
+        if self._composing and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            event.accept()
+            return
+        if self.mention_popup and self.mention_popup.popup().isVisible():
+            popup = self.mention_popup.popup()
+            if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Tab, Qt.Key_Escape):
+                option = popup.currentIndex().data()
+                popup.hide()
+                if option and event.key() != Qt.Key_Escape:
+                    self.insert_mention(option)
                 event.accept()
                 return
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
             if event.modifiers() in (Qt.NoModifier, Qt.KeypadModifier):
                 event.accept()
                 if not event.isAutoRepeat() and self.toPlainText().strip():

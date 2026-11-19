@@ -4,6 +4,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import shutil
 import socket
@@ -15,6 +16,12 @@ import uuid
 # Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
 TASK_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:task:' || :uid || ':' || n.id)"
 CHAT_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:chat:' || :uid || ':' || m.id)"
+
+
+def mention_logins(text):
+    # Brackets allow Windows logins containing spaces or punctuation.
+    return {quoted or simple for quoted, simple in
+            re.findall(r'(?<![\w@])@(?:\[([^\]\r\n]+)\]|([\w-]+(?:[.\\][\w-]+)*))', text)}
 
 
 def now():
@@ -75,7 +82,7 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 7:
+                if version > 8:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
@@ -121,7 +128,11 @@ class Store:
                 c.execute('CREATE TABLE IF NOT EXISTS task_notifications(id INTEGER PRIMARY KEY,history_id INTEGER NOT NULL REFERENCES task_history(id),user_id INTEGER NOT NULL REFERENCES users(id),UNIQUE(history_id,user_id))')
                 c.execute('CREATE INDEX IF NOT EXISTS task_notifications_user ON task_notifications(user_id,id)')
                 c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(7,?)', (now(),))
-                c.execute('PRAGMA user_version=7')
+                if version < 8:
+                    c.execute('CREATE TABLE IF NOT EXISTS task_subscriptions(task_id INTEGER REFERENCES tasks(id),user_id INTEGER REFERENCES users(id),PRIMARY KEY(task_id,user_id))')
+                    c.execute('CREATE INDEX IF NOT EXISTS checklist_task ON checklist_items(task_id)')
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(8,?)', (now(),))
+                c.execute('PRAGMA user_version=8')
                 self.user(c, self.login)
                 c.commit()
 
@@ -133,13 +144,15 @@ class Store:
             raise AccessDenied('Пользователь не зарегистрирован')
         return row
 
-    def visible_boards(self, c):
-        actor = self.actor(c)
+    def visible_boards(self, c, actor=None):
+        actor = actor if actor is not None else self.actor(c)
         return [dict(r) for r in c.execute('SELECT b.* FROM boards b WHERE b.archived=0 AND (' + self.board_visibility() + ') ORDER BY b.id', {'uid': actor['id'], 'role': actor['role']})]
 
     @staticmethod
-    def board_visibility():
-        return '(b.personal=1 AND b.owner_id=:uid) OR (b.personal=0 AND (:role="admin" OR b.owner_id=:uid OR EXISTS(SELECT 1 FROM board_members m WHERE m.board_id=b.id AND m.user_id=:uid)))'
+    def board_visibility(uid=':uid', role=':role'):
+        return (f'(b.personal=1 AND b.owner_id={uid}) OR (b.personal=0 AND '
+                f'({role}="admin" OR b.owner_id={uid} OR EXISTS(SELECT 1 FROM board_members m '
+                f'WHERE m.board_id=b.id AND m.user_id={uid})))')
 
     def require(self, c, action='read', board_id=None):
         actor = self.actor(c)
@@ -257,15 +270,17 @@ class Store:
             self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
-        elif operation == 'task':
-            old = self.detail_in(c, payload['id']) if payload.get('id') else None
+        elif operation in ('task', 'card_task'):
+            old = self.task_row(c, payload['id']) if payload.get('id') else None
             self.require(c, 'edit' if old else 'create_task', payload['board_id'])
             if old and old['board_id'] != payload['board_id']:
                 raise AccessDenied('Перенос между досками не поддерживается')
             if old and old['archived'] != bool(payload.get('archived', False)):
                 self.require(c, 'archive_task', old['board_id'])
-        elif operation in ('comment', 'attachment', 'read', 'task_notice_read'):
-            self.detail_in(c, payload[0])
+        elif operation in ('comment', 'attachment', 'read', 'task_notice_read', 'subscribe'):
+            task = self.task_row(c, payload[0])
+            if operation in ('task_notice_read', 'subscribe'):
+                self.active_board(c, task['board_id'])
 
     def timezone(self):
         with self.connection() as c:
@@ -352,44 +367,75 @@ class Store:
             row = c.execute('SELECT id FROM users WHERE login=?', (login,)).fetchone()
             if row:
                 recipients.add(row[0])
-        c.executemany('INSERT OR IGNORE INTO task_notifications(history_id,user_id) VALUES(?,?)', [(hid, recipient) for recipient in sorted(recipients - {uid})])
+        recipients.update(r[0] for r in c.execute('SELECT user_id FROM task_subscriptions WHERE task_id=?', (task_id,)))
+        mentions = mention_logins(changes['text']) if op == 'Комментарий' else set()
+        eligible = c.execute('SELECT u.id,u.login FROM users u JOIN tasks t ON t.id=:tid'
+                             ' JOIN boards b ON b.id=t.board_id WHERE b.archived=0 AND ('
+                             + self.board_visibility('u.id', 'u.role') + ')', {'tid': task_id})
+        c.executemany('INSERT OR IGNORE INTO task_notifications(history_id,user_id) VALUES(?,?)',
+                      [(hid, r['id']) for r in eligible if r['id'] != uid and
+                       (r['id'] in recipients or r['login'] in mentions)])
+
+    def subscribe(self, task_id, enabled):
+        def apply(c, uid):
+            sql = ('INSERT OR IGNORE INTO task_subscriptions(task_id,user_id) VALUES(?,?)' if enabled
+                   else 'DELETE FROM task_subscriptions WHERE task_id=? AND user_id=?')
+            c.execute(sql, (task_id, uid))
+            return enabled
+        return self.write('subscribe', [task_id, enabled], apply)
 
     def task_updates(self, after=None):
         """Initial snapshot skips old events. Recipient and board access are both required."""
         with self.connection() as c:
             c.execute('BEGIN')
-            actor = self.actor(c)
-            cursor = c.execute('SELECT COALESCE(MAX(id),0) FROM task_notifications').fetchone()[0]
-            if after is None:
-                return {'cursor': cursor, 'events': []}
-            sql = "SELECT n.id,h.id AS history_id,h.task_id,h.operation,h.changes,h.created_at,t.board_id,t.title,t.number,b.name AS board_name,u.login,u.display_name AS author FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id JOIN users u ON u.id=h.user_id LEFT JOIN settings reads ON reads.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.id>COALESCE(CAST(reads.value AS INTEGER),0) AND n.id>:after AND n.user_id=:uid AND h.user_id<>:uid AND b.archived=0 AND (" + self.board_visibility() + ')' + TASK_NOTICE_UNREAD + ' ORDER BY n.id'
-            events = [dict(r) for r in c.execute(sql, {'after': after, 'uid': actor['id'], 'role': actor['role']})]
-            columns = {}
-            for event in events:
-                change = json.loads(event['changes']).get('column_id')
-                if change:
-                    key = (event['board_id'], change[1])
-                    if key not in columns:
-                        row = c.execute('SELECT name FROM columns WHERE board_id=? AND id=?', key).fetchone()
-                        columns[key] = row[0] if row else None
-                    event['status_name'] = columns[key]
-            return {'cursor': cursor, 'events': events}
+            return self.task_updates_in(c, self.actor(c), after)
 
-    def board_badges(self):
-        """Unread chat messages plus unread task events, only on visible active boards."""
+    def task_updates_in(self, c, actor, after):
+        cursor = c.execute('SELECT COALESCE(MAX(id),0) FROM task_notifications').fetchone()[0]
+        if after is None:
+            return {'cursor': cursor, 'events': []}
+        sql = "SELECT n.id,h.id AS history_id,h.task_id,h.operation,h.changes,h.created_at,t.board_id,t.title,t.number,b.name AS board_name,u.login,u.display_name AS author FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id JOIN users u ON u.id=h.user_id LEFT JOIN settings reads ON reads.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.id>COALESCE(CAST(reads.value AS INTEGER),0) AND n.id>:after AND n.user_id=:uid AND h.user_id<>:uid AND b.archived=0 AND (" + self.board_visibility() + ')' + TASK_NOTICE_UNREAD + ' ORDER BY n.id'
+        events = [dict(r) for r in c.execute(sql, {'after': after, 'uid': actor['id'], 'role': actor['role']})]
+        changed_columns = [(event, json.loads(event['changes']).get('column_id')) for event in events]
+        if any(change for _, change in changed_columns):
+            columns = {(r['board_id'], r['id']): r['name'] for r in c.execute('SELECT id,board_id,name FROM columns')}
+            for event, change in changed_columns:
+                if change:
+                    event['status_name'] = columns.get((event['board_id'], change[1]))
+        return {'cursor': cursor, 'events': events}
+
+    def notification_snapshot(self, after):
         with self.connection() as c:
             c.execute('BEGIN')
             actor = self.actor(c)
-            boards = self.visible_boards(c)
-            sql = "SELECT t.board_id,COUNT(*) AS count FROM task_notifications n JOIN task_history h ON h.id=n.history_id JOIN tasks t ON t.id=h.task_id JOIN boards b ON b.id=t.board_id LEFT JOIN settings s ON s.key='task_notice_read:' || n.user_id || ':' || t.id WHERE n.user_id=:uid AND h.user_id<>:uid AND n.id>COALESCE(CAST(s.value AS INTEGER),0) AND b.archived=0 AND (" + self.board_visibility() + ')' + TASK_NOTICE_UNREAD + ' GROUP BY t.board_id'
-            tasks = {r['board_id']: r['count'] for r in c.execute(sql, {'uid': actor['id'], 'role': actor['role']})}
-            result = {}
-            for board in boards:
-                bid = board['id']
-                key = 'board_read:' + json.dumps([self.login, bid])
-                count = c.execute('SELECT COUNT(*) FROM team_messages m WHERE m.board_id=:board AND m.user_id<>:uid AND m.id>COALESCE((SELECT CAST(value AS INTEGER) FROM settings WHERE key=:key),0)' + CHAT_NOTICE_UNREAD, {'board': bid, 'uid': actor['id'], 'key': key}).fetchone()[0]
-                result[bid] = {'chat': count, 'tasks': tasks.get(bid, 0), 'total': count + tasks.get(bid, 0)}
-            return result
+            tasks = self.task_updates_in(c, actor, 0)
+            unread = ("m.user_id<>:uid AND m.id>COALESCE((SELECT CAST(value AS INTEGER) "
+                      "FROM settings WHERE key=:read_prefix || m.board_id || ']'),0)" + CHAT_NOTICE_UNREAD)
+            sql = ('SELECT m.*,u.login,u.display_name AS author,b.name AS board_name,('
+                   + unread + ') AS unread FROM team_messages m JOIN users u ON u.id=m.user_id'
+                   ' JOIN boards b ON b.id=m.board_id WHERE b.archived=0 AND ('
+                   + self.board_visibility() + ') AND (m.id>:after OR unread) ORDER BY m.id')
+            params = {'after': after, 'role': actor['role'], 'uid': actor['id'],
+                      'read_prefix': 'board_read:' + json.dumps([self.login])[:-1] + ', '}
+            chat, unread_chat = [], []
+            for row in c.execute(sql, params):
+                message = dict(row)
+                if message.pop('unread'):
+                    unread_chat.append(message)
+                if message['id'] > after:
+                    chat.append(message)
+            badges = {b['id']: {'chat': 0, 'tasks': 0, 'total': 0} for b in self.visible_boards(c, actor)}
+            for items, source in ((tasks['events'], 'tasks'), (unread_chat, 'chat')):
+                for item in items:
+                    count = badges[item['board_id']]
+                    count[source] += 1
+                    count['total'] += 1
+            zone = c.execute("SELECT value FROM settings WHERE key='timezone'").fetchone()
+            return {'chat': chat, 'tasks': tasks, 'unread_chat': unread_chat,
+                    'badges': badges, 'timezone': zone[0] if zone else 'UTC'}
+
+    def board_badges(self):
+        return self.notification_snapshot(0)['badges']
 
     def mark_notification_read(self, source, notification_id):
         def apply(c, uid):
@@ -421,18 +467,20 @@ class Store:
     def catalogs(self, board_id):
         with self.connection() as c:
             c.execute('BEGIN')
-            self.require(c, 'read', board_id)
-            users = [dict(r) for r in c.execute('SELECT id,login,display_name FROM users WHERE ? IS NULL OR id IN (SELECT user_id FROM board_members WHERE board_id=?) OR id=(SELECT owner_id FROM boards WHERE id=?) OR role="admin" ORDER BY display_name COLLATE NOCASE,login', (board_id, board_id, board_id))]
-            personal = c.execute('SELECT personal FROM boards WHERE id=?', (board_id,)).fetchone()
-            is_personal = bool(personal and personal[0])
-            if is_personal:
-                users = [u for u in users if u['id'] == self.actor(c)['id']]
-            labels = [dict(r) for r in c.execute('SELECT l.id,l.name,COUNT(t.task_id) AS task_count FROM labels l LEFT JOIN task_labels t ON t.label_id=l.id WHERE l.board_id=? GROUP BY l.id ORDER BY l.name COLLATE NOCASE', (board_id,))]
-            actor = self.actor(c)
-            board = c.execute('SELECT owner_id FROM boards WHERE id=?', (board_id,)).fetchone()
-            permissions = {'admin': actor['role'] == 'admin', 'personal': is_personal, 'share': not is_personal, 'create_board': actor['role'] in ('admin', 'manager'), 'create': is_personal or actor['role'] in ('admin', 'manager'),
-                           'manage': is_personal or actor['role'] == 'admin' or bool(board and board[0] == actor['id'] and actor['role'] == 'manager')}
-            return {'users': users, 'labels': labels, 'permissions': permissions}
+            return self.catalogs_in(c, board_id)
+
+    def catalogs_in(self, c, board_id, actor=None):
+        if actor is None:
+            actor = self.require(c, 'read', board_id)
+        users = [dict(r) for r in c.execute('SELECT id,login,display_name FROM users WHERE ? IS NULL OR id IN (SELECT user_id FROM board_members WHERE board_id=?) OR id=(SELECT owner_id FROM boards WHERE id=?) OR role="admin" ORDER BY display_name COLLATE NOCASE,login', (board_id, board_id, board_id))]
+        board = c.execute('SELECT personal,owner_id FROM boards WHERE id=?', (board_id,)).fetchone()
+        is_personal = bool(board and board['personal'])
+        if is_personal:
+            users = [u for u in users if u['id'] == actor['id']]
+        labels = [dict(r) for r in c.execute('SELECT l.id,l.name,COUNT(t.task_id) AS task_count FROM labels l LEFT JOIN task_labels t ON t.label_id=l.id WHERE l.board_id=? GROUP BY l.id ORDER BY l.name COLLATE NOCASE', (board_id,))]
+        permissions = {'admin': actor['role'] == 'admin', 'personal': is_personal, 'share': not is_personal, 'create_board': actor['role'] in ('admin', 'manager'), 'create': is_personal or actor['role'] in ('admin', 'manager'),
+                       'manage': is_personal or actor['role'] == 'admin' or bool(board and board['owner_id'] == actor['id'] and actor['role'] == 'manager')}
+        return {'users': users, 'labels': labels, 'permissions': permissions}
 
     def save_user(self, login, display_name, user_id=None, request_id=None):
         login, display_name = login.strip(), display_name.strip()
@@ -643,7 +691,11 @@ class Store:
     def columns(self, board_id):
         with self.connection() as c:
             self.require(c, 'read', board_id)
-            return [dict(r) for r in c.execute('SELECT * FROM columns WHERE board_id=? ORDER BY position,id', (board_id,))]
+            return self.columns_in(c, board_id)
+
+    @staticmethod
+    def columns_in(c, board_id):
+        return [dict(r) for r in c.execute('SELECT * FROM columns WHERE board_id=? ORDER BY position,id', (board_id,))]
 
     def save_columns(self, board_id, columns, request_id=None, removed=None):
         removed = {int(k): int(v) for k, v in (removed or {}).items()}
@@ -690,12 +742,19 @@ class Store:
         if not c.execute('SELECT 1 FROM boards WHERE id=? AND archived=0', (board_id,)).fetchone():
             raise ValueError('Доска архивирована или отсутствует')
 
-    def detail_in(self, c, task_id):
+    def task_row(self, c, task_id):
         row = c.execute('SELECT * FROM tasks WHERE id=?', (task_id,)).fetchone()
         if not row:
             raise ValueError('Задача не найдена')
-        actor = self.require(c, 'read', row['board_id'])
+        self.require(c, 'read', row['board_id'])
+        return row
+
+    def detail_in(self, c, task_id):
+        row = self.task_row(c, task_id)
+        actor = self.actor(c)
         d = dict(row)
+        d['subscribed'] = bool(c.execute('SELECT 1 FROM task_subscriptions WHERE task_id=? AND user_id=?',
+                                         (task_id, actor['id'])).fetchone())
         d['notification_cursor'] = c.execute('SELECT COALESCE(MAX(n.id),0) FROM task_notifications n JOIN task_history h ON h.id=n.history_id WHERE n.user_id=? AND h.task_id=?', (actor['id'], task_id)).fetchone()[0]
         marker = c.execute('SELECT value FROM settings WHERE key=?', ('task_notice_read:{}:{}'.format(actor['id'], task_id),)).fetchone()
         d['notification_read'] = int(marker[0]) if marker else 0
@@ -728,9 +787,19 @@ class Store:
             return self.detail_in(c, task_id)
 
     def tasks(self, board_id, filters=None):
-        f = filters or {}
-        where = ['t.board_id=?', 't.archived=?']
-        args = [board_id, int(f.get('archived', False))]
+        where, args = self.task_filter(filters or {})
+        with self.connection() as c:
+            c.execute('BEGIN')
+            self.require(c, 'read', board_id)
+            c.create_function('lower', 1, lambda s: s.casefold() if s else '')
+            return [self.detail_in(c, r[0]) for r in c.execute(
+                'SELECT t.id FROM tasks t WHERE t.board_id=? AND ' + where + ' ORDER BY t.position,t.id',
+                [board_id] + args).fetchall()]
+
+    @staticmethod
+    def task_filter(f):
+        where = ['t.archived=?']
+        args = [int(f.get('archived', False))]
         if f.get('query'):
             where.append('(instr(lower(t.title),lower(?))>0 OR instr(lower(t.description),lower(?))>0)')
             args += [f['query'], f['query']]
@@ -752,71 +821,162 @@ class Store:
             if f.get(key):
                 where.append('t.due_date ' + operator + ' ?')
                 args.append(f[key])
+        return ' AND '.join(where), args
+
+    def board_cards(self, board_id, filters=None):
         with self.connection() as c:
             c.execute('BEGIN')
             self.require(c, 'read', board_id)
-            c.create_function('lower', 1, lambda s: s.casefold() if s else '')
-            return [self.detail_in(c, r[0]) for r in c.execute('SELECT t.id FROM tasks t WHERE ' + ' AND '.join(where) + ' ORDER BY t.position,t.id', args).fetchall()]
+            return self.cards_in(c, board_id, filters or {})
 
-    def save_task(self, data, request_id=None):
+    def cards_in(self, c, board_id, filters, actor=None):
+        where, args = self.task_filter(filters)
+        c.create_function('lower', 1, lambda s: s.casefold() if s else '')
+        c.create_function('comment_read_key', 1, lambda tid: 'read:' + json.dumps([self.login, tid], ensure_ascii=False))
+        if actor is None:
+            scope, params = 't.board_id=?', [board_id]
+        else:
+            scope = ('t.board_id IN (SELECT b.id FROM boards b WHERE b.archived=0 AND ('
+                     + self.board_visibility('?1', '?2') + '))')
+            params = [actor['id'], actor['role']]
+        cte = 'WITH chosen AS (SELECT t.id FROM tasks t WHERE ' + scope + ' AND ' + where + ') '
+        params += args
+
+        def rows(sql, extra=()):
+            return c.execute(cte + sql, params + list(extra))
+
+        fields = 't.id,t.number,t.title,t.board_id,t.column_id,t.due_date,t.priority,t.position,t.version,t.archived,t.created_at,t.completed_at'
+        if actor is not None:
+            fields += ',t.description,b.name AS board_name,col.name AS column_name,col.position AS column_position'
+        tasks = {r['id']: dict(r, assignees=[], assignee_names=[], labels=[],
+                              check_total=0, check_done=0, unread_count=0)
+                 for r in rows('SELECT ' + fields + ''' FROM chosen x JOIN tasks t ON t.id=x.id
+                    JOIN boards b ON b.id=t.board_id JOIN columns col ON col.id=t.column_id
+                    ORDER BY t.position,t.id''')}
+        for r in rows('''SELECT a.task_id,u.login,u.display_name FROM chosen x
+                JOIN task_assignees a ON a.task_id=x.id JOIN users u ON u.id=a.user_id ORDER BY u.login'''):
+            tasks[r['task_id']]['assignees'].append(r['login'])
+            tasks[r['task_id']]['assignee_names'].append(r['display_name'])
+        for r in rows('''SELECT a.task_id,l.name FROM chosen x JOIN task_labels a ON a.task_id=x.id
+                JOIN labels l ON l.id=a.label_id ORDER BY l.name'''):
+            tasks[r['task_id']]['labels'].append(r['name'])
+        for r in rows('''SELECT k.task_id,COUNT(*) AS total,SUM(k.done<>0) AS done
+                FROM chosen x JOIN checklist_items k ON k.task_id=x.id GROUP BY k.task_id'''):
+            tasks[r['task_id']].update(check_total=r['total'], check_done=r['done'])
+        for r in rows('''SELECT m.task_id,COUNT(*) AS total FROM chosen x
+                JOIN comments m ON m.task_id=x.id JOIN users u ON u.id=m.user_id
+                LEFT JOIN settings s ON s.key=comment_read_key(x.id)
+                WHERE m.id>COALESCE(CAST(s.value AS INTEGER),0) AND u.login<>? GROUP BY m.task_id''', (self.login,)):
+            tasks[r['task_id']]['unread_count'] = r['total']
+        return list(tasks.values())
+
+    def board_snapshot(self, board_id, filters, view):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            actor = self.actor(c)
+            boards = self.visible_boards(c, actor)
+            ids = [b['id'] for b in boards]
+            selected = board_id if board_id in ids else next(iter(ids), None)
+            columns = self.columns_in(c, selected)
+            catalogs = self.catalogs_in(c, selected, actor)
+            tasks, totals, personal = [], {}, []
+            if view == 'personal':
+                personal = self.cards_in(c, None, {'assignee': self.login}, actor)
+            elif selected is not None:
+                tasks = self.cards_in(c, selected, {} if view == 'statistics' else filters)
+                if view == 'board':
+                    if any(filters.values()):
+                        totals = dict(c.execute('''SELECT column_id,COUNT(*) FROM tasks
+                            WHERE board_id=? AND archived=0 GROUP BY column_id''', (selected,)))
+                    else:
+                        for task in tasks:
+                            key = task['column_id']
+                            totals[key] = totals.get(key, 0) + 1
+            return boards, selected, columns, tasks, totals, catalogs, personal
+
+    def card_details(self, task_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            row = self.task_row(c, task_id)
+            self.active_board(c, row['board_id'])
+            return {'description': row['description'], 'version': row['version'],
+                    'checklist': [dict(r) for r in c.execute(
+                        'SELECT text,done FROM checklist_items WHERE task_id=? ORDER BY position', (task_id,))]}
+
+    def task_context(self, task_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            task = self.detail_in(c, task_id)
+            self.active_board(c, task['board_id'])
+            return task, self.columns_in(c, task['board_id'])
+
+    def update_card(self, task, request_id=None):
+        fields = ('id', 'board_id', 'version', 'column_id', 'position', 'archived')
+        return self.save_task({key: task[key] for key in fields}, request_id, card_only=True)
+
+    def save_task(self, data, request_id=None, card_only=False):
         data = dict(data)
-        if not data.get('title', '').strip():
+        if not card_only and not data.get('title', '').strip():
             raise ValueError('Введите название задачи')
         if data.get('due_date'):
             dt.date.fromisoformat(data['due_date'])
         if data.get('priority', 'Обычный') not in ['Низкий', 'Обычный', 'Высокий', 'Срочный']:
             raise ValueError('Неизвестный приоритет')
         def apply(c, uid):
+            changes_to_save = data
             bid = data['board_id']
             board = c.execute('SELECT personal,owner_id FROM boards WHERE id=?', (bid,)).fetchone()
             self.active_board(c, bid)
             old = self.detail_in(c, data['id']) if data.get('id') else None
             if old and (old['board_id'] != bid or old['version'] != data.get('version')):
                 raise Conflict(old)
-            col = c.execute('SELECT * FROM columns WHERE id=? AND board_id=?', (data['column_id'], bid)).fetchone()
+            if card_only:
+                changes_to_save = dict(old, **data)
+            col = c.execute('SELECT * FROM columns WHERE id=? AND board_id=?', (changes_to_save['column_id'], bid)).fetchone()
             if not col:
                 raise ValueError('Колонка не принадлежит доске')
-            position = data.get('position')
+            position = changes_to_save.get('position')
             if position is None:
                 position = old['position'] if old and old['column_id'] == col['id'] else c.execute('SELECT COALESCE(MAX(position),0)+1024 FROM tasks WHERE column_id=?', (col['id'],)).fetchone()[0]
             completed = (old['completed_at'] if old else None) or now() if col['is_done'] else None
-            values = (data['column_id'], data['title'].strip(), data.get('description', ''), data.get('priority', 'Обычный'), data.get('due_date') or None, position, now(), completed, int(data.get('archived', False)))
+            values = (changes_to_save['column_id'], changes_to_save['title'].strip(), changes_to_save.get('description', ''), changes_to_save.get('priority', 'Обычный'), changes_to_save.get('due_date') or None, position, now(), completed, int(changes_to_save.get('archived', False)))
             if old:
                 tid = old['id']
                 c.execute('UPDATE tasks SET column_id=?,title=?,description=?,priority=?,due_date=?,position=?,updated_at=?,completed_at=?,archived=?,version=version+1 WHERE id=?', values + (tid,))
             else:
                 number = c.execute('SELECT COALESCE(MAX(number),0)+1 FROM tasks WHERE board_id=?', (bid,)).fetchone()[0]
                 tid = c.execute('INSERT INTO tasks(column_id,title,description,priority,due_date,position,updated_at,completed_at,archived,board_id,number,created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)', values + (bid, number, now())).lastrowid
-            c.execute('DELETE FROM task_assignees WHERE task_id=?', (tid,))
-            for name in sorted(set(data.get('assignees', []))):
-                person = c.execute('SELECT * FROM users WHERE login=?', (name,)).fetchone()
-                if not person:
-                    raise ValueError('Сначала добавьте исполнителя в справочник сотрудников')
-                if board['personal'] and person['id'] != board['owner_id']:
-                    raise AccessDenied('На личной доске исполнителем может быть только её владелец')
-                if person['role'] != 'admin' and not c.execute('SELECT 1 FROM board_members WHERE board_id=? AND user_id=?', (bid, person['id'])).fetchone() and c.execute('SELECT owner_id FROM boards WHERE id=?', (bid,)).fetchone()[0] != person['id']:
-                    raise ValueError('Исполнителю необходимо выдать доступ к доске')
-                c.execute('INSERT INTO task_assignees VALUES(?,?)', (tid, person['id']))
-            c.execute('DELETE FROM task_labels WHERE task_id=?', (tid,))
-            for name in sorted(set(data.get('labels', []))):
-                if name.strip():
-                    if not c.execute('SELECT 1 FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone():
-                        if c.execute('SELECT 1 FROM retired_labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone():
-                            raise ValueError('Метка удалена или переименована. Обновите форму задачи.')
-                        self.require(c, 'manage', bid)
-                    c.execute('INSERT OR IGNORE INTO labels(id,board_id,name) VALUES(?,?,?)', (self.next_label_id(c), bid, name.strip()))
-                    lid = c.execute('SELECT id FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone()[0]
-                    c.execute('INSERT INTO task_labels VALUES(?,?)', (tid, lid))
-            c.execute('DELETE FROM checklist_items WHERE task_id=?', (tid,))
-            for i, item in enumerate(data.get('checklist', [])):
-                if item['text'].strip():
-                    c.execute('INSERT INTO checklist_items(task_id,text,done,position) VALUES(?,?,?,?)', (tid, item['text'], int(item['done']), i))
+            if not card_only:
+                c.execute('DELETE FROM task_assignees WHERE task_id=?', (tid,))
+                for name in sorted(set(changes_to_save.get('assignees', []))):
+                    person = c.execute('SELECT * FROM users WHERE login=?', (name,)).fetchone()
+                    if not person:
+                        raise ValueError('Сначала добавьте исполнителя в справочник сотрудников')
+                    if board['personal'] and person['id'] != board['owner_id']:
+                        raise AccessDenied('На личной доске исполнителем может быть только её владелец')
+                    if person['role'] != 'admin' and not c.execute('SELECT 1 FROM board_members WHERE board_id=? AND user_id=?', (bid, person['id'])).fetchone() and c.execute('SELECT owner_id FROM boards WHERE id=?', (bid,)).fetchone()[0] != person['id']:
+                        raise ValueError('Исполнителю необходимо выдать доступ к доске')
+                    c.execute('INSERT INTO task_assignees VALUES(?,?)', (tid, person['id']))
+                c.execute('DELETE FROM task_labels WHERE task_id=?', (tid,))
+                for name in sorted(set(changes_to_save.get('labels', []))):
+                    if name.strip():
+                        if not c.execute('SELECT 1 FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone():
+                            if c.execute('SELECT 1 FROM retired_labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone():
+                                raise ValueError('Метка удалена или переименована. Обновите форму задачи.')
+                            self.require(c, 'manage', bid)
+                        c.execute('INSERT OR IGNORE INTO labels(id,board_id,name) VALUES(?,?,?)', (self.next_label_id(c), bid, name.strip()))
+                        lid = c.execute('SELECT id FROM labels WHERE board_id=? AND name=?', (bid, name.strip())).fetchone()[0]
+                        c.execute('INSERT INTO task_labels VALUES(?,?)', (tid, lid))
+                c.execute('DELETE FROM checklist_items WHERE task_id=?', (tid,))
+                for i, item in enumerate(changes_to_save.get('checklist', [])):
+                    if item['text'].strip():
+                        c.execute('INSERT INTO checklist_items(task_id,text,done,position) VALUES(?,?,?,?)', (tid, item['text'], int(item['done']), i))
             current = self.detail_in(c, tid)
             fields = ['title', 'description', 'column_id', 'position', 'priority', 'due_date', 'completed_at', 'archived', 'assignees', 'labels', 'checklist']
             changes = {k: [old[k] if old else None, current[k]] for k in fields if not old or old[k] != current[k]}
             self.history(c, tid, uid, 'Изменение' if old else 'Создание', changes)
             return {'id': tid, 'version': current['version']}
-        return self.write('task', data, apply, request_id)
+        return self.write('card_task' if card_only else 'task', data, apply, request_id)
 
     def comment(self, task_id, text, request_id=None):
         if not text.strip():

@@ -3,6 +3,7 @@ import datetime as dt
 import html
 import json
 from PyQt5.QtCore import QDateTime, QTimeZone, Qt
+from .store import mention_logins
 from .theme import TOKENS
 
 
@@ -147,7 +148,8 @@ def task_notification_text(event, login):
     if 'archived' in changes:
         details.append('Задача архивирована' if changes['archived'][1] else 'Задача восстановлена')
     if event['operation'] == 'Комментарий':
-        details.append('Добавлен комментарий')
+        details.append('Вас упомянули в комментарии' if login in mention_logins(changes.get('text', ''))
+                       else 'Добавлен комментарий')
     elif event['operation'] == 'Вложение':
         details.append('Добавлено вложение')
     names = {'title': 'название', 'description': 'описание', 'priority': 'приоритет', 'due_date': 'срок', 'labels': 'метки', 'checklist': 'чек-лист'}

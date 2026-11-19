@@ -95,7 +95,7 @@ class DesktopFeaturesTest(unittest.TestCase):
             self.assertEqual(n.task_cursor, 0)
             task = creator.save_task({'board_id': board, 'column_id': creator.columns(board)[0]['id'], 'title': 'Новая задача', 'assignees': ['alice']})['id']
             # A failed poll keeps its cursor, so the next poll recovers the event.
-            with patch.object(self.window.store, 'task_updates', side_effect=OSError('Network')):
+            with patch.object(self.window.store, 'notification_snapshot', side_effect=OSError('Network')):
                 n.poll()
             self.assertEqual(n.task_cursor, 0)
             n.poll()

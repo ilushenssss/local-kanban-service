@@ -1,16 +1,17 @@
 """Compact task cards with semantic badges and optional inline details."""
 import datetime as dt
-from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF
-from PyQt5.QtGui import QColor, QFont, QPen, QTextDocument
-from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication
+from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
+from PyQt5.QtGui import QColor, QFont, QPen, QTextDocument, QDrag
+from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
 TASK_NOTICE_ROLE = Qt.UserRole + 2
+DETAILS_ROLE = Qt.UserRole + 3
 
 
 def card_height(task):
-    return 122 if task.get('labels') else 98
+    return 124 + (24 if task.get('labels') else 0) + (18 if task.get('board_name') else 0)
 
 
 def details_document(task, width):
@@ -37,7 +38,7 @@ class CardDelegate(QStyledItemDelegate):
         height = card_height(task)
         if index.data(EXPANDED_ROLE):
             width = max(220, self.parent().viewport().width() - 32)
-            height += min(260, int(details_document(task, width).size().height()) + 24)
+            height += min(260, int(details_document(index.data(DETAILS_ROLE) or task, width).size().height()) + 24)
         return QSize(292, height)
 
     @staticmethod
@@ -56,7 +57,7 @@ class CardDelegate(QStyledItemDelegate):
         p.setBrush(QColor(20, 25, 40, 16))
         p.drawRoundedRect(box.translated(0, 1), 8, 8)
         notices = index.data(TASK_NOTICE_ROLE) or 0
-        border = 'accent' if selected else 'danger' if notices else 'border'
+        border = 'accent' if selected or option.state & QStyle.State_HasFocus else 'danger' if notices else 'border'
         p.setPen(QPen(QColor(TOKENS[border]), 2 if notices else 1))
         p.setBrush(QColor(TOKENS['background']))
         p.drawRoundedRect(box, 8, 8)
@@ -70,7 +71,7 @@ class CardDelegate(QStyledItemDelegate):
             p.setFont(f)
 
         done = bool(t.get('completed_at'))
-        font(13)
+        font(15, True)
         p.setPen(QPen(QColor(TOKENS['muted']), 1))
         p.setBrush(Qt.NoBrush)
         p.drawEllipse(QRectF(x, y+3, 12, 12))
@@ -88,7 +89,7 @@ class CardDelegate(QStyledItemDelegate):
                 while words and p.fontMetrics().horizontalAdvance(line+' '+words[0]) < title_width:
                     line += ' '+words.pop(0)
             lines.append(p.fontMetrics().elidedText(line, Qt.ElideRight, title_width))
-        p.drawText(QRect(x+20, y, w-20, 34), Qt.AlignTop, '\n'.join(lines))
+        p.drawText(QRect(x+20, y, title_width, 36), Qt.AlignTop, '\n'.join(lines))
         if notices:
             badge_rect = QRect(x+w-30, y, 30, 18)
             p.setPen(Qt.NoPen)
@@ -97,10 +98,10 @@ class CardDelegate(QStyledItemDelegate):
             p.setPen(QColor(TOKENS['background']))
             font(10, True)
             p.drawText(badge_rect, Qt.AlignCenter, '99+' if notices > 99 else str(notices))
-        font(10)
+        font(11)
         cursor = x+20
         names = t.get('assignee_names') or t.get('assignees', [])
-        badge_right = x+w-(min(2, len(names))*22+4 if names else 0)
+        badge_right = x+w
 
         def badge(text, fg, bg, kind=None):
             nonlocal cursor
@@ -125,44 +126,61 @@ class CardDelegate(QStyledItemDelegate):
             cursor += width+5
 
         priority = t.get('priority', 'Обычный')
-        if priority != 'Обычный':
-            fg,bg = {'Низкий':STICKERS[2], 'Высокий':STICKERS[3], 'Срочный':STICKERS[0]}[priority]
-            badge({'Низкий':'Не срочно','Высокий':'Важно','Срочный':'Очень важно'}[priority], fg,bg,'priority')
+        fg, bg = {'Низкий': STICKERS[2], 'Высокий': STICKERS[3], 'Срочный': STICKERS[0]}.get(
+            priority, (TOKENS['secondary'], TOKENS['hover']))
         due = t.get('due_date')
         if due:
             date = dt.date.fromisoformat(due)
             month = ('янв','фев','мар','апр','май','июн','июл','авг','сен','окт','ноя','дек')[date.month-1]
             late = due < dt.date.today().isoformat() and not done
             badge('{} {}'.format(date.day,month), *(STICKERS[0] if late else (TOKENS['secondary'],TOKENS['hover'])), kind='date')
+        else:
+            badge('Без срока', TOKENS['secondary'], TOKENS['hover'], kind='date')
+        badge(priority, fg, bg, 'priority')
         # Participant initials remain readable when no photo exists in the model.
         for i,name in enumerate(names[:2]):
-            r = QRect(x+w-(min(2,len(names))-i)*22, y+37, 20, 20)
+            r = QRect(x+20+i*22, y+61, 18, 18)
             p.setPen(Qt.NoPen);p.setBrush(QColor(avatar_color(name)));p.drawEllipse(r)
             p.setPen(Qt.white);font(9,True)
             initials = ('+' + str(len(names)-1)) if i == 1 and len(names) > 2 else ''.join(part[0] for part in name.split()[:2]).upper()
             p.drawText(r,Qt.AlignCenter,initials)
+        font(11)
+        name_x = x+20+min(2, len(names))*22
+        name_width = x+w-name_x
+        p.setPen(QColor(TOKENS['secondary']))
+        p.drawText(QRect(name_x, y+61, name_width, 18), Qt.AlignVCenter,
+                   p.fontMetrics().elidedText(', '.join(names) or 'Без исполнителя', Qt.ElideRight, name_width))
         font(10)
         if t.get('labels'):
             cursor=x+20
             for label in t['labels']:
                 width=min(110,p.fontMetrics().horizontalAdvance(label)+16,x+w-cursor)
                 if width<24:break
-                r=QRect(cursor,y+63,width,18)
+                r=QRect(cursor,y+83,width,18)
                 p.setPen(Qt.NoPen);p.setBrush(QColor(TOKENS['hover']));p.drawRoundedRect(r,4,4)
                 p.setPen(QColor(TOKENS['secondary']))
                 p.drawText(r.adjusted(6,0,-6,0),Qt.AlignVCenter,p.fontMetrics().elidedText(label,Qt.ElideRight,width-12))
                 cursor+=width+4
+        if t.get('board_name'):
+            p.setPen(QColor(TOKENS['secondary']))
+            board_y = y + (105 if t.get('labels') else 81)
+            p.drawText(QRect(x+20, board_y, w-20, 17), Qt.AlignVCenter,
+                       p.fontMetrics().elidedText(t['board_name'], Qt.ElideRight, w-20))
         footer=option.rect.y()+card_height(t)-25
-        checks=t.get('checklist',[]);checked=sum(bool(c['done']) for c in checks)
+        total, checked = t.get('check_total', 0), t.get('check_done', 0)
         unread = t.get('unread_count', 0)
-        status = '{}/{}'.format(checked,len(checks)) if checks else ''
+        status = '{}/{}'.format(checked,total) if total else ''
         if unread:
             status += (' · ' if status else '') + '{} новых'.format(unread)
         status_width = 100 if unread else 50
-        track=QRectF(x,footer+8,max(40,w-status_width-36),4)
-        p.setPen(Qt.NoPen);p.setBrush(QColor(TOKENS['border']));p.drawRoundedRect(track,2,2)
-        if checks and checked:
-            p.setBrush(QColor(TOKENS['accent']));p.drawRoundedRect(QRectF(track.x(),track.y(),track.width()*checked/len(checks),4),2,2)
+        track=QRectF(x,footer+8,max(0,w-status_width-36),4)
+        if total:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(TOKENS['border']))
+            p.drawRoundedRect(track, 2, 2)
+            if checked:
+                p.setBrush(QColor(TOKENS['accent']))
+                p.drawRoundedRect(QRectF(track.x(), track.y(), track.width()*checked/total, 4), 2, 2)
         p.setPen(QColor(TOKENS['muted']));font(10)
         p.drawText(QRect(x+w-status_width-30,footer,status_width,20),Qt.AlignCenter,status)
         arrow=self.disclosure_rect(option.rect,t);expanded=bool(index.data(EXPANDED_ROLE))
@@ -172,9 +190,187 @@ class CardDelegate(QStyledItemDelegate):
         if expanded:
             top=option.rect.y()+card_height(t)
             p.setPen(QPen(QColor(TOKENS['border']),1));p.drawLine(x,top-4,x+w,top-4)
-            doc=details_document(t,w)
+            details = index.data(DETAILS_ROLE)
+            doc = details_document(details or dict(t, description='Загрузка подробностей…'), w)
             doc.setDefaultStyleSheet('body { color: '+TOKENS['text']+'; }')
             p.translate(x,top+4)
             context=doc.documentLayout().PaintContext();context.palette.setColor(context.palette.Text,QColor(TOKENS['text']))
             p.setClipRect(QRectF(0,0,w,box.bottom()-top-8));doc.documentLayout().draw(p,context)
         p.restore()
+
+
+class Cards(QListWidget):
+    moved = pyqtSignal(int, int, object)
+    dragging = pyqtSignal(bool)
+    details_requested = pyqtSignal(object)
+    def __init__(self, column_id, expanded_ids=None):
+        super().__init__()
+        self.column_id = column_id
+        self.expanded_ids = expanded_ids if expanded_ids is not None else set()
+        self.setObjectName('Cards')
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setItemDelegate(CardDelegate(self))
+        self.setMouseTracking(True)
+        self.setDragDropMode(QListWidget.DragDrop)
+        self.setDefaultDropAction(Qt.MoveAction)
+        self.setSelectionMode(QListWidget.SingleSelection)
+        self.setSpacing(4)
+        self.setWordWrap(True)
+        self.setMinimumWidth(220)
+        self.setAccessibleName('Задачи колонки')
+        self.setFixedHeight(40)
+    def update_card_height(self):
+        option = self.viewOptions()
+        height = sum(self.itemDelegate().sizeHint(option, self.model().index(i, 0)).height() + self.spacing()*2
+                     for i in range(self.count())) + 8
+        self.setFixedHeight(min(650, max(40, height)))
+
+    def toggle_details(self, item):
+        expanded = not item.data(EXPANDED_ROLE)
+        item.setData(EXPANDED_ROLE, expanded)
+        item.setData(Qt.AccessibleDescriptionRole, 'Подробности раскрыты. Пробел — свернуть.' if expanded else 'Пробел — раскрыть подробности.')
+        tid = item.data(Qt.UserRole)['id']
+        if expanded:
+            self.expanded_ids.add(tid)
+            if item.data(DETAILS_ROLE) is None:
+                self.details_requested.emit(item)
+        else:
+            self.expanded_ids.discard(tid)
+            details = item.data(DETAILS_ROLE)
+            if details and details.get('details_error'):
+                item.setData(DETAILS_ROLE, None)
+        self.doItemsLayout()
+        self.update_card_height()
+        self.viewport().update()
+
+    def mouseReleaseEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item and event.button() == Qt.LeftButton:
+            task = item.data(Qt.UserRole)
+            if CardDelegate.disclosure_rect(self.visualItemRect(item), task).contains(event.pos()):
+                self.toggle_details(item)
+                event.accept()
+                return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        if self.currentItem() and event.key() == Qt.Key_Space:
+            self.toggle_details(self.currentItem())
+            event.accept()
+            return
+        if self.currentItem() and event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            self.itemClicked.emit(self.currentItem())
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def startDrag(self, supported_actions):
+        if not self.selectedIndexes():
+            return
+        # Own QDrag lifecycle: QListWidget.startDrag may delete source rows after
+        # MoveAction, although persistence and repaint are handled asynchronously.
+        self.dragging.emit(True)
+        try:
+            drag = QDrag(self)
+            drag.setMimeData(self.model().mimeData(self.selectedIndexes()))
+            drag.exec_(Qt.MoveAction, Qt.MoveAction)
+        finally:
+            self.dragging.emit(False)
+
+    def dropEvent(self, event):
+        source = event.source()
+        if not isinstance(source, Cards) or not source.currentItem():
+            event.ignore()
+            return
+        task = source.currentItem().data(Qt.UserRole)
+        index = self.indexAt(event.pos()).row()
+        before_id = self.item(index).data(Qt.UserRole)['id'] if index >= 0 else None
+        self.moved.emit(task['id'], self.column_id, before_id)
+        event.acceptProposedAction()
+
+
+
+
+def set_card_notice(item, count):
+    item.setData(TASK_NOTICE_ROLE, count)
+    summary = item.text()
+    if count:
+        summary += '\nНепрочитанных уведомлений: {}'.format(count)
+    item.setData(Qt.AccessibleTextRole, summary)
+    item.setToolTip(summary + '\nПробел — подробности, Enter — открыть задачу')
+
+
+def set_card_data(item, task, count):
+    item.setData(Qt.UserRole, task)
+    names = ', '.join(task['assignee_names']) or 'Без исполнителя'
+    due = task['due_date']
+    overdue = due and due < dt.date.today().isoformat() and not task['completed_at']
+    summary = '№{} {}\n{}\n{}: {} · {}'.format(
+        task['number'], task['title'], names, 'Просрочено' if overdue else 'Срок',
+        due or 'не задан', task['priority'])
+    if task['labels']:
+        summary += '\n' + ', '.join(task['labels'])
+    if task.get('board_name'):
+        summary += '\n' + task['board_name']
+    item.setText(summary)
+    set_card_notice(item, count)
+
+
+def update_cards(lists, tasks_by_column, counts, expanded_ids):
+    """Reconcile rows by task ID, reusing the same item even when it moves."""
+    wanted = {task['id']: key for key, tasks in tasks_by_column.items() for task in tasks}
+    items, positions = {}, {}
+    dirty = set()
+    selected = focused = None
+    for key, cards in lists.items():
+        positions[key] = cards.verticalScrollBar().value()
+        current = cards.currentItem()
+        if current and current.isSelected():
+            selected = current.data(Qt.UserRole)['id']
+            if cards.hasFocus():
+                focused = selected
+        cards.blockSignals(True)
+        for row in reversed(range(cards.count())):
+            item = cards.item(row)
+            tid = item.data(Qt.UserRole)['id']
+            if wanted.get(tid) != key:
+                item = cards.takeItem(row)
+                dirty.add(key)
+            if tid in wanted:
+                items[tid] = item
+
+    for key, cards in lists.items():
+        for row, task in enumerate(tasks_by_column.get(key, ())):
+            tid = task['id']
+            item = items.get(tid)
+            if item is None:
+                item = QListWidgetItem()
+                item.setData(EXPANDED_ROLE, tid in expanded_ids)
+                item.setData(Qt.AccessibleDescriptionRole, 'Пробел — подробности, Enter — открыть задачу')
+            old = item.data(Qt.UserRole)
+            if old != task:
+                dirty.add(key)
+                if old and old['version'] != task['version']:
+                    item.setData(DETAILS_ROLE, None)
+                set_card_data(item, task, counts.get(tid, 0))
+            if cards.row(item) != row:
+                dirty.add(key)
+                if item.listWidget() is cards:
+                    cards.takeItem(cards.row(item))
+                cards.insertItem(row, item)
+            if item.data(EXPANDED_ROLE) and item.data(DETAILS_ROLE) is None:
+                # Signals are blocked during reconciliation.
+                cards.blockSignals(False)
+                cards.details_requested.emit(item)
+                cards.blockSignals(True)
+            if tid == selected and not item.isSelected():
+                cards.setCurrentItem(item)
+                if tid == focused:
+                    cards.setFocus()
+        if selected is not None and wanted.get(selected) != key:
+            cards.clearSelection()
+        cards.blockSignals(False)
+        if key in dirty:
+            cards.doItemsLayout()
+            cards.update_card_height()
+            cards.verticalScrollBar().setValue(positions[key])

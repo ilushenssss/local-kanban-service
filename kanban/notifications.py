@@ -134,11 +134,8 @@ class Notifications(QObject):
                         self.fill_inbox(result['tasks']['events'] + result['unread_chat'])
                 if hasattr(self.window, 'update_board_badges'):
                     self.window.update_board_badges(result['badges'])
-        def read():
-            return {'chat': store.chat_updates(self.cursor), 'tasks': store.task_updates(0),
-                    'unread_chat': store.chat_updates(unread_only=True), 'badges': store.board_badges(),
-                    'timezone': store.timezone()}
-        self.window.work(read, done)
+        cursor = self.cursor
+        self.window.work(lambda: store.notification_snapshot(cursor), done)
 
     def open_inbox(self):
         dialog = QDialog(self.window)

@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import tempfile
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone
+from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone, QSignalBlocker
 from PyQt5.QtGui import QDesktopServices, QDrag, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
@@ -14,7 +14,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
 from .store import Store, Conflict
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
-from .cards import CardDelegate, EXPANDED_ROLE, TASK_NOTICE_ROLE
+from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -544,6 +544,10 @@ class TaskDialog(QDialog, Async):
         self.save_button.setFixedWidth(172)
         self.save_button.setAutoDefault(False)
         self.save_button.setDefault(False)
+        self.subscribed = bool(data.get('subscribed'))
+        self.subscribe_button = button('Подписаться', self.toggle_subscription, actions)
+        self.subscribe_button.setVisible(bool(data.get('id')))
+        self.update_subscription_label()
         button('Закрыть', self.close, actions).setFixedWidth(100)
         root.addLayout(actions)
         # Font/layout metrics may settle after the first paint. A user scroll
@@ -589,7 +593,11 @@ class TaskDialog(QDialog, Async):
                 self.attachments.setCurrentItem(item)
         self.history_entries = d.get('history', [])
         self.render_history()
-        for b in [self.comment_button, self.file_button]:
+        self.subscribe_button.setVisible(bool(d.get('id')))
+        if not self.pending:
+            self.subscribed = bool(d.get('subscribed'))
+            self.update_subscription_label()
+        for b in (self.comment_button, self.file_button, self.subscribe_button):
             b.setEnabled(bool(d.get('id')) and not self.pending)
 
     def resizeEvent(self, event):
@@ -710,6 +718,7 @@ class TaskDialog(QDialog, Async):
                 self.column.setCurrentIndex(self.column.findData(selected))
                 self.column.blockSignals(False)
             users = sorted(data['users'], key=lambda u: u['display_name'].casefold())
+            self.comment_text.set_mention_users(users)
             self.assignees.set_options([(u['login'], u['display_name'] + ' · ' + u['login']) for u in users])
             self.labels.set_options([(x['name'], x['name']) for x in sorted(data['labels'], key=lambda l: l['name'].casefold())])
             self.render_history()
@@ -748,6 +757,7 @@ class TaskDialog(QDialog, Async):
         self.save_button.setEnabled(not enabled and self.catalog_ready)
         self.comment_button.setEnabled(not enabled and bool(self.data.get('id')))
         self.file_button.setEnabled(not enabled and bool(self.data.get('id')))
+        self.subscribe_button.setEnabled(not enabled and bool(self.data.get('id')))
         self.tabs.setEnabled(not enabled)
         self.rebase_button.setEnabled(not enabled)
 
@@ -836,6 +846,24 @@ class TaskDialog(QDialog, Async):
         self.compare_button.hide()
         self.rebase_button.hide()
         self.status.setText('Ваш текст оставлен в форме. Проверьте поля и нажмите «Сохранить».')
+
+    def update_subscription_label(self):
+        self.subscribe_button.setText('Отписаться' if self.subscribed else 'Подписаться')
+
+    def toggle_subscription(self):
+        if self.pending or not self.data.get('id'):
+            return
+        enabled = not self.subscribed
+        self.busy(True)
+        def done(result, error):
+            self.busy(False)
+            if error:
+                self.status.setText('Не удалось изменить подписку: ' + error_text(error))
+                return
+            self.subscribed = result
+            self.update_subscription_label()
+            self.status.setText('Подписка включена' if result else 'Подписка отключена')
+        self.work(lambda: self.store.subscribe(self.data['id'], enabled), done)
 
     def add_comment(self):
         if self.pending or not self.data.get('id'):
@@ -1050,89 +1078,6 @@ class ColumnsDialog(QDialog):
         return values
 
 
-class Cards(QListWidget):
-    moved = pyqtSignal(int, int, object)
-    dragging = pyqtSignal(bool)
-    def __init__(self, column_id, expanded_ids=None):
-        super().__init__()
-        self.column_id = column_id
-        self.expanded_ids = expanded_ids if expanded_ids is not None else set()
-        self.setObjectName('Cards')
-        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.setItemDelegate(CardDelegate(self))
-        self.setMouseTracking(True)
-        self.setDragDropMode(QListWidget.DragDrop)
-        self.setDefaultDropAction(Qt.MoveAction)
-        self.setSelectionMode(QListWidget.SingleSelection)
-        self.setSpacing(4)
-        self.setWordWrap(True)
-        self.setMinimumWidth(220)
-        self.setAccessibleName('Задачи колонки')
-    def update_card_height(self):
-        option = self.viewOptions()
-        height = sum(self.itemDelegate().sizeHint(option, self.model().index(i, 0)).height() + self.spacing()*2
-                     for i in range(self.count())) + 8
-        self.setFixedHeight(min(650, max(40, height)))
-
-    def toggle_details(self, item):
-        expanded = not item.data(EXPANDED_ROLE)
-        item.setData(EXPANDED_ROLE, expanded)
-        item.setData(Qt.AccessibleDescriptionRole, 'Подробности раскрыты. Пробел — свернуть.' if expanded else 'Пробел — раскрыть подробности.')
-        tid = item.data(Qt.UserRole)['id']
-        if expanded:
-            self.expanded_ids.add(tid)
-        else:
-            self.expanded_ids.discard(tid)
-        self.doItemsLayout()
-        self.update_card_height()
-        self.viewport().update()
-
-    def mouseReleaseEvent(self, event):
-        item = self.itemAt(event.pos())
-        if item and event.button() == Qt.LeftButton:
-            task = item.data(Qt.UserRole)
-            if CardDelegate.disclosure_rect(self.visualItemRect(item), task).contains(event.pos()):
-                self.toggle_details(item)
-                event.accept()
-                return
-        super().mouseReleaseEvent(event)
-
-    def keyPressEvent(self, event):
-        if self.currentItem() and event.key() == Qt.Key_Space:
-            self.toggle_details(self.currentItem())
-            event.accept()
-            return
-        if self.currentItem() and event.key() in (Qt.Key_Return, Qt.Key_Enter):
-            self.itemClicked.emit(self.currentItem())
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def startDrag(self, supported_actions):
-        if not self.selectedIndexes():
-            return
-        # Own QDrag lifecycle: QListWidget.startDrag may delete source rows after
-        # MoveAction, although persistence and repaint are handled asynchronously.
-        self.dragging.emit(True)
-        try:
-            drag = QDrag(self)
-            drag.setMimeData(self.model().mimeData(self.selectedIndexes()))
-            drag.exec_(Qt.MoveAction, Qt.MoveAction)
-        finally:
-            self.dragging.emit(False)
-
-    def dropEvent(self, event):
-        source = event.source()
-        if not isinstance(source, Cards) or not source.currentItem():
-            event.ignore()
-            return
-        task = source.currentItem().data(Qt.UserRole)
-        index = self.indexAt(event.pos()).row()
-        before_id = self.item(index).data(Qt.UserRole)['id'] if index >= 0 else None
-        self.moved.emit(task['id'], self.column_id, before_id)
-        event.acceptProposedAction()
-
-
 class MainWindow(QMainWindow, Async):
     def __init__(self, folder):
         super().__init__()
@@ -1256,12 +1201,12 @@ class MainWindow(QMainWindow, Async):
         self.search.setMaximumWidth(360)
         self._search_in_header = True
         top.addWidget(self.search, 2)
-        button('Очистить поиск', self.search.clear, top)
+        self.clear_search_button = button('Очистить поиск', self.search.clear, top)
         self.view_switch.setFixedWidth(164)
         top.addWidget(self.view_switch)
         self.new_task_button = button('Добавить задачу', self.new_task, top, 'primary')
         self.new_task_button.setFixedWidth(176)
-        settings_button = button('Настройки', self.workspace_menu, top)
+        self.settings_button = settings_button = button('Настройки', self.workspace_menu, top)
         settings_button.setMinimumWidth(112)
         settings_button.setToolTip('Настройки доски и обслуживание')
         settings_button.setAccessibleName('Настройки доски')
@@ -1275,6 +1220,13 @@ class MainWindow(QMainWindow, Async):
         self.retry_button = button('Повторить', self.retry_mutation, top)
         self.retry_button.hide()
         workspace.addWidget(header)
+        self.narrow_search_row = QWidget()
+        self.narrow_search_row.setObjectName('Header')
+        self.narrow_search_row.setAttribute(Qt.WA_StyledBackground, True)
+        self.narrow_search_layout = QHBoxLayout(self.narrow_search_row)
+        self.narrow_search_layout.setContentsMargins(20, 0, 16, 8)
+        workspace.addWidget(self.narrow_search_row)
+        self.narrow_search_row.hide()
         # Internal tab bar retains stable board IDs; tree is the visible navigation.
         self.board_tabs = QTabBar()
         self.board_tabs.hide()
@@ -1285,6 +1237,7 @@ class MainWindow(QMainWindow, Async):
         self.statistics = StatisticsPage()
         self.my_tasks = MyTasksPage()
         self.my_tasks.opened.connect(self.open_personal_task)
+        self.my_tasks.details_requested.connect(self.load_card_details)
         self.list_view = BoardView()
         self.gantt_view = BoardView(timeline=True)
         for view in (self.list_view, self.gantt_view):
@@ -1297,11 +1250,12 @@ class MainWindow(QMainWindow, Async):
         self.view_switch.currentIndexChanged.connect(self.pages.setCurrentIndex)
         self.pages.currentChanged.connect(self.view_switch.setCurrentIndex)
         self.pages.currentChanged.connect(self.update_navigation)
+        self.pages.currentChanged.connect(self.page_changed)
         workspace.addWidget(self.pages, 1)
         content = QVBoxLayout(board_page)
         content.setContentsMargins(20, 16, 20, 12)
         content.setSpacing(14)
-        self.filter_row = filters = QHBoxLayout()
+        filters = QHBoxLayout()
         filters.setSpacing(8)
         self.assignee_filter = QComboBox()
         self.assignee_filter.addItem('Все исполнители', '')
@@ -1312,8 +1266,14 @@ class MainWindow(QMainWindow, Async):
         filters.addWidget(self.assignee_filter)
         filters.addWidget(self.label_filter)
         self.filter_toggle = button('Фильтры', lambda: self.advanced_filters.setVisible(not self.advanced_filters.isVisible()), filters)
+        self.saved_filter_button = button('Наборы фильтров', self.saved_filter_menu, filters)
         filters.addStretch()
         content.addLayout(filters)
+        self.filter_message = QLabel()
+        self.filter_message.setWordWrap(True)
+        self.filter_message.setTextFormat(Qt.PlainText)
+        self.filter_message.hide()
+        content.addWidget(self.filter_message)
         self.advanced_filters = QWidget()
         advanced_layout = QVBoxLayout(self.advanced_filters)
         advanced_layout.setContentsMargins(0, 0, 0, 0)
@@ -1376,13 +1336,19 @@ class MainWindow(QMainWindow, Async):
         if wide != getattr(self, '_search_in_header', False):
             self._search_in_header = wide
             if wide:
-                self.filter_row.removeWidget(self.search)
-                self.search.setMaximumWidth(460)
                 self.header_layout.insertWidget(1, self.search, 2)
+                self.header_layout.insertWidget(2, self.clear_search_button)
+                self.header_layout.addWidget(self.retry_button)
             else:
-                self.header_layout.removeWidget(self.search)
-                self.search.setMaximumWidth(16777215)
-                self.filter_row.insertWidget(0, self.search, 2)
+                self.narrow_search_layout.addWidget(self.search, 1)
+                self.narrow_search_layout.addWidget(self.clear_search_button)
+                self.narrow_search_layout.addWidget(self.retry_button)
+            self.search.setMaximumWidth(360 if wide else 16777215)
+            self.header_layout.setSpacing(12 if wide else 8)
+            self.new_task_button.setFixedWidth(176 if wide else 156)
+            self.settings_button.setMinimumWidth(112 if wide else 90)
+            self.label_filter.setMaximumWidth(16777215 if wide else 148)
+            self.narrow_search_row.setVisible(not wide)
 
     def update_navigation(self, index=None):
         self.my_nav.setChecked(self.pages.currentWidget() is self.my_tasks)
@@ -1474,6 +1440,7 @@ class MainWindow(QMainWindow, Async):
             counts[tid] = counts.get(tid, 0) + 1
         if counts != self.task_notice_counts:
             self.task_notice_counts = counts
+            self.my_tasks.update_notices(counts)
             for cards in self.card_lists:
                 for row in range(cards.count()):
                     self.update_card_notice(cards.item(row))
@@ -1481,13 +1448,7 @@ class MainWindow(QMainWindow, Async):
         self.set_display_timezone(timezone)
 
     def update_card_notice(self, item):
-        count = self.task_notice_counts.get(item.data(Qt.UserRole)['id'], 0)
-        item.setData(TASK_NOTICE_ROLE, count)
-        summary = item.text()
-        if count:
-            summary += '\nНепрочитанных уведомлений: {}'.format(count)
-        item.setData(Qt.AccessibleTextRole, summary)
-        item.setToolTip(summary + '\nСтрелка или пробел — раскрыть подробности')
+        set_card_notice(item, self.task_notice_counts.get(item.data(Qt.UserRole)['id'], 0))
 
     def board_settings_menu(self):
         menu = QMenu(self)
@@ -1544,7 +1505,86 @@ class MainWindow(QMainWindow, Async):
         else:
             self.theme_button.setText(caption)
 
+    def saved_filter_key(self):
+        login = self.store.login if self.store else getpass.getuser()
+        return 'board_filters/' + login.encode('utf-8').hex()
+
+    def saved_filters(self):
+        try:
+            return json.loads(theme_settings().value(self.saved_filter_key(), '{}', type=str))
+        except ValueError:
+            return {}
+
+    def saved_filter_menu(self):
+        if not self.store:
+            return
+        menu = QMenu(self)
+        menu.addAction('Сохранить текущие…', lambda: self.name_saved_filter())
+        for name, values in sorted(self.saved_filters().items(), key=lambda pair: pair[0].casefold()):
+            entry = menu.addMenu(name.replace('&', '&&'))
+            entry.addAction('Применить', lambda checked=False, values=values: self.apply_saved_filter(values))
+            entry.addAction('Переименовать…', lambda checked=False, name=name: self.name_saved_filter(name))
+            entry.addAction('Удалить…', lambda checked=False, name=name: self.delete_saved_filter(name))
+        anchor = self.saved_filter_button
+        menu.exec_(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def name_saved_filter(self, previous=None):
+        presets = self.saved_filters()
+        caption = 'Переименовать набор' if previous else 'Сохранить набор'
+        name, ok = QInputDialog.getText(self, caption, 'Название набора', text=previous or '')
+        name = name.strip()
+        if not ok or name == previous:
+            return
+        if not name or name in presets:
+            QMessageBox.information(self, caption, 'Введите новое непустое название набора.')
+            return
+        if previous:
+            values = presets.pop(previous)
+        else:
+            values = self.filters()
+            values.update(quick=self.quick.currentIndex(), assignee=self.assignee_filter.currentData())
+        presets[name] = values
+        self.write_saved_filters(presets)
+
+    def delete_saved_filter(self, name):
+        if QMessageBox.question(self, 'Удалить набор', 'Удалить набор «{}»?'.format(name),
+                                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
+            presets = self.saved_filters()
+            presets.pop(name, None)
+            self.write_saved_filters(presets)
+
+    def write_saved_filters(self, presets):
+        settings = theme_settings()
+        settings.setValue(self.saved_filter_key(), json.dumps(presets, ensure_ascii=False))
+        settings.sync()
+        if settings.status() != settings.NoError:
+            self.status.setText('Не удалось записать наборы фильтров в локальные настройки.')
+
+    def apply_saved_filter(self, values):
+        controls = (self.search, self.quick, self.priority_filter, self.assignee_filter,
+                    self.label_filter, self.archive_filter, self.due_from, self.due_to)
+        blockers = [QSignalBlocker(control) for control in controls]
+        self.search.setText(values['query'])
+        self.quick.setCurrentIndex(values['quick'])
+        self.priority_filter.setCurrentIndex(max(0, self.priority_filter.findText(values['priority'])))
+        self.archive_filter.setChecked(values['archived'])
+        self.due_from.set_value(values['due_from'])
+        self.due_to.set_value(values['due_to'])
+        missing = []
+        for combo, key in ((self.assignee_filter, 'assignee'), (self.label_filter, 'label')):
+            value = values.get(key) or ''
+            index = combo.findData(value)
+            if value and index < 0:
+                missing.append(value)
+            combo.setCurrentIndex(max(0, index))
+        del blockers
+        self.filters_changed()
+        self.advanced_filters.show()
+        self.filter_message.setText('Недоступны на этой доске, пропущены: ' + ', '.join(missing) if missing else '')
+        self.filter_message.setVisible(bool(missing))
+
     def reset_filters(self):
+        self.filter_message.hide()
         self.search.clear()
         for combo in (self.quick, self.priority_filter, self.assignee_filter, self.label_filter):
             combo.setCurrentIndex(0)
@@ -1629,18 +1669,7 @@ class MainWindow(QMainWindow, Async):
         self.refresh()
 
     def show_task_notification(self, task_id):
-        def done(task, error):
-            if error:
-                self.status.setText('Не удалось открыть задачу: ' + error_text(error))
-                return
-            for dialog in self.dialogs:
-                if dialog.data.get('id') == task_id and dialog.isVisible():
-                    dialog.render_extras(task)
-                    dialog.raise_()
-                    dialog.activateWindow()
-                    return
-            self.open_personal_task(task)
-        self.work(lambda: self.store.detail(task_id), done)
+        self.open_personal_task({'id': task_id})
 
     def select_board_tab(self, index):
         if index < 0:
@@ -1652,16 +1681,24 @@ class MainWindow(QMainWindow, Async):
         self.refresh()
 
     def open_personal_task(self, task):
-        def done(columns, error):
+        task_id = task['id']
+        def done(context, error):
             if error:
-                self.status.setText(error_text(error))
+                self.status.setText('Не удалось открыть задачу: ' + error_text(error))
                 return
-            d = TaskDialog(self.store, columns, task, self)
-            self.dialogs.add(d)
-            d.changed.connect(self.refresh)
-            d.destroyed.connect(lambda: self.dialogs.discard(d))
-            d.show()
-        self.work(lambda: self.store.columns(task['board_id']), done)
+            detail, columns = context
+            for dialog in self.dialogs:
+                if dialog.data.get('id') == task_id and dialog.isVisible():
+                    dialog.render_extras(detail)
+                    dialog.raise_()
+                    dialog.activateWindow()
+                    return
+            self.show_task_dialog(detail, columns)
+        self.work(lambda: self.store.task_context(task_id), done)
+
+    def page_changed(self, index):
+        self.generation += 1
+        self.refresh()
 
     def select_board(self, current, previous):
         self.board_id = current.data(Qt.UserRole) if current else None
@@ -1690,26 +1727,13 @@ class MainWindow(QMainWindow, Async):
             self.connect_store()
             return
         f = self.filters()
-        try:
-            for key in ['due_from', 'due_to']:
-                if f[key]:
-                    dt.date.fromisoformat(f[key])
-        except ValueError:
-            self.status.setText('Фильтр срока: введите дату ГГГГ-ММ-ДД')
-            return
+        page = self.pages.currentIndex()
+        view = ('board', 'list', 'timeline', 'statistics', 'personal')[page]
         generation = self.generation
         bid = self.board_id
         self.loading = True
         def read():
-            boards = self.store.boards()
-            selected = bid if any(b['id'] == bid for b in boards) else (boards[0]['id'] if boards else None)
-            personal = []
-            for board in boards:
-                columns = {c['id']: c['name'] for c in self.store.columns(board['id'])}
-                for task in self.store.tasks(board['id'], {'assignee': self.store.login}):
-                    task.update(board_name=board['name'], column_name=columns.get(task['column_id'], ''))
-                    personal.append(task)
-            return boards, selected, self.store.columns(selected) if selected else [], self.store.tasks(selected, f) if selected else [], self.store.tasks(selected) if selected else [], self.store.catalogs(selected), personal
+            return self.store.board_snapshot(bid, f, view)
         def done(result, error):
             self.loading = False
             if self.drag_active:
@@ -1723,18 +1747,23 @@ class MainWindow(QMainWindow, Async):
             if error:
                 self.status.setText('Обновление не выполнено: ' + error_text(error) + '. Можно повторить. Открытые формы сохранены.')
                 return
-            snapshot = (result, dt.date.today().isoformat())
+            snapshot = (page, result, dt.date.today().isoformat())
             if snapshot == self.last_snapshot:
                 return
-            self.last_snapshot = copy.deepcopy(snapshot)
-            boards, selected, columns, tasks, all_tasks, catalogs, personal = result
+            self.last_snapshot = snapshot
+            boards, selected, columns, tasks, totals, catalogs, personal = result
             self.permissions = catalogs.get('permissions', {})
             self.users_button.setEnabled(self.permissions.get('admin', False))
             self.create_board_button.setEnabled(self.permissions.get('create_board', False))
             self.new_task_button.setEnabled(self.permissions.get('create', False) and bool(selected))
-            self.my_tasks.update_data(personal)
-            self.list_view.update_data(tasks, columns)
-            self.gantt_view.update_data(tasks, columns)
+            if page == 4:
+                self.my_tasks.update_data(personal)
+            elif page == 3:
+                self.statistics.update_data(tasks, columns)
+            elif page == 2:
+                self.gantt_view.update_data(tasks, columns)
+            elif page == 1:
+                self.list_view.update_data(tasks, columns)
             structure = [(b['id'], b['name'], b['personal']) for b in boards]
             if structure != getattr(self, 'tree_structure', None):
                 self.tree_structure = structure
@@ -1781,11 +1810,15 @@ class MainWindow(QMainWindow, Async):
                     self.board_tabs.setTabData(index, board_id)
             self.board_tabs.setCurrentIndex(next((i for i in range(self.board_tabs.count()) if self.board_tabs.tabData(i) == selected), -1))
             self.board_tabs.blockSignals(False)
+            if bid != selected:
+                self.filter_message.hide()
             self.update_catalog_filters(catalogs)
+            if page in (0, 1, 2) and f != self.filters():
+                self.debounce.start(1)
             self.board_id = selected
             self.activate_board_chat(selected, next((b["name"] for b in boards if b["id"] == selected), ""))
-            for bid, chat in self.board_chats.items():
-                if bid is not None and not any(b["id"] == bid for b in boards):
+            for chat_board_id, chat in self.board_chats.items():
+                if chat_board_id is not None and not any(b["id"] == chat_board_id for b in boards):
                     chat.deactivate()
                     chat.messages.clear()
                     chat.stickers.clear()
@@ -1813,11 +1846,17 @@ class MainWindow(QMainWindow, Async):
             self.update_board_badges(self.board_counts)
             self.update_navigation()
             self.columns_data = columns
-            self.statistics.update_data(all_tasks, columns)
-            selected_task = self.selected_task()
-            horizontal_position = self.scroll.horizontalScrollBar().value()
-            vertical_positions = {c.column_id: c.verticalScrollBar().value() for c in self.card_lists}
-            focused = any(x.hasFocus() for x in self.card_lists)
+            if page == 0:
+                self.render_board(selected, columns, tasks, totals)
+            self.status.clear()
+        self.work(read, done)
+
+    def render_board(self, board_id, columns, tasks, totals):
+        board = None
+        structure = (board_id, columns)
+        if structure != getattr(self, 'card_structure', None):
+            self.card_structure = structure
+            self.expanded_task_ids.clear()
             board = QWidget()
             board.setObjectName('BoardCanvas')
             row = QHBoxLayout(board)
@@ -1834,9 +1873,7 @@ class MainWindow(QMainWindow, Async):
                 layout = QVBoxLayout(panel)
                 layout.setContentsMargins(6, 4, 6, 6)
                 layout.setSpacing(10)
-                count = sum(t['column_id'] == column['id'] for t in all_tasks)
-                warning = bool(column['wip_limit'] and count > column['wip_limit'])
-                label = QLabel(column['name'] + ' · ' + str(count) + (' / ' + str(column['wip_limit']) if column['wip_limit'] else '') + (' · Лимит превышен' if warning else ''))
+                label = QLabel(column['name'])
                 label.setTextFormat(Qt.PlainText)
                 label.setWordWrap(True)
                 label.setObjectName('ColumnTitle')
@@ -1844,51 +1881,69 @@ class MainWindow(QMainWindow, Async):
                 header_row = QHBoxLayout()
                 label.setText(column['name'])
                 header_row.addWidget(label, 1)
-                counter = QLabel(str(count) + (' / ' + str(column['wip_limit']) if column['wip_limit'] else '') + (' Лимит превышен' if warning else ''))
-                counter.setToolTip('Лимит превышен' if warning else 'Количество задач')
+                counter = QLabel()
                 counter.setObjectName('CountBadge')
                 header_row.addWidget(counter)
                 layout.addLayout(header_row)
                 add_task = button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
-                add_task.setEnabled(self.permissions.get('create', False))
                 add_task.setObjectName('AddColumnTask')
                 add_task.setCursor(Qt.PointingHandCursor)
                 cards = Cards(column['id'], self.expanded_task_ids)
+                cards.counter = counter
+                cards.add_task = add_task
+                cards.details_requested.connect(self.load_card_details)
                 cards.itemClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
                 cards.moved.connect(self.move_task)
                 cards.dragging.connect(self.drag_state_changed)
                 cards.setContextMenuPolicy(Qt.CustomContextMenu)
                 cards.customContextMenuRequested.connect(lambda point, cards=cards: self.card_menu(cards, point))
-                for task in tasks:
-                    if task['column_id'] != column['id']:
-                        continue
-                    overdue = task['due_date'] and task['due_date'] < dt.date.today().isoformat() and not task['completed_at']
-                    check = task['checklist']
-                    text = '№{}  {}\n{}\n{}{} · {}\n{}{}'.format(task['number'], task['title'], ', '.join(task.get('assignee_names') or task['assignees']) or 'Без исполнителя', 'Просрочено: ' if overdue else 'Срок: ', task['due_date'] or 'не задан', task['priority'], ', '.join(task['labels']), '\nЧек-лист: {}/{}'.format(sum(bool(x['done']) for x in check), len(check)) if check else '')
-                    item = QListWidgetItem(text)
-                    item.setData(Qt.UserRole, task)
-                    item.setData(EXPANDED_ROLE, task['id'] in self.expanded_task_ids)
-                    self.update_card_notice(item)
-                    cards.addItem(item)
-                    if selected_task and selected_task['id'] == task['id']:
-                        cards.setCurrentItem(item)
-                        if focused:
-                            QTimer.singleShot(0, cards.setFocus)
-                cards.update_card_height()
                 layout.addWidget(cards)
                 row.addWidget(panel, 0, Qt.AlignTop)
                 self.card_lists.append(cards)
-                cards.verticalScrollBar().setValue(vertical_positions.get(column['id'], 0))
             if not columns:
                 row.addWidget(QLabel('Создайте доску, чтобы добавить задачи.'))
-            old = self.scroll.takeWidget()
-            if old:
-                old.deleteLater()
+        tasks_by_column = {}
+        for task in tasks:
+            tasks_by_column.setdefault(task['column_id'], []).append(task)
+        for column, cards in zip(columns, self.card_lists):
+            count = totals.get(column['id'], 0)
+            limit = column['wip_limit']
+            warning = bool(limit and count > limit)
+            cards.counter.setText(str(count) + (' / ' + str(limit) if limit else '') + (' Лимит превышен' if warning else ''))
+            cards.counter.setToolTip('Лимит превышен' if warning else 'Количество задач')
+            cards.add_task.setEnabled(self.permissions.get('create', False))
+        update_cards({cards.column_id: cards for cards in self.card_lists}, tasks_by_column,
+                     self.task_notice_counts, self.expanded_task_ids)
+        if board is not None:
             self.scroll.setWidget(board)
-            self.scroll.horizontalScrollBar().setValue(horizontal_position)
-            self.status.clear()
-        self.work(read, done)
+
+    def load_card_details(self, item):
+        task = item.data(Qt.UserRole)
+        key = (task['id'], task['version'])
+        pending = getattr(self, 'pending_card_details', set())
+        self.pending_card_details = pending
+        if key in pending:
+            return
+        pending.add(key)
+        def done(details, error):
+            pending.discard(key)
+            lists = self.card_lists + list(self.my_tasks.card_lists.values())
+            for cards in lists:
+                for row in range(cards.count()):
+                    current = cards.item(row)
+                    data = current.data(Qt.UserRole)
+                    if (data['id'], data['version']) != key or not current.data(EXPANDED_ROLE):
+                        continue
+                    if error:
+                        current.setData(DETAILS_ROLE, dict(data, details_error=True, description='Подробности недоступны: ' + error_text(error)))
+                    elif details['version'] == key[1]:
+                        current.setData(DETAILS_ROLE, dict(data, **details))
+                    else:
+                        self.refresh()
+                    cards.doItemsLayout()
+                    cards.update_card_height()
+        self.work(lambda: self.store.card_details(task['id']), done)
 
     def update_catalog_filters(self, catalogs):
         for combo, options, placeholder in [
@@ -1896,6 +1951,8 @@ class MainWindow(QMainWindow, Async):
             (self.label_filter, [(l['name'], l['name']) for l in sorted(catalogs['labels'], key=lambda l: l['name'].casefold())], 'Все метки')
         ]:
             selected = combo.currentData()
+            if [(combo.itemData(i), combo.itemText(i)) for i in range(combo.count())] == [('', placeholder)] + options:
+                continue
             combo.blockSignals(True)
             combo.clear()
             combo.addItem(placeholder, '')
@@ -1933,7 +1990,13 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Выберите задачу')
 
     def open_task(self, task):
-        d = TaskDialog(self.store, self.columns_data, task, self)
+        if task.get('id') and 'history' not in task:
+            self.open_personal_task(task)
+        else:
+            self.show_task_dialog(task, self.columns_data)
+
+    def show_task_dialog(self, task, columns):
+        d = TaskDialog(self.store, columns, task, self)
         self.dialogs.add(d)
         d.changed.connect(self.refresh)
         d.destroyed.connect(lambda: self.dialogs.discard(d))
@@ -2052,7 +2115,7 @@ class MainWindow(QMainWindow, Async):
         high = displayed[index]['position'] if index < len(displayed) else low + 2048
         task['position'] = (low + high) / 2
         task['column_id'] = column_id
-        self.mutate(lambda rid: self.store.save_task(task, rid))
+        self.mutate_task_card(task)
 
     def card_menu(self, cards, point):
         item = cards.itemAt(point)
@@ -2083,12 +2146,17 @@ class MainWindow(QMainWindow, Async):
         if not task:
             self.status.setText('Выберите задачу')
             return
-        data = copy.deepcopy(task)
-        for field in ['id', 'version', 'number', 'comments', 'attachments', 'history', 'created_at', 'updated_at', 'completed_at', 'position']:
-            data.pop(field, None)
-        data['title'] += ' (копия)'
-        data['archived'] = False
-        self.open_task(data)
+        def done(detail, error):
+            if error:
+                self.status.setText(error_text(error))
+                return
+            source, columns = detail
+            fields = ('board_id', 'column_id', 'title', 'description', 'priority', 'due_date',
+                      'assignees', 'assignee_names', 'labels', 'checklist')
+            data = {field: source[field] for field in fields}
+            data['title'] += ' (копия)'
+            self.show_task_dialog(data, columns)
+        self.work(lambda: self.store.task_context(task['id']), done)
 
     def archive_selected(self):
         task = self.selected_task()
@@ -2099,7 +2167,10 @@ class MainWindow(QMainWindow, Async):
         data['archived'] = not data['archived']
         verb = 'Восстановить' if not data['archived'] else 'Архивировать'
         if QMessageBox.question(self, verb, verb + ' задачу №' + str(data['number']) + '?', QMessageBox.Yes | QMessageBox.No, QMessageBox.No) == QMessageBox.Yes:
-            self.mutate(lambda rid: self.store.save_task(data, rid))
+            self.mutate_task_card(data)
+
+    def mutate_task_card(self, task):
+        self.mutate(lambda rid: self.store.update_card(task, rid))
 
     def backup(self):
         if not self.store:
