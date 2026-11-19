@@ -38,6 +38,11 @@ class AccessDenied(ValueError):
     pass
 
 
+class AccessRestricted(AccessDenied):
+    def __init__(self):
+        super().__init__('Доступ к TeamSync ограничен администратором.')
+
+
 class Busy(Exception):
     pass
 
@@ -82,7 +87,7 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 8:
+                if version > 9:
                     raise RuntimeError('База создана более новой версией программы')
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
@@ -132,9 +137,16 @@ class Store:
                     c.execute('CREATE TABLE IF NOT EXISTS task_subscriptions(task_id INTEGER REFERENCES tasks(id),user_id INTEGER REFERENCES users(id),PRIMARY KEY(task_id,user_id))')
                     c.execute('CREATE INDEX IF NOT EXISTS checklist_task ON checklist_items(task_id)')
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(8,?)', (now(),))
-                c.execute('PRAGMA user_version=8')
-                self.user(c, self.login)
+                if version < 9:
+                    if 'restricted' not in {r[1] for r in c.execute('PRAGMA table_info(users)')}:
+                        c.execute('ALTER TABLE users ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0 CHECK(restricted IN (0,1))')
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(9,?)', (now(),))
+                    c.execute('PRAGMA user_version=9')
+                uid = self.user(c, self.login)
+                restricted = c.execute('SELECT restricted FROM users WHERE id=?', (uid,)).fetchone()[0]
                 c.commit()
+                if restricted:
+                    raise AccessRestricted()
 
     def actor(self, c):
         if not c.execute("SELECT 1 FROM users WHERE role='admin'").fetchone():
@@ -142,6 +154,8 @@ class Store:
         row = c.execute('SELECT * FROM users WHERE login=?', (self.login,)).fetchone()
         if not row:
             raise AccessDenied('Пользователь не зарегистрирован')
+        if row['restricted']:
+            raise AccessRestricted()
         return row
 
     def visible_boards(self, c, actor=None):
@@ -219,12 +233,28 @@ class Store:
                 raise ValueError('Передайте роль администратора другому сотруднику')
             if role == 'employee' and c.execute('SELECT 1 FROM boards WHERE owner_id=? AND archived=0 AND personal=0', (user_id,)).fetchone():
                 raise ValueError('Сначала передайте доски другому менеджеру')
+            if role == 'admin' and target['restricted']:
+                raise ValueError('Сначала восстановите сотруднику доступ к TeamSync')
             if role == 'admin' and target['role'] != 'admin':
                 c.execute("UPDATE users SET role='manager' WHERE role='admin'")
             c.execute('UPDATE users SET role=? WHERE id=?', (role, user_id))
             self.audit_access(c, 'role', [user_id, role])
             return True
         return self.write('role', [user_id, role], apply, request_id)
+
+    def set_user_restricted(self, user_id, restricted, request_id=None):
+        restricted = bool(restricted)
+        def apply(c, uid):
+            target = c.execute('SELECT role,restricted FROM users WHERE id=?', (user_id,)).fetchone()
+            if not target:
+                raise ValueError('Сотрудник не найден')
+            if target['role'] == 'admin':
+                raise ValueError('Нельзя ограничить доступ действующему администратору')
+            if bool(target['restricted']) != restricted:
+                c.execute('UPDATE users SET restricted=? WHERE id=?', (restricted, user_id))
+                self.audit_access(c, 'user_restricted', [user_id, restricted])
+            return restricted
+        return self.write('user_restricted', [user_id, restricted], apply, request_id)
 
     def board_access(self, board_id):
         with self.connection() as c:
@@ -260,7 +290,7 @@ class Store:
 
     def authorize_write(self, c, operation, payload):
         self.actor(c)
-        if operation in ('role', 'user', 'timezone'):
+        if operation in ('role', 'user', 'timezone', 'user_restricted'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -284,6 +314,7 @@ class Store:
 
     def timezone(self):
         with self.connection() as c:
+            self.actor(c)
             row = c.execute("SELECT value FROM settings WHERE key='timezone'").fetchone()
             return row[0] if row else 'UTC'
 
@@ -370,7 +401,7 @@ class Store:
         recipients.update(r[0] for r in c.execute('SELECT user_id FROM task_subscriptions WHERE task_id=?', (task_id,)))
         mentions = mention_logins(changes['text']) if op == 'Комментарий' else set()
         eligible = c.execute('SELECT u.id,u.login FROM users u JOIN tasks t ON t.id=:tid'
-                             ' JOIN boards b ON b.id=t.board_id WHERE b.archived=0 AND ('
+                             ' JOIN boards b ON b.id=t.board_id WHERE b.archived=0 AND u.restricted=0 AND ('
                              + self.board_visibility('u.id', 'u.role') + ')', {'tid': task_id})
         c.executemany('INSERT OR IGNORE INTO task_notifications(history_id,user_id) VALUES(?,?)',
                       [(hid, r['id']) for r in eligible if r['id'] != uid and
@@ -1023,6 +1054,7 @@ class Store:
 
     def download(self, attachment_id, destination):
         with self.connection() as c:
+            self.actor(c)
             r = c.execute('SELECT * FROM attachments WHERE id=?', (attachment_id,)).fetchone()
             if not r:
                 raise FileNotFoundError('Вложение отсутствует в базе')

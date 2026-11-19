@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
-from .store import Store, Conflict
+from .store import Store, Conflict, AccessRestricted
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
@@ -145,11 +145,16 @@ class CatalogDialog(QDialog, Async):
         heading = QLabel(self.windowTitle())
         heading.setObjectName('Heading')
         root.addWidget(heading)
-        hint = QLabel('Имя Windows связывает сотрудника с фильтром «Мои задачи».\nРоли и доступ настраиваются отдельно администратором.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
+        hint = QLabel('Отметка «Ограничить доступ» блокирует вход в TeamSync. Снимите отметку, чтобы восстановить доступ.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
         hint.setObjectName('Muted')
         hint.setWordWrap(True)
         root.addWidget(hint)
         self.list = QListWidget()
+        if kind == 'users':
+            caption = QLabel('Ограничить доступ')
+            caption.setBuddy(self.list)
+            root.addWidget(caption)
+            self.list.itemChanged.connect(self.change_restriction)
         root.addWidget(self.list, 1)
         form = QFormLayout()
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
@@ -193,9 +198,55 @@ class CatalogDialog(QDialog, Async):
                 title = '{} · {}'.format(row['display_name'], row['login']) if self.kind == 'users' else row['name']
                 item = QListWidgetItem(title)
                 item.setData(Qt.UserRole, row)
+                if self.kind == 'users':
+                    if row['role'] == 'admin':
+                        item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+                        item.setToolTip('Доступ действующего администратора нельзя ограничить')
+                    else:
+                        item.setCheckState(Qt.Checked if row['restricted'] else Qt.Unchecked)
+                        item.setData(Qt.AccessibleDescriptionRole, 'Ограничить доступ к TeamSync')
                 self.list.addItem(item)
             self.status.setText('Записей: {}'.format(len(rows)))
         self.work(lambda: {'users': self.store.access_users()} if self.kind == 'users' else self.store.catalogs(self.board_id), done)
+
+    def change_restriction(self, item):
+        row = item.data(Qt.UserRole)
+        restricted = item.checkState() == Qt.Checked
+        if row['role'] == 'admin' or restricted == bool(row['restricted']):
+            return
+
+        def apply_check(value):
+            blocker = QSignalBlocker(self.list)
+            item.setCheckState(Qt.Checked if value else Qt.Unchecked)
+            item.setData(Qt.UserRole, dict(row, restricted=value))
+            del blocker
+
+        if self.jobs or self.retry:
+            apply_check(row['restricted'])
+            return
+        if restricted and QMessageBox.question(
+                self, 'Ограничить доступ', 'Ограничить доступ к TeamSync для «{}»?'.format(row['display_name']),
+                QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
+            apply_check(row['restricted'])
+            return
+        self.list.setEnabled(False)
+        self.save_button.setEnabled(False)
+        self.edit_button.setEnabled(False)
+        self.status.setText('Сохранение…')
+
+        def done(result, error):
+            self.list.setEnabled(True)
+            self.save_button.setEnabled(True)
+            self.edit_button.setEnabled(True)
+            if error:
+                apply_check(row['restricted'])
+                self.status.setText(error_text(error))
+                return
+            apply_check(result)
+            self.status.setText('Доступ ограничен' if result else 'Доступ восстановлен')
+            self.changed.emit()
+
+        self.work(lambda: self.store.set_user_restricted(row['id'], restricted), done)
 
     def edit_entry(self):
         if self.jobs or self.retry or self.delete_retry or not self.list.currentItem():
@@ -1084,6 +1135,8 @@ class MainWindow(QMainWindow, Async):
         self.init_async()
         self.folder = folder
         self.store = None
+        self.access_restricted = False
+        self.hidden_task_dialogs = set()
         self.board_id = None
         self.columns_data = []
         self.dialogs = set()
@@ -1601,12 +1654,40 @@ class MainWindow(QMainWindow, Async):
             return
         self.open_task({'board_id': self.board_id, 'column_id': column_id, 'title': ''})
 
+    def set_access_restricted(self, restricted):
+        if restricted == self.access_restricted:
+            return
+        self.access_restricted = restricted
+        self.centralWidget().setVisible(not restricted)
+        if restricted:
+            self.last_snapshot = None
+            self.generation += 1
+            self.messenger.deactivate()
+            self.hidden_task_dialogs = {dialog for dialog in self.dialogs if dialog.isVisible()}
+            for dialog in self.findChildren(QDialog):
+                if dialog.isVisible():
+                    dialog.hide()
+            self.statusBar().showMessage(str(AccessRestricted()))
+            self.statusBar().show()
+        else:
+            self.statusBar().hide()
+            visible = {self.board_tabs.tabData(i) for i in range(self.board_tabs.count())}
+            for dialog in self.hidden_task_dialogs & self.dialogs:
+                if dialog.data['board_id'] in visible:
+                    dialog.show()
+            self.hidden_task_dialogs.clear()
+            if not self.messenger.active:
+                self.messenger.activate()
+
     def connect_store(self):
         if self.loading:
             return
         self.loading = True
         def done(store, error):
             self.loading = False
+            if isinstance(error, AccessRestricted):
+                self.set_access_restricted(True)
+                return
             if error:
                 self.status.setText('Общая папка недоступна: ' + error_text(error) + '. Проверьте kanban.ini и нажмите «Обновить».')
                 return
@@ -1655,9 +1736,12 @@ class MainWindow(QMainWindow, Async):
         if board_id not in self.board_chats:
             self.board_chats[board_id] = Messenger(self, board_id, name)
         self.messenger = self.board_chats[board_id]
-        self.messenger.activate(opened)
+        if not self.access_restricted:
+            self.messenger.activate(opened)
 
     def show_board_chat(self, board_id):
+        if self.access_restricted:
+            return
         for index in range(self.board_tabs.count()):
             if self.board_tabs.tabData(index) == board_id:
                 self.board_tabs.setCurrentIndex(index)
@@ -1721,7 +1805,7 @@ class MainWindow(QMainWindow, Async):
         if self.drag_active:
             self.refresh_deferred = True
             return
-        if self.loading or self.mutating or self.pending_action:
+        if self.loading or self.mutating or (self.pending_action and not self.access_restricted):
             return
         if not self.store:
             self.connect_store()
@@ -1739,10 +1823,13 @@ class MainWindow(QMainWindow, Async):
             if self.drag_active:
                 self.refresh_deferred = True
                 return
-            if self.mutating or self.pending_action:
+            if self.mutating or (self.pending_action and not self.access_restricted):
                 return
             if generation != self.generation:
                 self.debounce.start(1)
+                return
+            if isinstance(error, AccessRestricted):
+                self.set_access_restricted(True)
                 return
             if error:
                 self.status.setText('Обновление не выполнено: ' + error_text(error) + '. Можно повторить. Открытые формы сохранены.')
@@ -1848,6 +1935,7 @@ class MainWindow(QMainWindow, Async):
             self.columns_data = columns
             if page == 0:
                 self.render_board(selected, columns, tasks, totals)
+            self.set_access_restricted(False)
             self.status.clear()
         self.work(read, done)
 
@@ -1996,6 +2084,8 @@ class MainWindow(QMainWindow, Async):
             self.show_task_dialog(task, self.columns_data)
 
     def show_task_dialog(self, task, columns):
+        if self.access_restricted:
+            return
         d = TaskDialog(self.store, columns, task, self)
         self.dialogs.add(d)
         d.changed.connect(self.refresh)

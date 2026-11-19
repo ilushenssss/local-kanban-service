@@ -5,6 +5,7 @@ from PyQt5.QtGui import QIcon
 from PyQt5.QtWidgets import QSystemTrayIcon, QMenu, QDialog, QDialogButtonBox, QLabel, QListWidget, QListWidgetItem, QVBoxLayout
 from .theme import theme_settings
 from .spellcheck import spell_engine
+from .store import AccessRestricted
 from .presentation import date_text, task_notification_text
 
 
@@ -97,12 +98,18 @@ class Notifications(QObject):
         w.raise_()
         w.activateWindow()
     def open_chat(self):
+        if getattr(self.window, 'access_restricted', False):
+            self.restore_window()
+            return
         self.restore_window()
         self.window.messenger.open_chat()
         self.pending.clear()
         self.timer.stop()
 
     def open_notification(self):
+        if getattr(self.window, 'access_restricted', False):
+            self.restore_window()
+            return
         if self.last_task is not None:
             self.restore_window()
             self.window.show_task_notification(self.last_task)
@@ -122,10 +129,21 @@ class Notifications(QObject):
             if revision != self.read_revision:
                 self.poll()
                 return
+            if isinstance(error, AccessRestricted):
+                if self.inbox is not None:
+                    self.inbox.window().reject()
+                if hasattr(self.window, 'set_access_restricted'):
+                    self.window.set_access_restricted(True)
+                self.pending.clear()
+                self.task_pending.clear()
+                return
             if error:
                 if self.inbox is not None:
                     self.fill_inbox([], 'Не удалось обновить уведомления. Повторим автоматически.')
             else:
+                if getattr(self.window, 'access_restricted', False):
+                    self.window.refresh()
+                    return
                 self.observe(result['chat'], store.login)
                 self.observe_tasks(result['tasks'])
                 if hasattr(self.window, 'update_unread_notifications'):
@@ -138,6 +156,9 @@ class Notifications(QObject):
         self.window.work(lambda: store.notification_snapshot(cursor), done)
 
     def open_inbox(self):
+        if getattr(self.window, 'access_restricted', False):
+            self.restore_window()
+            return
         dialog = QDialog(self.window)
         dialog.setWindowTitle('Непрочитанные уведомления')
         dialog.resize(530, 420)
@@ -274,7 +295,7 @@ class Notifications(QObject):
         if not messages:
             return
         def show(allowed, error=None):
-            if error or not self.enabled():
+            if error or not self.enabled() or getattr(self.window, "access_restricted", False):
                 return
             allowed = [m for m in allowed if not self.chat_active(m.get('board_id'))]
             if not allowed:
@@ -320,6 +341,8 @@ class Notifications(QObject):
             candidates = {event['id'] for event in events}
             return [event for event in store.task_updates(min(candidates) - 1)['events'] if event['id'] in candidates]
         def show(allowed, error):
+            if isinstance(error, AccessRestricted) or getattr(self.window, 'access_restricted', False):
+                return
             if error:
                 if self.tasks_enabled():
                     self.task_pending = events + self.task_pending

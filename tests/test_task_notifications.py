@@ -166,7 +166,7 @@ class TaskNotificationsTest(unittest.TestCase):
         upgraded = Store(self.creator.folder, 'alice')
         self.assertEqual(upgraded.task_updates(0)['events'], [])
         with upgraded.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 9)
             self.assertEqual(c.execute('SELECT COUNT(*) FROM task_history').fetchone()[0], count)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
         current = self.creator.detail(task)

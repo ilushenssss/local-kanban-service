@@ -4,7 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from kanban.store import Store, SCHEMA, AccessDenied
+from kanban.store import Store, SCHEMA, AccessDenied, AccessRestricted
 
 
 class PermissionsTest(unittest.TestCase):
@@ -22,6 +22,32 @@ class PermissionsTest(unittest.TestCase):
         self.bid = self.manager.board_action('Доска менеджера')
         self.manager.set_board_access(self.bid, [self.eid], self.mid)
         self.task = self.manager.save_task({'board_id': self.bid, 'column_id': self.manager.columns(self.bid)[0]['id'], 'title': 'Задача'})
+
+    def test_restrict_and_restore_app_access(self):
+        tid = self.task['id']
+        admin_id = self.admin.profile()['id']
+        for client in (self.employee, self.manager):
+            with self.assertRaises(AccessDenied):
+                client.set_user_restricted(self.eid, True)
+        with self.assertRaises(ValueError):
+            self.admin.set_user_restricted(admin_id, True)
+        self.assertTrue(self.admin.set_user_restricted(self.eid, True, 'restrict'))
+        self.assertTrue(self.admin.set_user_restricted(self.eid, True, 'restrict'))
+        with self.assertRaises(AccessRestricted):
+            Store(self.admin.folder, 'employee')
+        for action in (self.employee.boards, lambda: self.employee.detail(tid),
+                       lambda: self.employee.notification_snapshot(0), self.employee.timezone,
+                       lambda: self.employee.comment(tid, 'Запись после блокировки')):
+            with self.assertRaises(AccessRestricted):
+                action()
+        with self.assertRaises(ValueError):
+            self.admin.set_role(self.eid, 'admin')
+        self.assertFalse(self.admin.set_user_restricted(self.eid, False))
+        self.assertEqual(self.employee.profile()['role'], 'employee')
+        self.assertEqual(self.employee.detail(tid)['title'], 'Задача')
+        self.assertEqual(Store(self.admin.folder, 'employee').boards()[0]['id'], self.bid)
+        with self.admin.connection() as c:
+            self.assertEqual(c.execute("SELECT COUNT(*) FROM access_history WHERE operation='user_restricted'").fetchone()[0], 2)
 
     def test_employee_can_edit_but_not_create_archive_or_manage(self):
         task = self.employee.detail(self.task['id'])
@@ -127,5 +153,5 @@ class PermissionsTest(unittest.TestCase):
         self.assertEqual(migrated.boards()[0]['id'], 9)
         self.assertEqual(migrated.team_chat(board_id=next(b['id'] for b in migrated.boards() if b['name'] == 'С-А'))['messages'][0]['body'], 'Переписка')
         with migrated.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 8)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 9)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())

@@ -398,6 +398,50 @@ class UITest(unittest.TestCase):
         QTimer.singleShot(20, close_viewer)
         m.view_sticker(QUrl('sticker:1'))
 
+    def test_employee_catalog_restricts_open_app_and_restores_access(self):
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'colleague')):
+            w = MainWindow(str(self.store.folder))
+            self.windows.append(w)
+            w.show()
+            wait_for(lambda: bool(w.card_lists) and not w.jobs)
+        w.open_task(w.card_lists[0].item(0).data(Qt.UserRole))
+        wait_for(lambda: bool(w.dialogs) and not w.jobs)
+        task_dialog = next(iter(w.dialogs))
+        wait_for(lambda: not task_dialog.jobs)
+        w.messenger.open_chat()
+        self.assertTrue(w.messenger.isVisible())
+
+        dialog = CatalogDialog(self.store, self.bid, 'users')
+        self.windows.append(dialog)
+        dialog.show()
+        wait_for(lambda: not dialog.jobs)
+        users = {dialog.list.item(n).data(Qt.UserRole)['login']: dialog.list.item(n)
+                 for n in range(dialog.list.count())}
+        self.assertFalse(users['tester'].flags() & Qt.ItemIsUserCheckable)
+        item = users['colleague']
+        dialog.list.setCurrentItem(item)
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.No):
+            QTest.keyClick(dialog.list, Qt.Key_Space)
+        self.assertEqual(item.checkState(), Qt.Unchecked)
+        with patch.object(QMessageBox, 'question', return_value=QMessageBox.Yes):
+            QTest.keyClick(dialog.list, Qt.Key_Space)
+            wait_for(lambda: not dialog.jobs)
+        self.assertEqual(item.checkState(), Qt.Checked)
+        w.notifications.poll()
+        wait_for(lambda: w.access_restricted)
+        self.assertFalse(w.centralWidget().isVisible())
+        self.assertFalse(task_dialog.isVisible())
+        self.assertFalse(w.messenger.isVisible())
+        self.assertFalse(w.messenger.bubble.isVisible())
+        self.assertIn('ограничен администратором', w.statusBar().currentMessage())
+        QTest.keyClick(dialog.list, Qt.Key_Space)
+        wait_for(lambda: not dialog.jobs)
+        self.assertEqual(item.checkState(), Qt.Unchecked)
+        w.notifications.poll()
+        wait_for(lambda: not w.access_restricted and not w.loading)
+        self.assertTrue(w.centralWidget().isVisible())
+        self.assertTrue(task_dialog.isVisible())
+
     def test_role_and_board_access_dialogs(self):
         from kanban.ui import AccessDialog
         from unittest.mock import patch
