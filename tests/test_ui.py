@@ -13,7 +13,7 @@ from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea
 from kanban.store import Store
 from kanban.cards import TASK_NOTICE_ROLE
 from kanban.theme import stylesheet
-from kanban.ui import MainWindow, TaskDialog, CatalogDialog
+from kanban.ui import BoardCreateDialog, MainWindow, TaskDialog, CatalogDialog
 from kanban.theme import PRIORITIES
 from kanban.presentation import history_text, history_html
 
@@ -219,17 +219,26 @@ class UITest(unittest.TestCase):
             w.show()
             wait_for(lambda: not w.loading and not w.jobs)
         root = next(w.board_tree.topLevelItem(i) for i in range(w.board_tree.topLevelItemCount()) if w.board_tree.topLevelItem(i).text(0) == 'Личное')
-        self.assertFalse(w.create_board_button.isEnabled())
-        create = next(root.child(i) for i in range(root.childCount())
-                      if root.child(i).data(0, Qt.UserRole + 1) == 'create_personal')
-        with patch.object(QInputDialog, 'getText', return_value=('Планы на неделю', True)):
-            w.select_tree_board(create, 0)
+        self.assertTrue(w.create_board_button.isEnabled())
+        self.assertTrue(w.create_project_item.isDisabled())
+        self.assertEqual(root.child(1).data(0, Qt.UserRole + 1), 'create_personal')
+
+        def fill(dialog):
+            self.assertEqual(dialog.folder.count(), 1)
+            self.assertEqual(dialog.folder.currentData(), 'personal')
+            self.assertTrue(dialog.project.isHidden())
+            dialog.name.setText('Планы на неделю')
+            dialog.create.click()
+            return dialog.result()
+
+        with patch.object(BoardCreateDialog, 'exec_', new=fill):
+            w.create_board_button.click()
             wait_for(lambda: not w.mutating and not w.loading and not w.jobs)
         private = w.board_id
         self.assertIsNotNone(private)
         self.assertTrue(w.permissions['personal'])
         self.assertTrue(w.new_task_button.isEnabled())
-        self.assertFalse(w.create_board_button.isEnabled())
+        self.assertTrue(w.create_board_button.isEnabled())
         self.assertFalse(any(b['id'] == private for b in self.store.boards()))
         menu = QMenu(w)
         share = menu.addAction('Участники доски')
@@ -618,6 +627,55 @@ class UITest(unittest.TestCase):
         m.hide()
         self.assertTrue(m.bubble.isVisible())
         self.assertEqual(m.input.toPlainText(), 'Новый черновик')
+
+    def test_create_board_from_projects_and_choose_folder(self):
+        existing = self.store.board_action('Разработка / Релиз')
+        self.grant_all(existing)
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
+            w = MainWindow(str(self.store.folder))
+            self.windows.append(w)
+            w.show()
+            wait_for(lambda: not w.loading and w.create_project_item is not None)
+        self.assertFalse(w.create_project_item.isDisabled())
+
+        def fill(dialog):
+            self.assertEqual([dialog.folder.itemText(i) for i in range(dialog.folder.count())],
+                             ['Рабочие доски', 'Проекты', 'Личное'])
+            self.assertEqual(dialog.folder.currentData(), 'projects')
+            self.assertEqual(dialog.project.itemText(0), 'Разработка')
+            dialog.name.setText('Спринт')
+            self.assertFalse(dialog.create.isEnabled())
+            dialog.project.setCurrentIndex(0)
+            dialog.project.setEditText('Разработка')
+            dialog.create.click()
+            return dialog.result()
+
+        w.board_tree.setCurrentItem(w.create_project_item)
+        with patch.object(BoardCreateDialog, 'exec_', new=fill):
+            QTest.keyClick(w.board_tree, Qt.Key_Return)
+            wait_for(lambda: not w.mutating and not w.loading and w.board_id in w.board_items)
+        created = w.board_items[w.board_id]
+        self.assertEqual(created.text(0), 'Спринт')
+        self.assertEqual(created.parent().text(0), 'Разработка')
+        self.assertEqual(created.parent().parent().text(0), 'Проекты')
+        self.assertIs(w.board_tree.currentItem(), created)
+        self.assertIn('Разработка / Спринт', [b['name'] for b in self.store.boards()])
+
+        def fill_new_project(dialog):
+            self.assertEqual(dialog.folder.currentData(), 'work')
+            dialog.folder.setCurrentIndex(dialog.folder.findData('projects'))
+            dialog.project.setEditText('Новый проект')
+            dialog.name.setText('Планирование')
+            dialog.create.click()
+            return dialog.result()
+
+        with patch.object(BoardCreateDialog, 'exec_', new=fill_new_project):
+            w.create_board_button.click()
+            wait_for(lambda: not w.mutating and not w.loading and w.board_id in w.board_items)
+        created = w.board_items[w.board_id]
+        self.assertEqual(created.text(0), 'Планирование')
+        self.assertEqual(created.parent().text(0), 'Новый проект')
+        self.assertEqual(created.parent().parent().text(0), 'Проекты')
 
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']

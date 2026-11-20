@@ -1019,6 +1019,76 @@ class TaskDialog(QDialog, Async):
         event.accept()
 
 
+class BoardCreateDialog(QDialog):
+    def __init__(self, can_create_shared, folder, projects, current_project, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle('Создать доску')
+        self.setMinimumWidth(400)
+        layout = QVBoxLayout(self)
+        form = QFormLayout()
+        self.folder = QComboBox()
+        if can_create_shared:
+            self.folder.addItem('Рабочие доски', 'work')
+            self.folder.addItem('Проекты', 'projects')
+        self.folder.addItem('Личное', 'personal')
+        self.folder.setCurrentIndex(max(0, self.folder.findData(folder)))
+        self.project = QComboBox()
+        self.project.setEditable(True)
+        self.project.setInsertPolicy(QComboBox.NoInsert)
+        self.project.addItems(projects)
+        self.project.setEditText(current_project)
+        self.project.lineEdit().setPlaceholderText('Выберите проект или введите название')
+        self.name = QLineEdit()
+        self.name.setPlaceholderText('Название доски')
+        for label, field in (('Папка', self.folder), ('Проект', self.project), ('Название доски', self.name)):
+            form.addRow(label, field)
+            field.setAccessibleName(label)
+        style_form(form)
+        self.project_label = form.labelForField(self.project)
+        layout.addLayout(form)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        layout.addWidget(self.status)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        self.create = button('Создать доску', self.accept, actions, 'primary')
+        self.create.setDefault(True)
+        button('Отмена', self.reject, actions)
+        layout.addLayout(actions)
+        self.folder.currentIndexChanged.connect(self.update_fields)
+        self.project.currentTextChanged.connect(self.update_fields)
+        self.name.textChanged.connect(self.update_fields)
+        self.update_fields()
+        self.name.setFocus()
+
+    def update_fields(self):
+        folder = self.folder.currentData()
+        in_project = folder == 'projects'
+        self.project.setVisible(in_project)
+        self.project_label.setVisible(in_project)
+        name = self.name.text().strip()
+        project = self.project.currentText().strip()
+        error = ''
+        if in_project and ' / ' in project:
+            error = 'Введите название одного проекта без разделителя « / ».'
+        elif folder == 'work' and ' / ' in name:
+            error = 'Для создания доски в проекте выберите папку «Проекты».'
+        self.status.setText(error)
+        self.status.setVisible(bool(error))
+        self.create.setEnabled(bool(name and (project or not in_project) and not error))
+
+    def accept(self):
+        if self.create.isEnabled():
+            super().accept()
+
+    def values(self):
+        folder = self.folder.currentData()
+        name = self.name.text().strip()
+        if folder == 'projects':
+            name = '{} / {}'.format(self.project.currentText().strip(), name)
+        return name, folder == 'personal'
+
+
 class ColumnsDialog(QDialog):
     def __init__(self, columns, parent=None):
         super().__init__(parent)
@@ -1203,11 +1273,13 @@ class MainWindow(QMainWindow, Async):
         self.board_tree.setAccessibleName('Рабочие доски, проекты и личное')
         self.board_items = {}
         self.my_tasks_item = None
+        self.create_project_item = None
         self.board_tree.itemClicked.connect(self.select_tree_board)
         self.board_tree.itemActivated.connect(self.select_tree_board)
         side.addWidget(self.board_tree, 1)
-        self.create_board_button = button('Создать доску', lambda: self.board_action('create'), side, 'quiet')
-        self.create_board_button.setToolTip('Создание рабочей доски доступно менеджеру и администратору. Личную доску можно создать в разделе «Личное».')
+        self.create_board_button = button('Создать доску', lambda: self.create_board(), side, 'quiet')
+        self.create_board_button.setToolTip('Создать доску в доступной папке')
+        self.create_board_button.setEnabled(False)
         side.addSpacing(18)
         self.report_nav = button('Отчёты', lambda: self.pages.setCurrentWidget(self.statistics), side, 'quiet')
         self.report_nav.setCheckable(True)
@@ -1421,7 +1493,7 @@ class MainWindow(QMainWindow, Async):
             if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…'):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Создать доску':
-                action.setEnabled(permissions.get('create_board', False))
+                action.setEnabled(bool(permissions))
             elif text == 'Участники доски':
                 action.setEnabled(bool(self.board_id) and permissions.get('manage', False) and permissions.get('share', False))
             elif text not in ('Обновить', 'Уведомления чатов досок', 'Уведомления об изменениях задач', 'Закрывать окно в трей', 'Проверять орфографию') and not action.isSeparator():
@@ -1507,7 +1579,7 @@ class MainWindow(QMainWindow, Async):
 
     def board_settings_menu(self):
         menu = QMenu(self)
-        menu.addAction('Создать доску', lambda: self.board_action('create'))
+        menu.addAction('Создать доску', lambda: self.create_board())
         menu.addAction('Переименовать доску', lambda: self.board_action('rename'))
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
         self.apply_menu_permissions(menu)
@@ -1536,8 +1608,8 @@ class MainWindow(QMainWindow, Async):
         if action == 'my_tasks':
             self.pages.setCurrentWidget(self.my_tasks)
             return
-        if action == 'create_personal':
-            self.board_action('create_personal')
+        if action in ('create_personal', 'create_project'):
+            self.create_board('personal' if action == 'create_personal' else 'projects')
             return
         if action == 'personal_archive':
             self.restore_personal_board()
@@ -1846,7 +1918,7 @@ class MainWindow(QMainWindow, Async):
             boards, selected, columns, tasks, totals, catalogs, personal = result
             self.permissions = catalogs.get('permissions', {})
             self.users_button.setEnabled(self.permissions.get('admin', False))
-            self.create_board_button.setEnabled(self.permissions.get('create_board', False))
+            self.create_board_button.setEnabled(True)
             self.new_task_button.setEnabled(self.permissions.get('create', False) and bool(selected))
             if page == 4:
                 self.my_tasks.update_data(personal)
@@ -1860,6 +1932,7 @@ class MainWindow(QMainWindow, Async):
             if structure != getattr(self, 'tree_structure', None):
                 self.tree_structure = structure
                 self.rebuild_board_tree(structure)
+            self.create_project_item.setDisabled(not self.permissions.get('create_board', False))
             wanted = [(b['id'], b['name']) for b in boards]
             current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
             self.board_tabs.blockSignals(True)
@@ -1941,6 +2014,11 @@ class MainWindow(QMainWindow, Async):
             item.setData(0, Qt.UserRole, board_id)
             item.setData(0, Qt.UserRole + 2, name)
             self.board_items[board_id] = item
+
+        self.create_project_item = QTreeWidgetItem(projects, ['＋ Создать доску'])
+        self.create_project_item.setFirstColumnSpanned(True)
+        self.create_project_item.setData(0, Qt.UserRole + 1, 'create_project')
+        self.create_project_item.setToolTip(0, 'Создание доски в проекте доступно менеджеру и администратору')
 
         archive = QTreeWidgetItem(private, ['Архив личных досок…'])
         archive.setFirstColumnSpanned(True)
@@ -2132,8 +2210,8 @@ class MainWindow(QMainWindow, Async):
                     self.open_task(error.current)
             else:
                 self.pending_action = None
-                if isinstance(result, dict) and 'select_personal_board' in result:
-                    self.board_id = result['select_personal_board']
+                if isinstance(result, dict) and 'select_board' in result:
+                    self.board_id = result['select_board']
                     self.pages.setCurrentIndex(0)
                 self.status.setText(success)
                 self.refresh()
@@ -2159,31 +2237,50 @@ class MainWindow(QMainWindow, Async):
             choice, ok = QInputDialog.getItem(self, 'Архив личных досок', 'Восстановить доску:', choices, 0, False)
             if ok:
                 bid = boards[choices.index(choice)]['id']
-                self.mutate(lambda rid: {'select_personal_board': self.store.restore_personal_board(bid, rid)}, 'Личная доска восстановлена')
+                self.mutate(lambda rid: {'select_board': self.store.restore_personal_board(bid, rid)}, 'Личная доска восстановлена')
         self.work(self.store.archived_personal_boards, done)
+
+    def create_board(self, folder='work'):
+        if not self.store or not getattr(self, 'permissions', None):
+            self.status.setText('Сначала подключитесь к общей папке')
+            return
+        can_create_shared = self.permissions.get('create_board', False)
+        if folder == 'projects' and not can_create_shared:
+            self.status.setText('Создавать доски в проектах могут менеджер и администратор')
+            return
+        projects = set()
+        current_project = ''
+        for board_id, name, personal in self.tree_structure:
+            project, separator, _ = name.partition(' / ')
+            if not personal and separator:
+                projects.add(project)
+                if board_id == self.board_id:
+                    current_project = project
+        dialog = BoardCreateDialog(can_create_shared, folder, sorted(projects, key=str.casefold),
+                                   current_project, self)
+        if dialog.exec_() == QDialog.Accepted:
+            name, personal = dialog.values()
+            columns = ['Бэклог', 'В работе', 'На проверке', 'Готово']
+            self.mutate(lambda rid: {'select_board': self.store.board_action(
+                name, request_id=rid, column_names=columns, personal=personal)}, 'Доска создана')
 
     def board_action(self, action):
         if not self.store:
             self.status.setText('Сначала подключитесь к общей папке')
             return
         item = self.boards_list.currentItem()
-        if action not in ('create', 'create_personal') and not item:
+        if not item:
             return
-        bid = item.data(Qt.UserRole) if item else None
-        if action == 'create_personal':
-            name, ok = QInputDialog.getText(self, 'Личная доска', 'Название личной доски:')
-            if ok:
-                self.mutate(lambda rid: {'select_personal_board': self.store.board_action(name, request_id=rid, column_names=['Бэклог', 'В работе', 'На проверке', 'Готово'], personal=True)}, 'Личная доска создана')
-            return
+        bid = item.data(Qt.UserRole)
         if action == 'archive':
             name = item.text()
             if QMessageBox.question(self, 'Архивирование доски', 'Архивировать «' + name + ('»? Её можно будет восстановить из архива личных досок.' if getattr(self, 'permissions', {}).get('personal') else '»? Доска будет скрыта у всех сотрудников.'), QMessageBox.Yes | QMessageBox.No, QMessageBox.No) != QMessageBox.Yes:
                 return
             self.mutate(lambda rid: self.store.board_action(name, bid, True, rid))
         else:
-            name, ok = QInputDialog.getText(self, 'Доска', 'Название (можно Проект / Доска):', text=item.text() if action == 'rename' else '')
+            name, ok = QInputDialog.getText(self, 'Доска', 'Название (можно Проект / Доска):', text=item.text())
             if ok:
-                self.mutate(lambda rid: self.store.board_action(name, bid if action == 'rename' else None, request_id=rid, column_names=['Бэклог', 'В работе', 'На проверке', 'Готово'] if action == 'create' else None))
+                self.mutate(lambda rid: self.store.board_action(name, bid, request_id=rid))
 
     def edit_columns(self):
         if not self.board_id:
