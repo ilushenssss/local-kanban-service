@@ -1200,15 +1200,15 @@ class MainWindow(QMainWindow, Async):
         self.board_tree.setColumnWidth(1, 42)
         self.board_tree.setItemDelegate(BoardBadgeDelegate(self.board_tree))
         self.board_tree.setIndentation(14)
-        self.board_tree.setAccessibleName('Рабочие и личные доски')
+        self.board_tree.setAccessibleName('Рабочие доски, проекты и личное')
+        self.board_items = {}
+        self.my_tasks_item = None
         self.board_tree.itemClicked.connect(self.select_tree_board)
         self.board_tree.itemActivated.connect(self.select_tree_board)
         side.addWidget(self.board_tree, 1)
         self.create_board_button = button('Создать доску', lambda: self.board_action('create'), side, 'quiet')
         self.create_board_button.setToolTip('Создание рабочей доски доступно менеджеру и администратору. Личную доску можно создать в разделе «Личное».')
         side.addSpacing(18)
-        self.my_nav = button('Мои задачи', lambda: self.pages.setCurrentWidget(self.my_tasks), side, 'quiet')
-        self.my_nav.setCheckable(True)
         self.report_nav = button('Отчёты', lambda: self.pages.setCurrentWidget(self.statistics), side, 'quiet')
         self.report_nav.setCheckable(True)
         self.users_button = button('Сотрудники', lambda: self.open_catalog('users'), side, 'quiet')
@@ -1404,13 +1404,15 @@ class MainWindow(QMainWindow, Async):
             self.narrow_search_row.setVisible(not wide)
 
     def update_navigation(self, index=None):
-        self.my_nav.setChecked(self.pages.currentWidget() is self.my_tasks)
+        personal = self.pages.currentWidget() is self.my_tasks
         self.report_nav.setChecked(self.pages.currentWidget() is self.statistics)
-        if self.pages.currentWidget() is self.my_tasks:
-            self.board_title.setText('Мои задачи')
-        else:
-            current = self.boards_list.currentItem()
-            self.board_title.setText(current.text() if current else 'Выберите доску')
+        current = self.boards_list.currentItem()
+        title = 'Мои задачи' if personal else current.text() if current else 'Выберите доску'
+        self.board_title.setText(title)
+        self.board_title.setToolTip(title)
+        node = self.my_tasks_item if personal else self.board_items.get(self.board_id)
+        if node is not None and self.board_tree.currentItem() is not node:
+            self.board_tree.setCurrentItem(node)
 
     def apply_menu_permissions(self, menu):
         permissions = getattr(self, 'permissions', {})
@@ -1530,10 +1532,14 @@ class MainWindow(QMainWindow, Async):
         self.sidebar.layout().activate()
 
     def select_tree_board(self, item, column):
-        if item.data(0, Qt.UserRole + 1) == 'create_personal':
+        action = item.data(0, Qt.UserRole + 1)
+        if action == 'my_tasks':
+            self.pages.setCurrentWidget(self.my_tasks)
+            return
+        if action == 'create_personal':
             self.board_action('create_personal')
             return
-        if item.data(0, Qt.UserRole + 1) == 'personal_archive':
+        if action == 'personal_archive':
             self.restore_personal_board()
             return
         board_id = item.data(0, Qt.UserRole)
@@ -1706,24 +1712,23 @@ class MainWindow(QMainWindow, Async):
         self.board_counts = counts
         for board_id, chat in self.board_chats.items():
             chat.update_unread(counts.get(board_id, {}).get('chat', 0))
-        for row in range(self.board_tree.topLevelItemCount()):
-            group = self.board_tree.topLevelItem(row)
-            total = 0
-            for index in range(group.childCount()):
-                item = group.child(index)
-                bid = item.data(0, Qt.UserRole)
-                if bid is None:
-                    continue
+        def update_item(item):
+            bid = item.data(0, Qt.UserRole)
+            if bid is not None:
                 badge = counts.get(bid, {'chat': 0, 'tasks': 0, 'total': 0})
-                count = badge['total']
-                item.setText(1, '99+' if count > 99 else (str(count) if count else ''))
+                total = badge['total']
                 title = item.data(0, Qt.UserRole + 2) or item.text(0)
                 tooltip = '{}\nЧат: {} · Задачи: {}'.format(title, badge['chat'], badge['tasks'])
                 item.setToolTip(0, tooltip)
-                item.setToolTip(1, tooltip)
-                total += count
-            group.setText(1, '99+' if total > 99 else (str(total) if total else ''))
-            group.setToolTip(1, 'Непрочитанных уведомлений: {}'.format(total))
+            else:
+                total = sum(update_item(item.child(index)) for index in range(item.childCount()))
+                tooltip = 'Непрочитанных уведомлений: {}'.format(total)
+            item.setText(1, '99+' if total > 99 else (str(total) if total else ''))
+            item.setToolTip(1, tooltip)
+            return total
+
+        for row in range(self.board_tree.topLevelItemCount()):
+            update_item(self.board_tree.topLevelItem(row))
 
     def activate_board_chat(self, board_id, name=''):
         if self.messenger.board_id == board_id:
@@ -1854,38 +1859,7 @@ class MainWindow(QMainWindow, Async):
             structure = [(b['id'], b['name'], b['personal']) for b in boards]
             if structure != getattr(self, 'tree_structure', None):
                 self.tree_structure = structure
-                self.board_tree.clear()
-                groups = {}
-                for board_id, name, personal_board in structure:
-                    if personal_board:
-                        continue
-                    project, separator, title = name.partition(' / ')
-                    group_name = project if separator else 'Рабочие доски'
-                    if group_name == 'Личное':
-                        group_name = 'Личное (рабочие доски)'
-                    if group_name not in groups:
-                        groups[group_name] = QTreeWidgetItem(self.board_tree, [group_name])
-                        groups[group_name].setExpanded(True)
-                    item = QTreeWidgetItem(groups[group_name], [title if separator else name])
-                    item.setData(0, Qt.UserRole, board_id)
-                    item.setData(0, Qt.UserRole + 2, name)
-                if not groups:
-                    QTreeWidgetItem(self.board_tree, ['Рабочие доски'])
-                private = QTreeWidgetItem(self.board_tree, ['Личное'])
-                private.setToolTip(0, 'Доски видны только вам')
-                private.setExpanded(True)
-                create = QTreeWidgetItem(private, ['＋ Создать доску'])
-                create.setFirstColumnSpanned(True)
-                create.setData(0, Qt.UserRole + 1, 'create_personal')
-                create.setToolTip(0, 'Создать личную доску — доступна только вам')
-                for board_id, name, personal_board in structure:
-                    if personal_board:
-                        item = QTreeWidgetItem(private, [name])
-                        item.setData(0, Qt.UserRole, board_id)
-                        item.setData(0, Qt.UserRole + 2, name)
-                archive = QTreeWidgetItem(private, ['Архив личных досок…'])
-                archive.setFirstColumnSpanned(True)
-                archive.setData(0, Qt.UserRole + 1, 'personal_archive')
+                self.rebuild_board_tree(structure)
             wanted = [(b['id'], b['name']) for b in boards]
             current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
             self.board_tabs.blockSignals(True)
@@ -1924,12 +1898,6 @@ class MainWindow(QMainWindow, Async):
             self.boards_list.blockSignals(False)
             if not selected:
                 self.board_title.setText('Создайте первую доску')
-            for group_index in range(self.board_tree.topLevelItemCount()):
-                group = self.board_tree.topLevelItem(group_index)
-                for child_index in range(group.childCount()):
-                    child = group.child(child_index)
-                    if selected is not None and child.data(0, Qt.UserRole) == selected:
-                        self.board_tree.setCurrentItem(child)
             self.update_board_badges(self.board_counts)
             self.update_navigation()
             self.columns_data = columns
@@ -1938,6 +1906,45 @@ class MainWindow(QMainWindow, Async):
             self.set_access_restricted(False)
             self.status.clear()
         self.work(read, done)
+
+    def rebuild_board_tree(self, structure):
+        self.board_tree.clear()
+        self.board_items.clear()
+        work = QTreeWidgetItem(self.board_tree, ['Рабочие доски'])
+        projects = QTreeWidgetItem(self.board_tree, ['Проекты'])
+        private = QTreeWidgetItem(self.board_tree, ['Личное'])
+        private.setToolTip(0, 'Мои задачи и доски, видимые только вам')
+        for folder in (work, projects, private):
+            folder.setExpanded(True)
+
+        self.my_tasks_item = QTreeWidgetItem(private, ['Мои задачи'])
+        self.my_tasks_item.setFirstColumnSpanned(True)
+        self.my_tasks_item.setData(0, Qt.UserRole + 1, 'my_tasks')
+        create = QTreeWidgetItem(private, ['＋ Создать доску'])
+        create.setFirstColumnSpanned(True)
+        create.setData(0, Qt.UserRole + 1, 'create_personal')
+        create.setToolTip(0, 'Создать личную доску — доступна только вам')
+
+        groups = {}
+        for board_id, name, personal_board in structure:
+            project, separator, title = name.partition(' / ')
+            if personal_board:
+                parent, title = private, name
+            elif separator:
+                if project not in groups:
+                    groups[project] = QTreeWidgetItem(projects, [project])
+                    groups[project].setExpanded(True)
+                parent = groups[project]
+            else:
+                parent, title = work, name
+            item = QTreeWidgetItem(parent, [title])
+            item.setData(0, Qt.UserRole, board_id)
+            item.setData(0, Qt.UserRole + 2, name)
+            self.board_items[board_id] = item
+
+        archive = QTreeWidgetItem(private, ['Архив личных досок…'])
+        archive.setFirstColumnSpanned(True)
+        archive.setData(0, Qt.UserRole + 1, 'personal_archive')
 
     def render_board(self, board_id, columns, tasks, totals):
         board = None
