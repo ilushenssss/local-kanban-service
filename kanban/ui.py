@@ -11,7 +11,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
-from .store import Store, Conflict, AccessRestricted
+from .store import Store, Conflict, AccessRestricted, DatabaseTooNew
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
@@ -1765,6 +1765,9 @@ class MainWindow(QMainWindow, Async):
             self.loading = False
             if isinstance(error, AccessRestricted):
                 self.set_access_restricted(True)
+                return
+            if isinstance(error, DatabaseTooNew):
+                self.status.setText(str(error))
                 return
             if error:
                 self.status.setText('Общая папка недоступна: ' + error_text(error) + '. Проверьте kanban.ini и нажмите «Обновить».')

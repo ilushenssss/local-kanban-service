@@ -10,7 +10,7 @@ from PyQt5 import sip
 from PyQt5.QtCore import Qt, QDate, QPoint, QSettings
 from PyQt5.QtTest import QTest
 from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea
-from kanban.store import Store
+from kanban.store import SCHEMA_VERSION, Store
 from kanban.cards import TASK_NOTICE_ROLE
 from kanban.theme import stylesheet
 from kanban.ui import BoardCreateDialog, MainWindow, TaskDialog, CatalogDialog
@@ -83,6 +83,21 @@ class UITest(unittest.TestCase):
     def grant_all(self, board_id):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
+
+    def test_newer_database_reports_required_client_update(self):
+        newer = SCHEMA_VERSION + 1
+        with self.store.connection() as connection:
+            connection.execute('PRAGMA user_version={}'.format(newer))
+        original = self.store.db.read_bytes()
+        window = MainWindow(str(self.store.folder))
+        self.windows.append(window)
+        window.show()
+        wait_for(lambda: not window.loading and not window.jobs)
+        self.assertIsNone(window.store)
+        self.assertIn('схемы базы — v{}'.format(newer), window.status.text())
+        self.assertIn('поддерживает до v{}'.format(SCHEMA_VERSION), window.status.text())
+        self.assertIn('Обновите файлы TeamSync', window.status.text())
+        self.assertEqual(self.store.db.read_bytes(), original)
 
     def test_sidebar_badges_show_source_and_clear_only_read_events(self):
         self.store.save_user('badge-user', 'Получатель')

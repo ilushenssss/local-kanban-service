@@ -13,6 +13,9 @@ import time
 import uuid
 
 
+SCHEMA_VERSION = 9
+
+
 # Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
 TASK_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:task:' || :uid || ':' || n.id)"
 CHAT_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:chat:' || :uid || ':' || m.id)"
@@ -26,6 +29,14 @@ def mention_logins(text):
 
 def now():
     return dt.datetime.now(dt.timezone.utc).replace(microsecond=0).isoformat().replace('+00:00', 'Z')
+
+
+class DatabaseTooNew(RuntimeError):
+    def __init__(self, version):
+        super().__init__(
+            'Версия схемы базы — v{}, этот клиент поддерживает до v{}. '
+            'Обновите файлы TeamSync и запустите приложение из обновлённой папки.'.format(version, SCHEMA_VERSION)
+        )
 
 
 class Conflict(Exception):
@@ -87,8 +98,8 @@ class Store:
         with self.exclusive():
             with self.connection() as c:
                 version = c.execute('PRAGMA user_version').fetchone()[0]
-                if version > 9:
-                    raise RuntimeError('База создана более новой версией программы')
+                if version > SCHEMA_VERSION:
+                    raise DatabaseTooNew(version)
                 c.executescript(SCHEMA)
                 c.execute('BEGIN IMMEDIATE')
                 c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(1,?)', (now(),))
