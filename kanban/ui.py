@@ -12,6 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
 from .store import Store, Conflict, AccessRestricted, DatabaseTooNew
+from . import redmine
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
@@ -1200,10 +1201,14 @@ class ColumnsDialog(QDialog):
 
 
 class MainWindow(QMainWindow, Async):
-    def __init__(self, folder):
+    def __init__(self, folder, redmine_url='', redmine_statuses=None):
         super().__init__()
         self.init_async()
         self.folder = folder
+        self.redmine_url = redmine_url
+        self.redmine_statuses = {redmine.status_key(k): v.strip() for k, v in (redmine_statuses or {}).items()}
+        self.redmine_client = None
+        self.redmine_refresh_message = ''
         self.store = None
         self.access_restricted = False
         self.hidden_task_dialogs = set()
@@ -1515,7 +1520,9 @@ class MainWindow(QMainWindow, Async):
         self.search.setEnabled(not empty_section)
         self.clear_search_button.setEnabled(not empty_section)
         can_create = getattr(self, 'permissions', {}).get('create', False)
-        self.new_task_button.setEnabled(not empty_section and can_create and bool(self.board_id))
+        project = self.project_sections_board == self.board_id and self.board_id is not None
+        current_work = self.pages.currentIndex() == 0 and not empty_section
+        self.new_task_button.setEnabled(can_create and bool(self.board_id) and (current_work or not project))
 
     def apply_menu_permissions(self, menu):
         permissions = getattr(self, 'permissions', {})
@@ -1547,7 +1554,7 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Переименовать доску', lambda: self.board_action('rename'))
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
         menu.addSeparator()
-        menu.addAction('Обновить', self.refresh)
+        menu.addAction('Обновить', self.refresh_workspace)
         self.notifications.add_settings(menu)
         menu.addAction('Часовой пояс…', self.change_timezone)
         menu.addAction('Резервная копия', self.backup)
@@ -1756,6 +1763,8 @@ class MainWindow(QMainWindow, Async):
         self.filters_changed()
 
     def new_task_in_column(self, column_id):
+        if self.project_sections_board == self.board_id:
+            return
         if not getattr(self, 'permissions', {}).get('create', False):
             self.status.setText('Создавать задачи могут менеджер и администратор')
             return
@@ -1769,6 +1778,7 @@ class MainWindow(QMainWindow, Async):
         self.access_restricted = restricted
         self.centralWidget().setVisible(not restricted)
         if restricted:
+            self.redmine_client = None
             self.last_snapshot = None
             self.generation += 1
             self.messenger.deactivate()
@@ -1947,6 +1957,7 @@ class MainWindow(QMainWindow, Async):
                 return
             snapshot = (page, result, dt.date.today().isoformat())
             if snapshot == self.last_snapshot:
+                self.redmine_refresh_message = ''
                 return
             self.last_snapshot = snapshot
             boards, selected, columns, tasks, totals, catalogs, personal = result
@@ -2010,7 +2021,11 @@ class MainWindow(QMainWindow, Async):
             if page == 0:
                 self.render_board(selected, columns, tasks, totals)
             self.set_access_restricted(False)
-            self.status.clear()
+            if self.redmine_refresh_message:
+                self.status.setText(self.redmine_refresh_message)
+                self.redmine_refresh_message = ''
+            else:
+                self.status.clear()
         self.work(read, done)
 
     def rebuild_board_tree(self, structure):
@@ -2059,7 +2074,7 @@ class MainWindow(QMainWindow, Async):
 
     def render_board(self, board_id, columns, tasks, totals):
         board = None
-        structure = (board_id, columns)
+        structure = (board_id, columns, self.project_sections_board == board_id)
         if structure != getattr(self, 'card_structure', None):
             self.card_structure = structure
             self.expanded_task_ids.clear()
@@ -2093,6 +2108,7 @@ class MainWindow(QMainWindow, Async):
                 layout.addLayout(header_row)
                 add_task = button('Добавить задачу', lambda checked=False, cid=column['id']: self.new_task_in_column(cid), layout)
                 add_task.setObjectName('AddColumnTask')
+                add_task.setVisible(board_id != self.project_sections_board)
                 add_task.setCursor(Qt.PointingHandCursor)
                 cards = Cards(column['id'], self.expanded_task_ids)
                 cards.counter = counter
@@ -2196,6 +2212,9 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Выберите задачу')
 
     def open_task(self, task):
+        if task.get('redmine_id'):
+            self.show_redmine_task(task)
+            return
         if task.get('id') and 'history' not in task:
             self.open_personal_task(task)
         else:
@@ -2210,12 +2229,166 @@ class MainWindow(QMainWindow, Async):
         d.destroyed.connect(lambda: self.dialogs.discard(d))
         d.show()
 
+    def show_redmine_task(self, task):
+        if self.access_restricted:
+            return
+
+        def done(tasks, error):
+            if error:
+                self.status.setText(error_text(error))
+                return
+            if self.access_restricted:
+                return
+            current = next((entry for entry in tasks if entry['issue_id'] == task['redmine_id']), None)
+            if current is None:
+                return
+            dialog = QDialog(self)
+            dialog.setWindowTitle('ТИ-{} · Redmine'.format(current['issue_id']))
+            dialog.setMinimumWidth(430)
+            layout = QVBoxLayout(dialog)
+            heading = QLabel(current['title'])
+            heading.setObjectName('Heading')
+            heading.setTextFormat(Qt.PlainText)
+            heading.setWordWrap(True)
+            layout.addWidget(heading)
+            form = QFormLayout()
+            for label, value in [
+                ('Статус задачи', current['status']), ('Основание', '—'),
+                ('Баги', '—'), ('КРИС ТИ', '—'), ('Согласование отделов', '—'),
+                ('Согласование приложений', '—'), ('Приложения', '—'),
+            ]:
+                field = QLabel(value)
+                field.setTextFormat(Qt.PlainText)
+                field.setWordWrap(True)
+                form.addRow(label, field)
+            style_form(form)
+            layout.addLayout(form)
+            button('Закрыть', dialog.accept, layout)
+            dialog.exec_()
+            dialog.deleteLater()
+
+        self.work(lambda: self.store.redmine_tasks(task['board_id']), done)
+
+    def redmine_operation(self, operation, success):
+        if self.access_restricted or self.mutating or self.pending_action:
+            self.status.setText('Дождитесь завершения текущей операции')
+            return
+        if not self.redmine_url:
+            self.status.setText('Укажите HTTPS-адрес Redmine в разделе [redmine] файла kanban.ini.')
+            return
+        client = self.redmine_client
+        credentials = None
+        if client is None:
+            dialog = QDialog(self)
+            dialog.setWindowTitle('Вход в Redmine')
+            layout = QVBoxLayout(dialog)
+            form = QFormLayout()
+            login = QLineEdit(self.store.login)
+            password = QLineEdit()
+            password.setEchoMode(QLineEdit.Password)
+            form.addRow('Логин Redmine', login)
+            form.addRow('Пароль Redmine', password)
+            layout.addLayout(form)
+            layout.addWidget(QLabel('Вход сохраняется до выхода из TeamSync.'))
+            actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+            actions.button(QDialogButtonBox.Ok).setText('Войти')
+            actions.button(QDialogButtonBox.Cancel).setText('Отмена')
+            actions.accepted.connect(dialog.accept)
+            actions.rejected.connect(dialog.reject)
+            layout.addWidget(actions)
+            password.setFocus()
+            if dialog.exec_() == QDialog.Accepted:
+                credentials = login.text().strip(), password.text()
+            password.clear()
+            dialog.deleteLater()
+            if credentials is None:
+                return
+            if not all(credentials):
+                self.status.setText('Введите логин и пароль Redmine')
+                return
+
+        def apply(rid):
+            # Drop the password captured by the retry closure once a client is made.
+            nonlocal client, credentials
+            if client is None:
+                try:
+                    client = redmine.connect(self.redmine_url, *credentials)
+                finally:
+                    credentials = None
+            try:
+                return {'redmine_client': client, 'redmine_errors': operation(client, rid)}
+            except redmine.RedmineAuthError:
+                raise
+            except ValueError as error:
+                # Successful authentication is reusable even when the issue cannot be imported.
+                return {'redmine_client': client, 'redmine_errors': [str(error)]}
+
+        self.mutate(apply, success)
+
+    def refresh_workspace(self):
+        if not self.store or self.project_sections_board is None or self.project_sections_board != self.board_id:
+            self.refresh()
+            return
+        board_id = self.board_id
+        if not self.redmine_url:
+            self.refresh()
+            return
+
+        def update(client, rid):
+            updates, errors = [], []
+            for task in self.store.redmine_tasks(board_id):
+                issue_id = task['issue_id']
+                try:
+                    issue = redmine.read_issue(client, issue_id)
+                except redmine.RedmineAuthError:
+                    raise
+                except redmine.RedmineError as error:
+                    errors.append(str(error))
+                    continue
+                target = redmine.column_name(issue['status'], self.redmine_statuses)
+                updates.append((issue_id, task['revision'], issue['title'], issue['status'], target))
+            if updates:
+                errors.extend(self.store.update_redmine_tasks(board_id, updates))
+            return errors
+
+        self.redmine_operation(update, 'Данные Redmine обновлены')
+
+    def add_redmine_task(self):
+        if not self.redmine_url:
+            self.status.setText('Укажите HTTPS-адрес Redmine в разделе [redmine] файла kanban.ini.')
+            return
+        board_id = self.board_id
+        value, accepted = QInputDialog.getText(self, 'Добавить задачу Redmine', 'Номер задачи в Redmine')
+        if not accepted:
+            return
+        value = value.strip()
+        if not value.isascii() or not value.isdecimal() or len(value) > 19 or not 0 < int(value) <= 2**63 - 1:
+            self.status.setText('Введите положительный номер задачи Redmine')
+            return
+        issue_id = int(value)
+
+        issue = None
+
+        def add(client, rid):
+            nonlocal issue
+            if issue is None:
+                issue = redmine.read_issue(client, issue_id)
+            target = redmine.column_name(issue['status'], self.redmine_statuses)
+            self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid)
+            return []
+
+        self.redmine_operation(add, 'Задача Redmine добавлена')
+
     def new_task(self):
         if not getattr(self, 'permissions', {}).get('create', False):
             self.status.setText('Создавать задачи могут менеджер и администратор')
             return
         if not self.board_id or not self.columns_data:
             self.status.setText('Сначала создайте или выберите доску')
+            return
+        if self.project_sections_board == self.board_id:
+            if self.pages.currentIndex() == 0 and self.project_sections.currentIndex() == 0:
+                self.add_redmine_task()
             return
         self.open_task({'board_id': self.board_id, 'column_id': self.columns_data[0]['id']})
 
@@ -2236,7 +2409,10 @@ class MainWindow(QMainWindow, Async):
             self.mutating = False
             self.retry_button.setVisible(bool(error) and not isinstance(error, (Conflict, ValueError)))
             if error:
-                self.status.setText(error_text(error) + '. При сетевой ошибке нажмите «Повторить запись».')
+                if isinstance(error, redmine.RedmineAuthError):
+                    self.redmine_client = None
+                self.status.setText(error_text(error) if isinstance(error, ValueError) else
+                                    error_text(error) + '. При сетевой ошибке нажмите «Повторить запись».')
                 if isinstance(error, (Conflict, ValueError)):
                     self.pending_action = None
                 if isinstance(error, Conflict):
@@ -2246,7 +2422,14 @@ class MainWindow(QMainWindow, Async):
                 if isinstance(result, dict) and 'select_board' in result:
                     self.board_id = result['select_board']
                     self.pages.setCurrentIndex(0)
-                self.status.setText(success)
+                if isinstance(result, dict) and 'redmine_client' in result:
+                    if not self.access_restricted:
+                        self.redmine_client = result['redmine_client']
+                    success_message = '\n'.join(result['redmine_errors']) or success
+                    self.redmine_refresh_message = success_message
+                else:
+                    success_message = success
+                self.status.setText(success_message)
                 self.refresh()
         self.work(lambda: fn(rid), done)
 
@@ -2340,7 +2523,7 @@ class MainWindow(QMainWindow, Async):
     def move_task(self, task_id, column_id, before_id=None):
         # Use the version shown on screen, so a stale drag cannot overwrite a colleague's edit.
         task = next((cards.item(i).data(Qt.UserRole) for cards in self.card_lists for i in range(cards.count()) if cards.item(i).data(Qt.UserRole)['id'] == task_id), None)
-        if not task:
+        if not task or task.get('redmine_id'):
             return
         task = copy.deepcopy(task)
         displayed = sorted([cards.item(i).data(Qt.UserRole) for cards in self.card_lists for i in range(cards.count()) if cards.item(i).data(Qt.UserRole)['column_id'] == column_id and cards.item(i).data(Qt.UserRole)['id'] != task_id], key=lambda t: (t['position'], t['id']))
@@ -2359,6 +2542,10 @@ class MainWindow(QMainWindow, Async):
             return
         cards.setCurrentItem(item)
         menu = QMenu(self)
+        if item.data(Qt.UserRole).get('redmine_id'):
+            menu.addAction('Открыть карточку', self.open_selected)
+            menu.exec_(cards.viewport().mapToGlobal(point))
+            return
         menu.addAction('Переместить в…', self.move_selected)
         menu.addAction('Восстановить' if item.data(Qt.UserRole)['archived'] else 'Архивировать', self.archive_selected).setEnabled(getattr(self, 'permissions', {}).get('create', False))
         self.drag_state_changed(True)
@@ -2369,6 +2556,8 @@ class MainWindow(QMainWindow, Async):
 
     def move_selected(self):
         task = self.selected_task()
+        if task and task.get('redmine_id'):
+            return
         if not task:
             self.status.setText('Выберите задачу')
             return
@@ -2379,6 +2568,8 @@ class MainWindow(QMainWindow, Async):
 
     def copy_selected(self):
         task = self.selected_task()
+        if self.project_sections_board is not None and self.project_sections_board == self.board_id:
+            return
         if not task:
             self.status.setText('Выберите задачу')
             return
@@ -2396,6 +2587,8 @@ class MainWindow(QMainWindow, Async):
 
     def archive_selected(self):
         task = self.selected_task()
+        if task and task.get('redmine_id'):
+            return
         if not task:
             self.status.setText('Выберите задачу')
             return
@@ -2438,4 +2631,5 @@ class MainWindow(QMainWindow, Async):
         for chat in self.board_chats.values():
             chat.timer.stop()
         self.notifications.shutdown()
+        self.redmine_client = None
         event.accept()

@@ -1,3 +1,13 @@
 [storage]
 ; Local test: data. Production: a UNC directory shared by all clients.
 folder = \\server\Общие\TeamSync\data
+
+[redmine]
+; Leave empty if Redmine is not configured. Use the HTTPS base URL without /issues.
+url =
+
+; Optional mapping from Redmine status to the exact TeamSync column name.
+; By default TeamSync matches status and column by name.
+[redmine.status]
+; Новый = Проект ТИ
+; Открыт = ТИ открыто

@@ -726,6 +726,65 @@ class UITest(unittest.TestCase):
         self.assertFalse(tabs.tabBar().isVisible())
         self.assertTrue(w.scroll.isVisible())
 
+    def test_redmine_import_and_shared_refresh(self):
+        from PyQt5.QtWidgets import QInputDialog, QLineEdit
+        from kanban.redmine import RedmineAuthError
+        board = self.store.board_action('Разработка / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
+        self.grant_all(board)
+        colleague_id = next(u['id'] for u in self.store.access_users() if u['login'] == 'colleague')
+        self.store.set_role(colleague_id, 'employee')
+
+        def window_for(login):
+            with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, login)):
+                window = MainWindow(str(self.store.folder), 'https://redmine.example.test')
+                self.windows.append(window)
+                window.show()
+                wait_for(lambda: not window.loading and board in window.board_items)
+            window.select_tree_board(window.board_items[board], 0)
+            wait_for(lambda: not window.loading and window.board_id == board)
+            return window
+
+        admin = window_for('tester')
+        member = window_for('colleague')
+        self.assertTrue(admin.new_task_button.isEnabled())
+        self.assertFalse(member.new_task_button.isEnabled())
+        self.assertTrue(all(cards.add_task.isHidden() for cards in admin.card_lists))
+
+        def password_dialog(dialog):
+            password = next(field for field in dialog.findChildren(QLineEdit) if field.echoMode() == QLineEdit.Password)
+            password.setText('пример-пароля')
+            return QDialog.Accepted
+
+        with patch.object(QInputDialog, 'getText', return_value=('23018', True)), \
+             patch.object(QDialog, 'exec_', new=password_dialog), \
+             patch('kanban.redmine.connect', side_effect=[RedmineAuthError('Неверный пароль'), object()]) as auth, \
+             patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ'}):
+            admin.new_task_button.click()
+            wait_for(lambda: not admin.mutating)
+            self.assertIsNone(admin.redmine_client)
+            self.assertEqual(self.store.redmine_tasks(board), [])
+            admin.new_task_button.click()
+            wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[0].count() == 1)
+            self.assertEqual(auth.call_count, 2)
+        member.refresh()
+        wait_for(lambda: not member.loading and member.card_lists[0].count() == 1)
+        self.assertIsNone(member.redmine_client)
+        self.assertIn('СП —', member.card_lists[0].item(0).text())
+
+        with patch('kanban.redmine.connect') as auth, patch(
+                'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто'}):
+            admin.refresh_workspace()
+            wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[1].count() == 1)
+            auth.assert_not_called()
+        member.refresh()
+        wait_for(lambda: not member.loading and member.card_lists[1].count() == 1)
+        self.assertEqual(member.card_lists[0].count(), 0)
+        item = member.card_lists[1].item(0)
+        self.assertIn('Открытая ТИ', item.text())
+        self.assertEqual(item.data(Qt.UserRole)['status'], 'ТИ открыто')
+        self.assertFalse(member.card_lists[1].grab().isNull())
+        self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
+
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
         board = self.store.board_action('Разработка / Релиз платформы', column_names=names)

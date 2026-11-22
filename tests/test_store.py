@@ -31,6 +31,30 @@ class StoreTest(unittest.TestCase):
     def create(self):
         r = self.s.save_task(self.base)
         return self.s.detail(r['id'])
+    def test_shared_redmine_cards_and_status_updates(self):
+        board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
+        member = Store(self.s.folder, 'bob')
+        self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        with self.assertRaises(AccessDenied):
+            member.link_redmine_issue(board, 23, 'ТИ', 'Проект ТИ', 'Проект ТИ')
+        with self.assertRaises(ValueError):
+            self.s.link_redmine_issue(board, 23, 'ТИ', 'Неизвестный', 'Неизвестный')
+        self.s.link_redmine_issue(board, 23, 'ТИ', 'Проект ТИ', 'Проект ТИ')
+        with self.assertRaises(ValueError):
+            self.s.link_redmine_issue(board, 23, 'ТИ', 'Проект ТИ', 'Проект ТИ')
+        outsider = Store(self.s.folder, 'outsider')
+        with self.assertRaises(AccessDenied):
+            outsider.redmine_tasks(board)
+        with self.assertRaises(AccessDenied):
+            outsider.update_redmine_tasks(board, [(23, 1, 'ТИ', 'ТИ открыто', 'ТИ открыто')])
+        self.assertEqual(member.update_redmine_tasks(board, [(23, 1, 'Открытая ТИ', 'ТИ открыто', 'ТИ открыто')]), [])
+        self.assertTrue(self.s.update_redmine_tasks(board, [(23, 1, 'Устаревшие данные', 'Старый статус', 'Проект ТИ')]))
+        self.assertTrue(self.s.update_redmine_tasks(board, [(23, 2, 'Неизвестная ТИ', 'Неизвестный', 'Неизвестный')]))
+        _, _, columns, tasks, totals, _, _ = member.board_snapshot(board, {'query': 'ТИ-23'}, 'board')
+        self.assertEqual([(t['redmine_id'], t['title'], t['status'], t['column_id']) for t in tasks],
+                         [(23, 'Открытая ТИ', 'ТИ открыто', columns[1]['id'])])
+        self.assertEqual(totals, {columns[1]['id']: 1})
+
     def test_board_cards_batch_filters_counts_and_access(self):
         original = self.create()
         bob = Store(self.s.folder, 'bob')
@@ -169,7 +193,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(upgraded.detail(task['id'])['title'], task['title'])
         upgraded.team_send('После обновления')
         with upgraded.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 9)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 10)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
 
     def test_create_and_history(self):

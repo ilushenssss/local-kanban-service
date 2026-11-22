@@ -30,7 +30,9 @@ def main():
     app.setOrganizationName('TeamSync')
     app.setStyle('Fusion')
     apply_theme(app, theme_settings().value('dark', False, type=bool))
-    window = MainWindow(str(folder))
+    redmine_url = config.get('redmine', 'url', fallback='').strip()
+    redmine_statuses = dict(config.items('redmine.status')) if config.has_section('redmine.status') else {}
+    window = MainWindow(str(folder), redmine_url, redmine_statuses)
     window.showMaximized()
     return app.exec_()
 

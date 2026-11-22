@@ -47,6 +47,8 @@ def details_document(task, width):
 class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         task = index.data(Qt.UserRole) or {}
+        if task.get('redmine_id'):
+            return QSize(292, 205 + title_extra_height(QFontMetrics(title_font(option.font))))
         height = card_height(task, QFontMetrics(title_font(option.font)))
         if index.data(EXPANDED_ROLE):
             width = max(220, self.parent().viewport().width() - 32)
@@ -61,6 +63,9 @@ class CardDelegate(QStyledItemDelegate):
         t = index.data(Qt.UserRole)
         if not t:
             return super().paint(p, option, index)
+        if t.get('redmine_id'):
+            self.paint_redmine(p, option, t)
+            return
         p.save()
         p.setRenderHint(p.Antialiasing)
         box = option.rect.adjusted(2, 2, -2, -5)
@@ -216,6 +221,64 @@ class CardDelegate(QStyledItemDelegate):
         p.restore()
 
 
+    @staticmethod
+    def paint_redmine(painter, option, task):
+        painter.save()
+        painter.setRenderHint(painter.Antialiasing)
+        card = option.rect.adjusted(2, 2, -2, -5)
+        active = option.state & (QStyle.State_Selected | QStyle.State_HasFocus)
+        painter.setPen(QColor(TOKENS['accent' if active else 'border']))
+        painter.setBrush(QColor(TOKENS['background']))
+        painter.drawRoundedRect(card, 9, 9)
+        painter.setClipRect(card)
+        x, y, width = card.left()+12, card.top()+9, card.width()-24
+
+        def text(caption, left, top, span, height=19, bold=False, color='muted'):
+            font = QFont(option.font)
+            font.setPixelSize(12 if not bold else 15)
+            font.setBold(bold)
+            painter.setFont(font)
+            painter.setPen(QColor(TOKENS[color]))
+            painter.drawText(QRect(left, top, span, height), Qt.AlignLeft | Qt.AlignVCenter,
+                             painter.fontMetrics().elidedText(caption, Qt.ElideRight, span))
+
+        def chip(caption, left, top, span, center=False):
+            rect = QRect(left, top, span, 19)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(TOKENS['hover']))
+            painter.drawRoundedRect(rect, 4, 4)
+            font = QFont(option.font)
+            font.setPixelSize(11)
+            painter.setFont(font)
+            painter.setPen(QColor(TOKENS['secondary']))
+            painter.drawText(rect.adjusted(3, 0, -3, 0), Qt.AlignCenter if center else
+                             Qt.AlignVCenter | Qt.AlignLeft, caption)
+
+        text('ТИ-{}'.format(task['redmine_id']), x, y, width-68, bold=True, color='text')
+        chip('Redmine', x+width-60, y, 60, center=True)
+        font = QFont(option.font)
+        font.setPixelSize(13)
+        painter.setFont(font)
+        painter.setPen(QColor(TOKENS['secondary']))
+        title_rect = QRect(x, y+23, width, 2*painter.fontMetrics().lineSpacing()+2)
+        painter.drawText(title_rect, Qt.AlignTop | Qt.TextWordWrap, ' '.join(task['title'].split()))
+        y = title_rect.bottom()+6
+        chip('СП —', x, y, 48)
+        text('Баги  —', x, y+22, width)
+        text('КРИС ТИ', x, y+44, width-20)
+        text('—', x+width-16, y+44, 16)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(TOKENS['hover']))
+        painter.drawRoundedRect(QRect(x, y+63, width, 4), 2, 2)
+        text('Согласование отделов', x, y+69, width)
+        span = (width-12)//4
+        for index, department in enumerate(('55', '201', 'ОСП', 'ОСЗ')):
+            chip(department+' —', x+index*(span+4), y+88, span, center=True)
+        text('Прил. —', x, y+111, width-20)
+        text('—', x+width-16, y+111, 16)
+        painter.restore()
+
+
 class Cards(QListWidget):
     moved = pyqtSignal(int, int, object)
     dragging = pyqtSignal(bool)
@@ -243,6 +306,9 @@ class Cards(QListWidget):
         self.setFixedHeight(min(650, max(40, height)))
 
     def toggle_details(self, item):
+        if item.data(Qt.UserRole).get('redmine_id'):
+            self.itemClicked.emit(item)
+            return
         expanded = not item.data(EXPANDED_ROLE)
         item.setData(EXPANDED_ROLE, expanded)
         item.setData(Qt.AccessibleDescriptionRole, 'Подробности раскрыты. Пробел — свернуть.' if expanded else 'Пробел — раскрыть подробности.')
@@ -265,7 +331,7 @@ class Cards(QListWidget):
         if item and event.button() == Qt.LeftButton:
             task = item.data(Qt.UserRole)
             metrics = QFontMetrics(title_font(self.viewOptions().font))
-            if CardDelegate.disclosure_rect(self.visualItemRect(item), card_height(task, metrics)).contains(event.pos()):
+            if not task.get('redmine_id') and CardDelegate.disclosure_rect(self.visualItemRect(item), card_height(task, metrics)).contains(event.pos()):
                 self.toggle_details(item)
                 event.accept()
                 return
@@ -283,7 +349,7 @@ class Cards(QListWidget):
         super().keyPressEvent(event)
 
     def startDrag(self, supported_actions):
-        if not self.selectedIndexes():
+        if not self.selectedIndexes() or self.currentItem().data(Qt.UserRole).get('redmine_id'):
             return
         # Own QDrag lifecycle: QListWidget.startDrag may delete source rows after
         # MoveAction, although persistence and repaint are handled asynchronously.
@@ -320,6 +386,11 @@ def set_card_notice(item, count):
 
 def set_card_data(item, task, count):
     item.setData(Qt.UserRole, task)
+    if task.get('redmine_id'):
+        item.setText('ТИ-{} · Redmine\n{}\n{}\nСП — · Баги — · КРИС ТИ —\nСогласование отделов — · Приложения —'.format(
+            task['redmine_id'], task['title'], task['status']))
+        set_card_notice(item, count)
+        return
     names = ', '.join(task['assignee_names']) or 'Без исполнителя'
     due = task['due_date']
     overdue = due and due < dt.date.today().isoformat() and not task['completed_at']

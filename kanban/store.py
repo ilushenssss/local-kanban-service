@@ -12,8 +12,10 @@ import sqlite3
 import time
 import uuid
 
+from .redmine import status_key
 
-SCHEMA_VERSION = 9
+
+SCHEMA_VERSION = 10
 
 
 # Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
@@ -153,6 +155,18 @@ class Store:
                         c.execute('ALTER TABLE users ADD COLUMN restricted INTEGER NOT NULL DEFAULT 0 CHECK(restricted IN (0,1))')
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(9,?)', (now(),))
                     c.execute('PRAGMA user_version=9')
+                if version < 10:
+                    c.execute('''CREATE TABLE IF NOT EXISTS redmine_links(
+                        board_id INTEGER NOT NULL REFERENCES boards(id),
+                        issue_id INTEGER NOT NULL CHECK(issue_id>0),
+                        title TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        column_id INTEGER NOT NULL,
+                        revision INTEGER NOT NULL DEFAULT 1,
+                        PRIMARY KEY(board_id,issue_id),
+                        FOREIGN KEY(column_id,board_id) REFERENCES columns(id,board_id))''')
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(10,?)', (now(),))
+                    c.execute('PRAGMA user_version=10')
                 uid = self.user(c, self.login)
                 restricted = c.execute('SELECT restricted FROM users WHERE id=?', (uid,)).fetchone()[0]
                 c.commit()
@@ -311,6 +325,11 @@ class Store:
             self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
+        elif operation in ('redmine_link', 'redmine_refresh'):
+            self.require(c, 'create_task' if operation == 'redmine_link' else 'read', payload[0])
+            board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (payload[0],)).fetchone()
+            if not board or not self.project_board(board):
+                raise ValueError('Задачи Redmine доступны только на активной проектной доске')
         elif operation in ('task', 'card_task'):
             old = self.task_row(c, payload['id']) if payload.get('id') else None
             self.require(c, 'edit' if old else 'create_task', payload['board_id'])
@@ -758,6 +777,8 @@ class Store:
                 # never point to a different newly created column with a reused ID.
                 self.next_column_id(c)
             for source, target in removed.items():
+                if c.execute('SELECT 1 FROM redmine_links WHERE board_id=? AND column_id=?', (board_id, source)).fetchone():
+                    raise ValueError('Колонка содержит задачи Redmine. Сначала обновите их размещение.')
                 source_name = c.execute('SELECT name FROM columns WHERE id=?', (source,)).fetchone()[0]
                 target_name = next(x['name'] for x in columns if x.get('id') == target)
                 position = c.execute('SELECT COALESCE(MAX(position),0) FROM tasks WHERE column_id=?', (target,)).fetchone()[0]
@@ -912,6 +933,56 @@ class Store:
             tasks[r['task_id']]['unread_count'] = r['total']
         return list(tasks.values())
 
+    def redmine_tasks(self, board_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            self.require(c, 'read', board_id)
+            self.active_board(c, board_id)
+            return [dict(row) for row in c.execute(
+                'SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (board_id,))]
+
+    @staticmethod
+    def redmine_column(c, board_id, name):
+        matches = [column['id'] for column in Store.columns_in(c, board_id)
+                   if status_key(column['name']) == status_key(name)]
+        if len(matches) != 1:
+            raise ValueError('На доске должна быть ровно одна колонка «{}» для этого статуса Redmine'.format(name))
+        return matches[0]
+
+    def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None):
+        if type(issue_id) is not int or not 0 < issue_id <= 2**63 - 1:
+            raise ValueError('Введите положительный номер задачи Redmine')
+
+        def apply(c, uid):
+            column_id = self.redmine_column(c, board_id, target_column)
+            if not c.execute('INSERT OR IGNORE INTO redmine_links(board_id,issue_id,title,status,column_id) VALUES(?,?,?,?,?)',
+                             (board_id, issue_id, title, status, column_id)).rowcount:
+                raise ValueError('Задача Redmine #{} уже добавлена на эту доску'.format(issue_id))
+            return True
+
+        return self.write('redmine_link', [board_id, issue_id, title, status, target_column], apply, request_id)
+
+    def update_redmine_tasks(self, board_id, updates):
+        def apply(c, uid):
+            errors = []
+            for issue_id, revision, title, status, target_column in updates:
+                try:
+                    column_id = self.redmine_column(c, board_id, target_column)
+                except ValueError as error:
+                    errors.append('#{}: {}'.format(issue_id, error))
+                    continue
+                if not c.execute('''UPDATE redmine_links SET title=?, status=?, column_id=?, revision=revision+1
+                                     WHERE board_id=? AND issue_id=? AND revision=?''',
+                                 (title, status, column_id, board_id, issue_id, revision)).rowcount:
+                    errors.append('#{}: карточка уже обновлена другим пользователем'.format(issue_id))
+            return errors
+
+        return self.write('redmine_refresh', [board_id, updates], apply)
+
+    @staticmethod
+    def project_board(board):
+        return not board['personal'] and not board['archived'] and ' / ' in board['name']
+
     def board_snapshot(self, board_id, filters, view):
         with self.connection() as c:
             c.execute('BEGIN')
@@ -925,6 +996,7 @@ class Store:
             if view == 'personal':
                 personal = self.cards_in(c, None, {'assignee': self.login}, actor)
             elif selected is not None:
+                board = next(b for b in boards if b['id'] == selected)
                 tasks = self.cards_in(c, selected, {} if view == 'statistics' else filters)
                 if view == 'board':
                     if any(filters.values()):
@@ -934,6 +1006,21 @@ class Store:
                         for task in tasks:
                             key = task['column_id']
                             totals[key] = totals.get(key, 0) + 1
+                if view in ('board', 'list') and self.project_board(board):
+                    query = (filters.get('query') or '').casefold()
+                    for entry in c.execute('SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (selected,)):
+                        col = entry['column_id']
+                        totals[col] = totals.get(col, 0) + 1
+                        if (filters.get('archived') or filters.get('assignee') or filters.get('label')
+                                or filters.get('priority') or filters.get('overdue') or filters.get('due_from')
+                                or filters.get('due_to')):
+                            continue
+                        if query and query not in ('ТИ-{} {}'.format(entry['issue_id'], entry['title'])).casefold():
+                            continue
+                        tasks.append(dict(entry, id=-entry['issue_id'], redmine_id=entry['issue_id'],
+                                          number=entry['issue_id'], version=entry['revision'], archived=False,
+                                          assignees=[], assignee_names=[], labels=[], due_date=None,
+                                          completed_at=None, priority='Обычный', unread_count=0))
             return boards, selected, columns, tasks, totals, catalogs, personal
 
     def card_details(self, task_id):
