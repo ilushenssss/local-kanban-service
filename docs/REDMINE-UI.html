@@ -1,0 +1,281 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeamSync · Задачи Redmine</title>
+<style>
+  :root {
+    color-scheme: light; font: 14px/1.45 "Segoe UI", Arial, sans-serif;
+    --canvas: #f3f4f7; --ink: #171f2c; --muted: #56627a; --line: #dbe0e8;
+    --teal: #122c34; --teal-light: #e5eeee; --white: #fff;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; color: var(--ink); background: var(--canvas); }
+  button, input, select { font: inherit; color: inherit; }
+  button, select { cursor: pointer; }
+  button:disabled { cursor: default; }
+  :focus-visible { outline: 2px solid #4c8794; outline-offset: 3px; }
+  h1, h2, h3, p { margin: 0; }
+  [hidden] { display: none !important; }
+  .layout { display: grid; grid-template-columns: 223px minmax(0, 1fr); min-height: 100dvh; }
+  aside { background: #fff; border-right: 1px solid var(--line); padding: 24px 15px 20px; position: sticky; top: 0; height: 100dvh; display: flex; flex-direction: column; }
+  .brand { display: flex; align-items: start; gap: 10px; padding-inline: 7px; margin-bottom: 46px; }
+  .brand img { width: 38px; height: 38px; object-fit: contain; margin-top: 2px; }
+  .brand strong, .profile strong { display: block; }
+  small { color: var(--muted); }
+  nav h2 { color: var(--muted); font-size: 12px; font-weight: 500; letter-spacing: .075em; margin: 0 10px 8px; }
+  nav a, nav span { display: block; padding: 9px 13px; text-decoration: none; color: var(--ink); border-radius: 9px; }
+  nav .active { font-weight: 650; background: var(--teal-light); }
+  nav h2:not(:first-child) { margin-top: 20px; }
+  .profile { display: flex; gap: 10px; align-items: center; margin-top: auto; border-top: 1px solid var(--line); padding: 15px 7px 0; }
+  .avatar { background: var(--teal); color: #fff; padding: 8px; border-radius: 50%; font-size: 12px; }
+  main { padding: 0 28px 26px; }
+  header { display: flex; justify-content: space-between; align-items: start; gap: 12px; padding-top: 0; }
+  header h1 { font-size: 32px; line-height: 1.2; letter-spacing: -.045em; }
+  header p { color: var(--muted); font-size: 17px; margin-top: 5px; }
+  .primary { color: #fff; background: var(--teal); border: 1px solid var(--teal); border-radius: 8px; font-weight: 650; padding: 9px 12px; }
+  header .primary { margin-top: 12px; }
+  .toolbar { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; padding: 24px 0 14px; border-bottom: 1px solid var(--line); }
+  .modes { display: inline-flex; background: #e9edf2; padding: 3px; border-radius: 10px; }
+  .modes button { background: transparent; border: 0; border-radius: 8px; padding: 8px 13px; }
+  .modes [aria-pressed="true"] { background: #fff; box-shadow: 0 1px 3px #162c4120; }
+  .filters { display: flex; flex-wrap: wrap; gap: 8px; }
+  input, select, .field { background: #fff; border: 1px solid #ced6e2; border-radius: 8px; min-height: 36px; padding: 7px 11px; }
+  .filters input { width: 232px; max-width: 100%; }
+  .count { color: var(--muted); margin: 12px 0; }
+  .board-scroll { overflow-x: auto; }
+  .board { display: grid; grid-template-columns: repeat(5, minmax(236px, 1fr)); gap: 14px; align-items: start; }
+  .lane { min-width: 0; padding: 0 10px 10px; border: 1px solid #dfe4ed; border-top: 3px solid var(--accent); border-radius: 11px; background: #e8ecf2; }
+  .lane h2 { font-size: 14px; display: flex; align-items: center; justify-content: space-between; gap: 5px; padding: 13px 2px 8px; }
+  .lane-count { background: #fff; min-width: 19px; text-align: center; border-radius: 7px; font-size: 12px; }
+  .add { padding: 0 2px 8px; color: var(--muted); background: none; border: 0; font-size: 13px; }
+  .card { display: block; width: 100%; color: inherit; text-align: left; padding: 12px; background: #fff; border: 1px solid #dde3ed; border-radius: 11px; box-shadow: 0 1px 2px #122c3406; }
+  .card + .card { margin-top: 9px; }
+  .card:hover { border-color: #9bafbe; }
+  .card-head, .metric, .card-foot { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .card-head strong { font-size: 16px; }
+  .card-title { display: block; color: var(--muted); margin: 4px 0 7px; font-size: 13px; }
+  .chip { display: inline-block; background: var(--teal-light); color: #234955; padding: 2px 6px; border-radius: 5px; font-size: 12px; white-space: nowrap; }
+  .bugs { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; margin: 4px 0 9px; font-size: 13px; color: var(--muted); }
+  .good { background: #d6ede4; color: #135747; }
+  .bad { background: #f7dfdd; color: #902c28; }
+  .neutral { background: #e5e9ef; color: #425269; }
+  .waiting { background: #fff0d9; color: #82501b; }
+  .metric, .dept-label, .card-foot { color: var(--muted); font-size: 13px; }
+  progress { display: block; width: 100%; height: 5px; border: 0; border-radius: 4px; margin: 4px 0 7px; overflow: hidden; accent-color: #328678; }
+  progress::-webkit-progress-bar { background: #e9edf3; }
+  progress::-webkit-progress-value { background: #328678; }
+  .depts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 5px; margin: 3px 0 8px; }
+  .depts span { border-radius: 5px; padding: 7px 2px; font-size: 12px; font-weight: 650; text-align: center; }
+  .card-foot { border-top: 1px solid #eceff4; padding-top: 7px; font-size: 12px; }
+  .list { background: #fff; border: 1px solid var(--line); border-radius: 9px; padding: 8px; }
+  .list button { width: 100%; display: grid; grid-template-columns: 85px 1fr minmax(120px, 18%); gap: 12px; text-align: left; background: #fff; border: 0; border-bottom: 1px solid var(--line); padding: 10px; }
+  .list button:hover { background: var(--teal-light); }
+  .empty { color: var(--muted); padding-block: 20px; }
+  dialog { border: 1px solid var(--line); border-radius: 16px; color: var(--ink); width: min(1000px, calc(100% - 18px)); max-height: calc(100dvh - 16px); padding: 0; margin: 8px auto auto; min-height: min(896px, calc(100dvh - 16px)); }
+  dialog::backdrop { background: #19283875; }
+  .dialog-head, .dialog-foot { padding: 14px 22px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  .dialog-head { border-bottom: 1px solid var(--line); }
+  .dialog-foot { border-top: 1px solid var(--line); margin-top: 20px; }
+  .outline { padding: 8px 12px; border: 1px solid #ced6e2; background: #fff; border-radius: 8px; }
+  .dialog-content { padding: 19px 22px 0; }
+  .dialog-content h2 { font-size: 22px; letter-spacing: -.02em; margin-bottom: 12px; }
+  .dialog-grid { display: grid; grid-template-columns: minmax(0, 1fr) 240px; gap: 16px; align-items: start; }
+  .dialog-stack { display: grid; gap: 14px; }
+  .box { border: 1px solid var(--line); border-radius: 9px; padding: 13px 14px; background: #fdfdfe; }
+  .box h3 { font-size: 15px; margin-bottom: 5px; }
+  .box .field { display: block; margin: 4px 0 10px; width: 100%; }
+  .box .field:last-child { margin-bottom: 12px; }
+  .aside-box { background: #f5f6f8; }
+  .decision { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .decision:last-of-type { border-bottom: 0; }
+  .decision span, td span { display: inline-block; min-width: 132px; border: 1px solid #d6dce4; border-radius: 8px; padding: 8px 11px; }
+  .select-dept { margin-top: 6px; color: var(--muted); font-size: 13px; padding: 0; border: 0; background: none; }
+  .approval-scroll { overflow: auto; }
+  table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  th, td:first-child { background: #f4f5f7; color: #535e72; font-weight: 650; }
+  .history { padding-left: 18px; font-size: 13px; color: var(--muted); }
+  @media (max-width: 860px) { .layout { grid-template-columns: 170px minmax(0, 1fr); } main { padding-inline: 16px; } }
+  @media (max-width: 620px) {
+    .layout { display: block; }
+    aside { position: static; height: auto; padding: 10px 16px; }
+    .brand { margin: 0 0 4px; }
+    aside nav, .profile { display: none; }
+    main { padding-top: 12px; }
+    header h1 { font-size: 24px; }
+    header p { font-size: 14px; }
+    header .primary { margin-top: 0; }
+    .dialog-grid { grid-template-columns: 1fr; }
+    .dialog-content, .dialog-head, .dialog-foot { padding-inline: 12px; }
+    .dialog-foot { flex-wrap: wrap; }
+    .filters input { width: 100%; }
+    .list button { grid-template-columns: 68px 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="layout">
+  <aside>
+    <div class="brand"><img src="../kanban/assets/teamsync-logo.png" alt=""><div><strong>TeamSync</strong><small>Рабочее<br>пространство</small></div></div>
+    <nav aria-label="Доски и рабочая область">
+      <h2>ДОСКИ</h2><span>Внутренние задачи</span><a class="active" href="#main" aria-current="page">Задачи Redmine</a>
+      <h2>РАБОЧАЯ ОБЛАСТЬ</h2><span>Мои задачи</span>
+    </nav>
+    <div class="profile"><span class="avatar">АК</span><div><strong>Анна Крылова</strong><small>Отдел ИТ</small></div></div>
+  </aside>
+  <main id="main">
+    <header><div><h1>Задачи Redmine</h1><p>Согласование документов и контроль статусов</p></div>
+      <button class="primary" disabled title="На первом этапе доступен просмотр">Новая задача</button>
+    </header>
+    <div class="toolbar">
+      <div class="modes" aria-label="Вид задач">
+        <button type="button" id="kanban-mode" aria-pressed="true">Канбан</button>
+        <button type="button" id="list-mode" aria-pressed="false">Список</button>
+      </div>
+      <div class="filters">
+        <input id="search" type="search" aria-label="Поиск по названию или номеру" placeholder="Поиск по названию или №">
+        <select id="approval-filter" aria-label="Согласование отделов">
+          <option value="">Все согласования</option>
+          <option value="good">Есть согласованные</option>
+          <option value="bad">Есть замечания</option>
+        </select>
+      </div>
+    </div>
+    <p class="count" id="count" role="status"></p>
+    <p class="empty" id="empty" hidden>Подходящих задач нет.</p>
+    <div class="board-scroll" id="board-scroll" tabindex="0" aria-label="Колонки канбана"><div class="board" id="board"></div></div>
+    <div class="list" id="list" hidden></div>
+  </main>
+</div>
+
+<dialog id="task" aria-labelledby="task-title">
+  <div class="dialog-head">
+    <div><small id="task-id"></small> <span class="chip">Redmine</span></div>
+    <button class="outline" id="close-task" type="button" autofocus>Закрыть</button>
+  </div>
+  <div class="dialog-content">
+    <h2 id="task-title"></h2>
+    <div class="dialog-grid">
+      <div class="dialog-stack">
+        <section class="box"><label for="task-name">Название задачи</label><input id="task-name" class="field" readonly></section>
+        <section class="box">
+          <h3>Согласование отделов</h3><div id="task-departments"></div>
+          <button class="select-dept" type="button" disabled title="На первом этапе доступен просмотр">▸ Выбрать отделы</button>
+        </section>
+        <section class="box" id="attachment-approval">
+          <h3>Согласование приложений</h3><p><small>Решения сотрудников отдела разработчика</small></p>
+          <div class="approval-scroll"><table aria-label="Пример согласования приложений">
+            <thead><tr><th scope="col">Приложение</th><th scope="col">Сафонов</th><th scope="col">Волкова</th></tr></thead>
+            <tbody>
+              <tr><td>Расчёт лицензий.xlsx</td><td><span class="good">Согласовано</span></td><td><span class="waiting">Ожидает</span></td></tr>
+              <tr><td>Коммерческое предложение.pdf</td><td><span class="good">Согласовано</span></td><td><span class="waiting">Ожидает</span></td></tr>
+            </tbody>
+          </table></div>
+        </section>
+      </div>
+      <div class="dialog-stack">
+        <section class="box aside-box">
+          <label for="task-status">Статус задачи</label><select id="task-status" class="field" disabled></select>
+          <h3>Основание</h3>
+          <label for="task-sp">СП</label><input id="task-sp" class="field" readonly>
+          <label for="task-bugs">Баги</label><input id="task-bugs" class="field" readonly>
+        </section>
+        <section class="box"><h3>История</h3><ul class="history"><li>Задача добавлена на доску</li></ul></section>
+      </div>
+    </div>
+  </div>
+  <div class="dialog-foot">
+    <small>Изменения применяются после сохранения</small>
+    <div><button class="outline" type="button" id="cancel-task">Отмена</button>
+      <button class="primary" type="button" disabled title="На первом этапе доступен просмотр">Сохранить изменения</button></div>
+  </div>
+</dialog>
+
+<script>
+  const stageNames = ['Новая', 'На согласовании', 'На доработке', 'Согласована', 'Закрыта'];
+  const stageColors = ['#91a0b4', '#b58236', '#bb6562', '#5576a1', '#488875'];
+  const departmentNames = ['55', '201', 'ОСП', 'ОСЗ'];
+  const decisions = {good: 'Согласовано', bad: 'На доработке', neutral: 'Нет данных', waiting: 'На согласовании'};
+  // Условные данные из макета. Цвет бага отражает результат будущей сверки.
+  const tasks = [
+    {id: 1156, stage: 0, title: 'Согласовать подключение нового подрядчика', sp: 23578, bugs: [48316, 70245, 61428, 89537], progress: [0, 4], departments: ['neutral', 'good', 'neutral', 'neutral'], files: 2, owner: 'МП'},
+    {id: 1153, stage: 0, title: 'Обновить перечень доступов к архиву', sp: 71042, bugs: [39281, 45862, 72914], progress: [0, 2], departments: ['neutral', 'neutral', 'neutral', 'neutral'], files: 1, owner: 'АК'},
+    {id: 1155, stage: 1, title: 'Утвердить регламент обработки заявок', sp: 42186, bugs: [58134, 90327, 36218, 77564], progress: [3, 6], departments: ['neutral', 'good', 'neutral', 'neutral'], files: 3, owner: 'АК'},
+    {id: 1150, stage: 1, title: 'Согласовать закупку лицензий на 2027 год', sp: 56493, bugs: [64317, 25983, 58641], progress: [2, 4], departments: ['neutral', 'neutral', 'waiting', 'good'], files: 2, owner: 'АК'},
+    {id: 1146, stage: 1, title: 'Проверить порядок ротации ключей', sp: 89062, bugs: [28479, 93852, 46170], progress: [1, 4], departments: ['good', 'neutral', 'neutral', 'waiting'], files: 2, owner: 'МП'},
+    {id: 1141, stage: 2, title: 'Доработать договор сопровождения', sp: 30765, bugs: [53602, 73416, 87261, 61945], progress: [0, 4], departments: ['neutral', 'bad', 'good', 'neutral'], files: 2, owner: 'АК'},
+    {id: 1136, stage: 2, title: 'Уточнить смету на модернизацию сети', sp: 65204, bugs: [42763, 54198, 35820], progress: [0, 2], departments: ['good', 'neutral', 'bad', 'neutral'], files: 1, owner: 'ЕС'},
+    {id: 1133, stage: 3, title: 'Утвердить шаблон отчёта по инцидентам', sp: 49618, bugs: [81724, 90416, 57382], progress: [4, 4], departments: ['good', 'neutral', 'neutral', 'good'], files: 2, owner: 'АК'},
+    {id: 1128, stage: 4, title: 'Согласовать продление договора связи', sp: 78135, bugs: [28560, 94632, 72389, 45176], progress: [2, 2], departments: ['neutral', 'good', 'good', 'neutral'], files: 1, owner: 'МП'}
+  ];
+  const find = id => document.getElementById(id);
+  const taskDialog = find('task');
+  let view = 'kanban';
+
+  function card(task) {
+    const [done, total] = task.progress;
+    const bugs = task.bugs.map((id, index) => '<span class="chip ' + (index ? 'good' : 'bad') +
+      '" title="' + (index ? 'Есть в ТИ' : 'Нет в ТИ') + '">' + id + '</span>').join('');
+    const departments = task.departments.map((state, i) => '<span class="' + state + '" title="' +
+      decisions[state] + '">' + departmentNames[i] + '</span>').join('');
+    return '<button class="card" type="button" data-task="' + task.id + '"><span class="card-head"><strong>ТИ-' +
+      task.id + '</strong><span class="chip">Redmine</span></span><span class="card-title">' +
+      task.title + '</span><span class="chip">СП-' + task.sp + '</span><span class="bugs">Баги ' + bugs +
+      '</span><span class="metric"><span>КРИС ТИ</span><span>' + done + '/' + total +
+      '</span></span><progress value="' + done + '" max="' + total + '" aria-label="КРИС ТИ"></progress>' +
+      '<span class="dept-label">Согласование отделов</span><span class="depts">' + departments +
+      '</span><span class="card-foot"><span>' + task.files + ' прил.</span><span>' + task.owner + '</span></span></button>';
+  }
+
+  function render() {
+    const query = find('search').value.trim().toLocaleLowerCase('ru');
+    const approval = find('approval-filter').value;
+    const visible = tasks.filter(task => ('ТИ-' + task.id + ' ' + task.title).toLocaleLowerCase('ru').includes(query) &&
+      (!approval || task.departments.includes(approval)));
+    find('count').textContent = 'Задач: ' + visible.length;
+    find('empty').hidden = visible.length !== 0;
+    find('board-scroll').hidden = view !== 'kanban' || visible.length === 0;
+    find('list').hidden = view !== 'list' || visible.length === 0;
+    find('kanban-mode').setAttribute('aria-pressed', String(view === 'kanban'));
+    find('list-mode').setAttribute('aria-pressed', String(view === 'list'));
+    find('board').innerHTML = stageNames.map((stage, index) => {
+      const bucket = visible.filter(task => task.stage === index);
+      return '<section class="lane" style="--accent:' + stageColors[index] + '"><h2>' + stage +
+        '<span class="lane-count">' + bucket.length + '</span></h2><button class="add" disabled title="На первом этапе доступен просмотр">+ Добавить задачу</button>' +
+        bucket.map(card).join('') + '</section>';
+    }).join('');
+    find('list').innerHTML = visible.map(task => '<button type="button" data-task="' + task.id +
+      '"><strong>ТИ-' + task.id + '</strong><span>' + task.title + '</span><small>' + stageNames[task.stage] + '</small></button>').join('');
+  }
+
+  function openTask(task) {
+    find('task-id').textContent = 'ТИ-' + task.id;
+    find('task-title').textContent = task.title;
+    find('task-name').value = task.title;
+    find('task-status').replaceChildren(new Option(stageNames[task.stage]));
+    find('task-sp').value = 'СП-' + task.sp;
+    find('task-bugs').value = task.bugs.join(', ');
+    const departments = task.departments.flatMap((state, index) => state === 'neutral' ? [] :
+      ['<div class="decision"><div>' + departmentNames[index] + '</div><span class="' + state + '">' +
+       decisions[state] + '</span></div>']);
+    find('task-departments').innerHTML = departments.join('') || '<p><small>Нет данных</small></p>';
+    find('attachment-approval').hidden = task.id !== 1150;
+    taskDialog.showModal();
+  }
+
+  find('main').addEventListener('click', event => {
+    const control = event.target.closest('[data-task]');
+    if (control) openTask(tasks.find(task => task.id === Number(control.dataset.task)));
+  });
+  find('search').addEventListener('input', render);
+  find('approval-filter').addEventListener('change', render);
+  find('kanban-mode').addEventListener('click', () => { view = 'kanban'; render(); });
+  find('list-mode').addEventListener('click', () => { view = 'list'; render(); });
+  find('close-task').addEventListener('click', () => taskDialog.close());
+  find('cancel-task').addEventListener('click', () => taskDialog.close());
+  render();
+</script>
+</body>
+</html>
