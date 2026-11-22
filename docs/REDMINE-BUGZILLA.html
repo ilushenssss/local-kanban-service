@@ -3,199 +3,206 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>TeamSync · Схема интеграции с Redmine и Bugzilla</title>
+<title>TeamSync · Потоки данных Redmine и Bugzilla</title>
 <style>
   :root { color-scheme: dark; font: 15px/1.5 "Segoe UI", Arial, sans-serif; background: #151515; color: #f0f2f4; }
   *, *::before, *::after { box-sizing: border-box; }
   body { margin: 0; }
   main { max-width: 1390px; margin: auto; padding: 24px 28px 40px; }
-  header { display: flex; flex-wrap: wrap; align-items: start; justify-content: space-between; gap: 12px 24px; }
-  h1 { margin: 0; font-size: clamp(23px, 3vw, 34px); line-height: 1.2; }
-  h2 { font-size: 21px; margin: 26px 0 8px; }
-  h3 { font-size: 16px; margin: 0 0 8px; }
-  p { margin: 8px 0; }
+  header, nav, .section-title, .outcomes { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px 20px; }
+  header { justify-content: space-between; }
+  h1, h2, h3, p { margin: 0; }
+  h1 { font-size: clamp(25px, 3vw, 36px); line-height: 1.18; }
+  h2 { font-size: 22px; line-height: 1.25; }
+  h3 { font-size: 16px; }
+  header p, section > p { margin-top: 6px; }
   a { color: #a8d2ff; text-underline-offset: .2em; }
-  :focus-visible { outline: 2px solid #a8d2ff; outline-offset: 3px; }
-  .muted, dt { color: #b5bcc6; }
-  .diagram { overflow: auto; border: 1px solid #555; margin: 16px 0 8px; background: #131313; }
-  svg { display: block; width: 100%; min-width: 1000px; }
-  svg rect { fill: #141414; stroke: #83898f; }
-  svg .python { fill: #72aef1; stroke: #a8d2ff; }
-  svg text { fill: #f1f4f9; font-size: 15px; font-weight: 700; }
-  svg .sub { fill: #b9c1cc; font-size: 13px; font-weight: 400; }
-  svg .on-blue { fill: #101d2e; }
-  svg .edge { stroke: #a5abb2; stroke-width: 1.15; fill: none; marker-end: url(#arrow); }
-  svg .later { stroke-dasharray: 6 5; }
-  svg .edge-label { fill: #bec6d0; font-size: 12px; font-weight: 400; paint-order: stroke fill; stroke: #131313; stroke-width: 6; stroke-linejoin: round; }
-  svg .zone { fill: #97a1ae; font-size: 12px; font-weight: 400; }
-  svg a:hover rect, svg a:focus-visible rect { stroke: #c3e1ff; stroke-width: 2; }
-  .legend { display: flex; flex-wrap: wrap; gap: 8px 24px; color: #bdc6d1; }
-  .legend span::before { display: inline-block; width: 23px; vertical-align: middle; margin-right: 8px; content: ""; border-top: 1px solid; }
-  .legend .next::before { border-top-style: dashed; }
-  .modules { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
-  article { border: 1px solid #555; padding: 14px 16px; background: #1a1a1a; scroll-margin-top: 14px; }
-  #import { margin-top: 20px; }
-  #import h2 { margin-top: 0; }
-  article:target { border-color: #a8d2ff; }
-  dt { font-weight: 650; }
-  dd { margin: 0 0 6px; }
-  dl, ul, ol { margin: 6px 0; }
-  li + li { margin-top: 6px; }
+  :focus-visible { outline: 2px solid #a8d2ff; outline-offset: 4px; }
+  nav { padding: 12px 0; margin-top: 10px; border-bottom: 1px solid #555; }
+  nav a { font-size: 14px; }
+  section { margin-top: 26px; scroll-margin-top: 12px; }
+  .muted, .system { color: #b5bcc6; }
+  .stage { color: #c8e3ff; background: #253a4d; border: 1px solid #516b84; padding: 1px 7px; font-size: 12px; }
+  .stage.later { color: #d5dbe3; background: #282828; border-style: dashed; border-color: #777d84; }
+  .routes { list-style: none; padding: 0; margin: 12px 0 0; display: grid; gap: 8px; }
+  .route {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(100px, .48fr) minmax(0, 1.12fr) minmax(100px, .48fr) minmax(0, 1fr);
+    align-items: stretch;
+  }
+  .node { border: 1px solid #777d84; background: #191919; padding: 11px 13px; min-width: 0; }
+  .python { border-color: #75aee5; background: #1c2d3d; }
+  .target { border-left: 3px solid #80b4a5; }
+  .system { display: block; font-size: 12px; margin-bottom: 2px; }
+  .node p, .note { font-size: 14px; color: #c5ced9; margin-top: 3px; }
+  .edge { display: grid; grid-template-rows: 1fr 10px 1fr; text-align: center; color: #bdc6d1; font-size: 12px; }
+  .edge span { align-self: end; padding: 0 4px 3px; }
+  .edge::after {
+    content: ""; align-self: center; height: 0; border-top: 1px solid #a5abb2;
+  }
+  .edge::before {
+    content: ""; grid-row: 2; grid-column: 1; justify-self: end; align-self: center; z-index: 1;
+    border: 4px solid transparent; border-left-color: #a5abb2; border-right: 0;
+  }
+  .edge::after { grid-row: 2; grid-column: 1; }
+  .edge span { grid-row: 1; grid-column: 1; }
+  .future .edge::after { border-top-style: dashed; }
+  .future .node { border-top-style: dashed; }
+  .outcomes { gap: 5px 12px; font-size: 13px; margin-top: 8px; }
+  .yes { color: #9fdfc8; }
+  .no { color: #ffb3ac; }
+  .unknown { color: #c8cfd9; }
+  .footnotes { border-top: 1px solid #555; padding-top: 12px; }
+  details { border-bottom: 1px solid #555; }
+  summary { cursor: pointer; font-weight: 650; padding: 9px 0; }
+  details ul { margin: 0 0 12px; padding-left: 22px; }
+  details li + li { margin-top: 6px; }
   code { color: #d4e5fb; overflow-wrap: anywhere; }
   .refs { margin-top: 18px; }
-  @media (max-width: 680px) {
-    main { padding: 16px; }
-    .modules { grid-template-columns: 1fr; }
+  @media (max-width: 750px) {
+    main { padding: 18px; }
+    .route { grid-template-columns: 1fr; }
+    .routes { gap: 18px; }
+    .edge { display: flex; justify-content: center; align-items: center; gap: 8px; padding: 4px 0; }
+    .edge span { align-self: auto; padding: 0; }
+    .edge::before { content: "↓"; border: 0; font-size: 16px; }
+    .edge::after { content: none; }
+    .future .edge::before { content: "⇣"; }
   }
 </style>
 </head>
 <body>
 <main>
   <header>
-    <div><h1>TeamSync · Redmine и Bugzilla</h1>
-      <p class="muted">Схема модулей и потоков данных</p></div>
+    <div><h1>TeamSync · Redmine и Bugzilla</h1><p class="muted">От запроса в Python до поля на карточке</p></div>
     <a href="REDMINE-UI.html">Открыть макет доски и карточки →</a>
   </header>
-  <p>Пользователь создаёт карточку TeamSync, вводя только ID задачи Redmine. Python загружает поля ТИ, затем по этому же ID находит КРИС_ТИ и её подзадачи. Bugzilla подключается на следующем этапе для сверки багов.</p>
+  <nav aria-label="Маршруты данных">
+    <a href="#load">Загрузка ТИ</a>
+    <a href="#fields">Поля карточки</a>
+    <a href="#kris">КРИС_ТИ</a>
+    <a href="#bugzilla">Сверка Bugzilla</a>
+  </nav>
 
-  <div class="diagram" tabindex="0" role="region" aria-label="Диаграмма потоков данных. На узком экране прокручивается по горизонтали.">
-    <svg viewBox="0 0 1180 597" role="group" aria-labelledby="map-title map-desc">
-      <title id="map-title">Потоки данных TeamSync</title>
-      <desc id="map-desc">Пользователь вводит ID задачи Redmine. Python получает её поля, ищет КРИС_ТИ по полю «Расположение ТИ» и читает статусы подзадач. Bugzilla подключается пунктирным потоком на следующем этапе.</desc>
-      <defs><marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 L10 5 L0 10 L3 5 Z" fill="#a5abb2"/></marker></defs>
-      <text class="zone" x="24" y="28">ИСТОЧНИКИ</text>
-      <text class="zone" x="462" y="28">PYTHON · КЛИЕНТ TEAMSYNC</text>
-      <text class="zone" x="926" y="28">ИНТЕРФЕЙС TEAMSYNC</text>
-
-      <path class="edge" d="M1041 125 V145 H710"/>
-      <path class="edge" d="M244 88 H372 V145 H462"/>
-      <path class="edge" d="M244 205 H462"/>
-      <path class="edge" d="M244 322 H372 V263 H462"/>
-      <path class="edge" d="M586 285 V354"/>
-      <path class="edge" d="M710 393 H926"/>
-      <path class="edge" d="M1041 438 V510"/>
-      <path class="edge later" d="M244 550 H462"/>
-      <path class="edge later" d="M586 516 V448"/>
-
-      <text class="edge-label" x="749" y="137">Введённый ID задачи ТИ</text>
-      <text class="edge-label" x="255" y="78">Поля и статус ТИ</text>
-      <text class="edge-label" x="255" y="195">КРИС_ТИ, ID и статусы подзадач</text>
-      <text class="edge-label" x="255" y="346">Отделы и решения по ТИ</text>
-      <text class="edge-label" x="600" y="324">ТИ, КРИС_ТИ и согласования</text>
-      <text class="edge-label" x="748" y="383">Карточка и колонка</text>
-      <text class="edge-label" x="1053" y="476">Выбранная ТИ</text>
-      <text class="edge-label" x="257" y="539">Номер ТИ и ID багов</text>
-      <text class="edge-label" x="600" y="484">Баги для сверки</text>
-
-      <a href="#ti" aria-label="Подробности модуля ТИ">
-        <rect x="24" y="51" width="220" height="74"/>
-        <text x="134" y="79" text-anchor="middle">Redmine · ТИ и редакции</text>
-        <text class="sub" x="134" y="102" text-anchor="middle">[номер ТИ, заголовок, статус]</text>
-      </a>
-      <a href="#kris" aria-label="Подробности модуля КРИС_ТИ">
-        <rect x="24" y="168" width="220" height="74"/>
-        <text x="134" y="196" text-anchor="middle">Redmine · КРИС_ТИ</text>
-        <text class="sub" x="134" y="219" text-anchor="middle">[«Расположение ТИ», подзадачи]</text>
-      </a>
-      <a href="#approval" aria-label="Подробности согласования">
-        <rect x="24" y="285" width="220" height="74"/>
-        <text x="134" y="313" text-anchor="middle">Redmine · Согласование</text>
-        <text class="sub" x="134" y="336" text-anchor="middle">[отдел, статус согласования]</text>
-      </a>
-      <a href="#bugzilla" aria-label="Подробности модуля Bugzilla">
-        <rect x="24" y="516" width="220" height="68"/>
-        <text x="134" y="542" text-anchor="middle">Bugzilla · Баги</text>
-        <text class="sub" x="134" y="565" text-anchor="middle">[поле «Номер ТИ», ID бага]</text>
-      </a>
-      <a href="#python" aria-label="Подробности Python-клиента Redmine">
-        <rect x="462" y="117" width="248" height="168"/>
-        <text x="586" y="164" text-anchor="middle">Python · клиент Redmine</text>
-        <text class="sub" x="586" y="187" text-anchor="middle">python-redmine · rm.auth()</text>
-        <text class="sub" x="586" y="218" text-anchor="middle">[получить ТИ по ID, найти КРИС_ТИ,</text>
-        <text class="sub" x="586" y="238" text-anchor="middle">прочитать подзадачи и согласования]</text>
-      </a>
-      <a href="#snapshot" aria-label="Подробности сборки карточки">
-        <rect class="python" x="462" y="354" width="248" height="94"/>
-        <text class="on-blue" x="586" y="383" text-anchor="middle">Python · сборка карточки</text>
-        <text class="sub on-blue" x="586" y="405" text-anchor="middle">[сопоставление по номеру ТИ,</text>
-        <text class="sub on-blue" x="586" y="425" text-anchor="middle">прогресс, согласования, сверка]</text>
-      </a>
-      <a href="#bugzilla" aria-label="Подробности Python-клиента Bugzilla">
-        <rect x="462" y="516" width="248" height="68"/>
-        <text x="586" y="542" text-anchor="middle">Python · клиент Bugzilla</text>
-        <text class="sub" x="586" y="565" text-anchor="middle">[REST GET, следующий этап]</text>
-      </a>
-      <a href="#import" aria-label="Подробности добавления карточки по ID">
-        <rect x="926" y="51" width="230" height="74"/>
-        <text x="1041" y="79" text-anchor="middle">Создание карточки</text>
-        <text class="sub" x="1041" y="102" text-anchor="middle">[только ID задачи Redmine]</text>
-      </a>
-      <a href="#view" aria-label="Подробности доски TeamSync">
-        <rect x="926" y="354" width="230" height="84"/>
-        <text x="1041" y="386" text-anchor="middle">Доска «Задачи Redmine»</text>
-        <text class="sub" x="1041" y="409" text-anchor="middle">[статус ТИ → колонка]</text>
-      </a>
-      <a href="#view" aria-label="Подробности окна задачи">
-        <rect x="926" y="510" width="230" height="74"/>
-        <text x="1041" y="538" text-anchor="middle">Окно задачи</text>
-        <text class="sub" x="1041" y="561" text-anchor="middle">[согласования и подробности]</text>
-      </a>
-    </svg>
-  </div>
-  <div class="legend"><span>Первый этап · чтение Redmine</span><span class="next">Следующий этап · чтение и сверка Bugzilla</span></div>
-
-  <article id="import">
-    <h2>Как создаётся карточка</h2>
-    <ol>
-      <li>Пользователь нажимает «Новая задача» и вводит ID из адреса Redmine <code>/issues/23018</code>.</li>
-      <li>TeamSync загружает номер ТИ, заголовок, статус, согласования отделов, основание и номера багов. ID задачи и номер ТИ могут различаться: например, <code>23018</code> и <code>ТИ-1157</code>.</li>
-      <li>В проекте КРИС_ТИ TeamSync ищет задачу, у которой поле «Расположение ТИ» указывает на исходный ID <code>23018</code>. Затем по собственному ID найденной КРИС_ТИ получает её подзадачи и статусы.</li>
-      <li>TeamSync добавляет карточку в колонку, соответствующую статусу ТИ. Поля заполняются из Redmine автоматически.</li>
+  <section id="load" aria-labelledby="load-title">
+    <div class="section-title"><h2 id="load-title">1. Загрузка исходной ТИ</h2><span class="stage">Первый этап</span></div>
+    <p class="muted">Пример из макета: ID задачи Redmine <strong>23018</strong> соответствует карточке <strong>ТИ-1157</strong>.</p>
+    <ol class="routes">
+      <li class="route">
+        <div class="node"><span class="system">TeamSync · форма</span><h3>«Новая задача»</h3><p>Пользователь вводит только ID из адреса <code>/issues/23018</code>.</p></div>
+        <div class="edge"><span>ID 23018</span></div>
+        <div class="node python"><span class="system">Python · фоновый поток PyQt</span><h3>Чтение задачи</h3><p><code>Redmine(url, username=login, password=password)</code>, <code>rm.auth()</code>, затем <code>rm.issue.get(23018)</code>.</p></div>
+        <div class="edge"><span>Запрос по ID 23018</span></div>
+        <div class="node target"><span class="system">Redmine · исходная задача</span><h3>ТИ #23018</h3><p>Ответ содержит номер ТИ, заголовок, статус, согласования, основание и баги.</p></div>
+      </li>
     </ol>
-  </article>
+    <p class="note">Если исходная задача недоступна или не найдена, TeamSync показывает причину в форме и не создаёт карточку.</p>
+  </section>
 
-  <h2>Что передаёт каждый модуль</h2>
-  <div class="modules">
-    <article id="python"><h3>Python-клиент Redmine</h3>
-      <dl><dt>Вход</dt><dd>URL Redmine, учётные данные пользователя и ID выбранной задачи ТИ.</dd>
-      <dt>Чтение</dt><dd><code>rm = Redmine(url, username=login, password=password)</code>, затем <code>rm.auth()</code>. Получение задачи и связанных данных через <code>rm.issue.get()</code> и <code>rm.issue.filter()</code>. Запросы выполняются в фоновом потоке PyQt.</dd>
-      <dt>Выход</dt><dd>Исходные поля Redmine или результат ошибки для каждого запроса. Повторное обновление заново читает источник.</dd></dl>
-    </article>
-    <article id="ti"><h3>ТИ и редакции ТИ</h3>
-      <dl><dt>Вход</dt><dd>ID задачи Redmine для вызова <code>rm.issue.get(issue_id)</code>.</dd>
-      <dt>Выход</dt><dd>ID Redmine, номер ТИ, заголовок, текущий статус, согласования отделов, основание, список номеров багов и время обновления. Эти номера выводятся на карточке сразу, а позже используются для сверки с Bugzilla.</dd>
-      <dt>Уточнить</dt><dd>Технические ID пользовательских полей в Redmine и формат значений основания, согласований и списка багов.</dd></dl>
-    </article>
-    <article id="kris"><h3>КРИС_ТИ и подзадачи</h3>
-      <ol><li>В проекте КРИС_ТИ искать точное совпадение исходного ID задачи Redmine в поле «Расположение ТИ». Если поле хранит ссылку, сравнивать ID из ссылки. Уточнить ID пользовательского поля, формат значения и доступность фильтрации через API.</li>
-      <li>Для прямых подзадач выполнить <code>rm.issue.filter(parent_id=kris_id, status_id="*")</code>. Получить текущий статус каждой подзадачи. Согласовать уровни вложенности и набор статусов, считающихся завершёнными.</li>
-      <li>Передать список подзадач и прогресс <strong>завершено / всего</strong>. Отдельно обозначать отсутствие связи, несколько совпадений и отсутствие подзадач.</li></ol>
-    </article>
-    <article id="approval"><h3>Согласования отделов</h3>
-      <dl><dt>Вход</dt><dd>Номер ТИ и подтверждённый источник в Redmine.</dd>
-      <dt>Выход</dt><dd>Отдел, исходный статус, статус для отображения и время последнего получения. Например: ОСП — «На согласовании», ОСЗ — «Согласовано».</dd>
-      <dt>Уточнить</dt><dd>Где хранятся решения и как выбирать актуальное среди нескольких записей. Для отсутствующих сведений показывать «Нет данных».</dd></dl>
-    </article>
-    <article id="bugzilla"><h3>Python-клиент Bugzilla · следующий этап</h3>
-      <dl><dt>Вход</dt><dd>Логический номер ТИ, адрес Bugzilla и параметры авторизации установки.</dd>
-      <dt>Чтение</dt><dd>Python выполняет HTTP GET в Bugzilla REST API. Отбор идёт по полю «Номер ТИ». Техническое имя поля и поддерживаемый способ поиска нужно подтвердить на вашей установке.</dd>
-      <dt>Выход</dt><dd>Номера доступных багов после удаления повторов и признак успешной загрузки.</dd></dl>
-    </article>
-    <article id="snapshot"><h3>Сборка карточки в Python</h3>
-      <ol><li>Хранить отдельно числовой ID задачи Redmine для связи через «Расположение ТИ» и номер ТИ для отображения и будущей сверки с Bugzilla.</li>
-      <li>Сформировать данные доски и окна задачи: статус ТИ, согласования, основание, номера багов, статусы подзадач, прогресс КРИС_ТИ и время получения.</li>
-      <li>На этапе Bugzilla сравнить каждый полученный ID бага с номерами в соответствующей ТИ. Совпадение — зелёный, отсутствие после успешной проверки — красный, ошибка загрузки или недоступное поле — нейтральный.</li></ol>
-    </article>
-    <article id="view"><h3>Доска и окно задачи TeamSync</h3>
-      <ul><li>Статус ТИ выбирает колонку. В карточку выводятся название, прохождение КРИС_ТИ и статусы отделов. В окне задачи доступны сведения из карточки и детализация, которую возвращает источник.</li>
-      <li>Пустой ответ, отсутствие прав и сбой сети отображаются отдельно. Если есть ранее загруженные данные, при сбое показывается время их последнего успешного обновления.</li>
-      <li>Первый этап создаёт карточку в TeamSync и читает данные из Redmine. Если исходная задача недоступна, карточка не создаётся. Если КРИС_ТИ не найдена или недоступна, поля ТИ сохраняются, а блок КРИС_ТИ показывает причину. HTML-макет имитирует загрузку по номеру 23018 на условных данных.</li></ul>
-    </article>
-    <article><h3>Из исходного эскиза · уточнить</h3>
-      <p>«Страница текущей версии», «Неосмеченные баги и СП» и «Страница ИД» относятся к будущим экранам. Сопоставление СППИ ЛиП, СП и ИД, а также источник согласования отдельных приложений требуют отдельного описания.</p>
-    </article>
-  </div>
-  <p class="refs"><a href="https://python-redmine.com/resources/issue.html">python-redmine · задачи</a> · <a href="https://bugzilla.readthedocs.io/en/latest/api/core/v1/bug.html">Bugzilla REST API · баги</a></p>
+  <section id="fields" aria-labelledby="fields-title">
+    <div class="section-title"><h2 id="fields-title">2. Поля ТИ → места в TeamSync</h2></div>
+    <p class="muted">Python раскладывает поля одного ответа Redmine по четырём маршрутам.</p>
+    <ol class="routes">
+      <li class="route">
+        <div class="node"><span class="system">Redmine · задача #23018</span><h3>Номер ТИ и заголовок</h3><p>ТИ-1157 · «Согласовать график тестирования».</p></div>
+        <div class="edge"><span>Два отдельных поля</span></div>
+        <div class="node python"><span class="system">Python · данные карточки</span><h3>Сохранить идентификаторы</h3><p>23018 — ключ загрузки. ТИ-1157 — номер для показа и будущей сверки.</p></div>
+        <div class="edge"><span>Номер ТИ и название</span></div>
+        <div class="node target"><span class="system">TeamSync · карточка и окно</span><h3>Шапка задачи</h3><p>Показывает ТИ-1157 и заголовок.</p></div>
+      </li>
+      <li class="route">
+        <div class="node"><span class="system">Redmine · задача #23018</span><h3>Текущий статус</h3><p>«На согласовании».</p></div>
+        <div class="edge"><span>ID и имя статуса</span></div>
+        <div class="node python"><span class="system">Python · сопоставление</span><h3>Выбрать колонку</h3><p>Сопоставить статус Redmine с колонкой доски.</p></div>
+        <div class="edge"><span>Колонка и подпись</span></div>
+        <div class="node target"><span class="system">TeamSync · доска и окно</span><h3>Колонка и поле «Статус»</h3><p>Карточка находится в колонке «На согласовании». В окне виден исходный статус задачи.</p></div>
+      </li>
+      <li class="route">
+        <div class="node"><span class="system">Redmine · поля ТИ</span><h3>Согласования отделов</h3><p>ОСП — «На согласовании», ОСЗ — «Согласовано».</p></div>
+        <div class="edge"><span>Отдел и решение</span></div>
+        <div class="node python"><span class="system">Python · согласования</span><h3>Подготовить статусы отделов</h3><p>Сопоставить исходное решение с подписью и цветом. Пустое поле обозначить как «Нет данных».</p></div>
+        <div class="edge"><span>Список решений</span></div>
+        <div class="node target"><span class="system">TeamSync · карточка и окно</span><h3>«Согласование отделов»</h3><p>На карточке видны компактные отметки. В окне у каждого отдела есть текст статуса.</p></div>
+      </li>
+      <li class="route">
+        <div class="node"><span class="system">Redmine · поля ТИ</span><h3>Основание и номера багов</h3><p>СП-56494 и баги 64319, 25985.</p></div>
+        <div class="edge"><span>СП и список номеров</span></div>
+        <div class="node python"><span class="system">Python · разбор значения</span><h3>Выделить основание и номера</h3><p>Передать основание и список багов без повторов. Результат будущей сверки хранить отдельно.</p></div>
+        <div class="edge"><span>Значения полей</span></div>
+        <div class="node target"><span class="system">TeamSync · карточка и окно</span><h3>«Основание» и «Баги»</h3><p>На первом этапе номера багов из Redmine показываются с нейтральной отметкой.</p></div>
+      </li>
+    </ol>
+  </section>
+
+  <section id="kris" aria-labelledby="kris-title">
+    <div class="section-title"><h2 id="kris-title">3. КРИС_ТИ → подзадачи → прогресс</h2></div>
+    <p class="muted">После успешной загрузки ТИ Python ищет КРИС_ТИ по ID исходной задачи. Подзадачи загружает по собственному ID найденной КРИС_ТИ. В этом примере 23018 ведёт к КРИС_ТИ #7200.</p>
+    <ol class="routes">
+      <li class="route">
+        <div class="node"><span class="system">Вход из маршрута 1</span><h3>ID исходной ТИ</h3><p>Из формы «Новая задача» поступил ID 23018.</p></div>
+        <div class="edge"><span>ID 23018</span></div>
+        <div class="node python"><span class="system">Python · поиск в Redmine</span><h3>Проверить «Расположение ТИ»</h3><p>Искать в проекте КРИС_ТИ точное совпадение ID. Если значение хранит URL, извлечь ID из ссылки.</p></div>
+        <div class="edge"><span>Найденная задача</span></div>
+        <div class="node target"><span class="system">Результат поиска Redmine</span><h3>КРИС_ТИ #7200</h3><p>Поле «Расположение ТИ» указывает на <code>/issues/23018</code>. ID 7200 передаётся в следующий шаг.</p></div>
+      </li>
+      <li class="route">
+        <div class="node"><span class="system">Результат предыдущего шага</span><h3>ID родителя КРИС_ТИ</h3><p>7200 — ID родительской задачи для запроса её подзадач.</p></div>
+        <div class="edge"><span>parent_id = 7200</span></div>
+        <div class="node python"><span class="system">Python · чтение подзадач</span><h3>Получить все статусы</h3><p><code>rm.issue.filter(parent_id=7200, status_id="*")</code> читает прямые подзадачи, включая закрытые.</p></div>
+        <div class="edge"><span>ID, название, статус</span></div>
+        <div class="node target"><span class="system">Redmine · пример ответа</span><h3>Три прямые подзадачи</h3><p>#7201 и #7202 завершены. #7203 в работе.</p></div>
+      </li>
+      <li class="route">
+        <div class="node"><span class="system">Вход из ответа Redmine</span><h3>Список и статусы подзадач</h3><p>Каждая подзадача учитывается по собственному ID.</p></div>
+        <div class="edge"><span>Три подзадачи</span></div>
+        <div class="node python"><span class="system">Python · расчёт прогресса</span><h3>Посчитать завершённые</h3><p>Подсчитать завершённые и общее число. Передать исходный статус каждой подзадачи для детализации.</p></div>
+        <div class="edge"><span>2 из 3 и три статуса</span></div>
+        <div class="node target"><span class="system">TeamSync · карточка и окно</span><h3>Блок «КРИС_ТИ»</h3><p>На карточке прогресс 2/3. В окне задачи виден статус каждой подзадачи.</p></div>
+      </li>
+    </ol>
+    <p class="note">Если КРИС_ТИ не найдена, недоступна или найдено несколько совпадений, поля исходной ТИ остаются доступными. Блок КРИС_ТИ показывает причину. Для найденной КРИС_ТИ с пустым списком отображается «Подзадач нет».</p>
+  </section>
+
+  <section id="bugzilla" class="future" aria-labelledby="bugzilla-title">
+    <div class="section-title"><h2 id="bugzilla-title">4. Redmine + Bugzilla → цвет номера</h2><span class="stage later">Следующий этап</span></div>
+    <ol class="routes">
+      <li class="route">
+        <div class="node"><span class="system">Вход из карточки ТИ</span><h3>Номер ТИ-1157</h3><p>Значение для отбора багов в Bugzilla.</p></div>
+        <div class="edge"><span>Поле «Номер ТИ»</span></div>
+        <div class="node python"><span class="system">Python · Bugzilla REST GET</span><h3>Получить баги по ТИ</h3><p>Отобрать записи по полю «Номер ТИ» и собрать список ID багов.</p></div>
+        <div class="edge"><span>ID багов Bugzilla</span></div>
+        <div class="node target"><span class="system">Bugzilla · пример ответа</span><h3>64319, 25985, 27000</h3><p>Эти ID идут на сверку со списком из Redmine.</p></div>
+      </li>
+      <li class="route">
+        <div class="node"><span class="system">Два списка для одной ТИ</span><h3>Redmine и Bugzilla</h3><p>Redmine: 64319, 25985.<br>Bugzilla: 64319, 25985, 27000.</p></div>
+        <div class="edge"><span>Два списка ID</span></div>
+        <div class="node python"><span class="system">Python · точное сравнение ID</span><h3>Проверить каждый баг из Bugzilla</h3><p>Найти ID в списке исходной ТИ. Красный результат возможен только после успешной загрузки обоих списков.</p></div>
+        <div class="edge"><span>Номер и итог сверки</span></div>
+        <div class="node target"><span class="system">TeamSync · блок «Баги»</span><h3>Цвет и текст результата</h3>
+          <div class="outcomes"><span class="yes">64319, 25985 · есть в ТИ</span><span class="no">27000 · нет в ТИ</span><span class="unknown">Нейтральный · сверка недоступна</span></div>
+        </div>
+      </li>
+    </ol>
+  </section>
+
+  <section class="footnotes" aria-label="Правила реализации">
+    <details open>
+      <summary>Что уточнить перед подключением</summary>
+      <ul>
+        <li>Подтвердить ID проекта КРИС_ТИ, ID поля «Расположение ТИ» и формат его значения. Для Redmine также нужны технические ID полей номера ТИ, основания, согласований и списка багов.</li>
+        <li>Согласовать отображение неизвестных статусов ТИ, набор завершённых статусов КРИС_ТИ и необходимость учитывать вложенные уровни подзадач.</li>
+        <li>Для Bugzilla подтвердить техническое имя поля «Номер ТИ» и способ поиска по нему в вашей установке.</li>
+      </ul>
+    </details>
+    <details>
+      <summary>Обновление и область дальнейшей интеграции</summary>
+      <ul>
+        <li>Обновление повторяет запросы чтения. При ошибке загрузки уже открытой карточки TeamSync показывает время последнего успешного получения данных, если оно известно.</li>
+        <li>«Страница текущей версии», «Неосмеченные баги и СП», «Страница ИД», СППИ ЛиП и согласование отдельных приложений требуют уточнения источников данных.</li>
+      </ul>
+    </details>
+    <p class="refs"><a href="https://python-redmine.com/resources/issue.html">python-redmine · задачи</a> · <a href="https://bugzilla.readthedocs.io/en/latest/api/core/v1/bug.html">Bugzilla REST API · баги</a></p>
+  </section>
 </main>
 </body>
 </html>
