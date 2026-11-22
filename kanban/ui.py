@@ -2293,7 +2293,16 @@ class MainWindow(QMainWindow, Async):
                                    current_project, self)
         if dialog.exec_() == QDialog.Accepted:
             name, personal = dialog.values()
-            columns = ['Бэклог', 'В работе', 'На проверке', 'Готово']
+            if dialog.folder.currentData() == 'projects':
+                columns = [
+                    'Проект ТИ',
+                    'ТИ согласовано внутри отдела',
+                    'ТИ согласовано со смежными отделами',
+                    'ТИ согласовано с РП',
+                    'ТИ открыто',
+                ]
+            else:
+                columns = ['Бэклог', 'В работе', 'На проверке', 'Готово']
             self.mutate(lambda rid: {'select_board': self.store.board_action(
                 name, request_id=rid, column_names=columns, personal=personal)}, 'Доска создана')
 

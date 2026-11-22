@@ -677,6 +677,15 @@ class UITest(unittest.TestCase):
         self.assertEqual(created.parent().parent().text(0), 'Проекты')
         self.assertIs(w.board_tree.currentItem(), created)
         self.assertIn('Разработка / Спринт', [b['name'] for b in self.store.boards()])
+        expected_columns = [
+            'Проект ТИ',
+            'ТИ согласовано внутри отдела',
+            'ТИ согласовано со смежными отделами',
+            'ТИ согласовано с РП',
+            'ТИ открыто',
+        ]
+        self.assertEqual([column['name'] for column in self.store.columns(w.board_id)], expected_columns)
+        self.assertEqual([column['name'] for column in w.columns_data], expected_columns)
         self.assertTrue(tabs.tabBar().isVisible())
         self.assertEqual([tabs.tabText(i) for i in range(tabs.count())],
                          ['Текущие работы', 'ИД', 'Будет определена в дальнейшем'])
@@ -708,6 +717,7 @@ class UITest(unittest.TestCase):
         created = w.board_items[w.board_id]
         self.assertEqual(created.text(0), 'Планирование')
         self.assertEqual(created.parent().text(0), 'Новый проект')
+        self.assertEqual([column['name'] for column in w.columns_data], expected_columns)
         self.assertEqual(tabs.currentIndex(), 0)
         self.assertEqual(created.parent().parent().text(0), 'Проекты')
 
