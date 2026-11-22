@@ -164,6 +164,10 @@ QHeaderView::section { background: %(hover)s; color: %(text)s; padding: 9px; bor
 QTabWidget::pane { border: none; }
 QTabBar::tab { padding: 10px 16px; min-width: 76px; min-height: 22px; font-weight: 600; color: %(muted)s; border-bottom: 2px solid transparent; }
 QTabBar::tab:selected { color: %(selected_text)s; border-bottom: 2px solid %(accent)s; }
+QTabWidget#ProjectSections::tab-bar { left: 20px; }
+QTabBar#ProjectSectionTabs::tab { padding: 7px 15px; min-width: 32px; background: %(hover)s; border: 1px solid %(border)s; border-top-left-radius: 8px; border-top-right-radius: 8px; margin-right: 4px; }
+QTabBar#ProjectSectionTabs::tab:selected { background: %(background)s; color: %(text)s; border-top: 2px solid %(accent)s; }
+QTabBar#ProjectSectionTabs::tab:focus { border-bottom: 2px solid %(accent)s; }
 QScrollArea { background: transparent; border: none; }
 QScrollBar:vertical { background: %(canvas)s; width: 14px; }
 QScrollBar:horizontal { background: %(canvas)s; height: 14px; }

@@ -1377,7 +1377,24 @@ class MainWindow(QMainWindow, Async):
         self.pages.currentChanged.connect(self.update_navigation)
         self.pages.currentChanged.connect(self.page_changed)
         workspace.addWidget(self.pages, 1)
-        content = QVBoxLayout(board_page)
+        board_layout = QVBoxLayout(board_page)
+        board_layout.setContentsMargins(0, 0, 0, 0)
+        self.project_sections = QTabWidget()
+        self.project_sections.setObjectName('ProjectSections')
+        tab_bar = self.project_sections.tabBar()
+        tab_bar.setObjectName('ProjectSectionTabs')
+        tab_bar.setAccessibleName('Разделы проектной доски')
+        tab_bar.setExpanding(False)
+        tab_bar.setUsesScrollButtons(True)
+        tab_bar.hide()
+        self.project_sections_board = None
+        board_layout.addWidget(self.project_sections)
+        current_work = QWidget()
+        self.project_sections.addTab(current_work, 'Текущие работы')
+        self.project_sections.addTab(QWidget(), 'ИД')
+        self.project_sections.addTab(QWidget(), 'Будет определена в дальнейшем')
+        self.project_sections.currentChanged.connect(self.update_board_controls)
+        content = QVBoxLayout(current_work)
         content.setContentsMargins(20, 16, 20, 12)
         content.setSpacing(14)
         filters = QHBoxLayout()
@@ -1485,6 +1502,20 @@ class MainWindow(QMainWindow, Async):
         node = self.my_tasks_item if personal else self.board_items.get(self.board_id)
         if node is not None and self.board_tree.currentItem() is not node:
             self.board_tree.setCurrentItem(node)
+        board_node = self.board_items.get(self.board_id)
+        project_board = self.board_id if board_node is not None and board_node.parent().parent() is not None else None
+        if project_board != self.project_sections_board:
+            self.project_sections_board = project_board
+            self.project_sections.setCurrentIndex(0)
+            self.project_sections.tabBar().setVisible(project_board is not None)
+        self.update_board_controls()
+
+    def update_board_controls(self):
+        empty_section = self.pages.currentIndex() == 0 and self.project_sections.currentIndex() != 0
+        self.search.setEnabled(not empty_section)
+        self.clear_search_button.setEnabled(not empty_section)
+        can_create = getattr(self, 'permissions', {}).get('create', False)
+        self.new_task_button.setEnabled(not empty_section and can_create and bool(self.board_id))
 
     def apply_menu_permissions(self, menu):
         permissions = getattr(self, 'permissions', {})
@@ -1922,7 +1953,6 @@ class MainWindow(QMainWindow, Async):
             self.permissions = catalogs.get('permissions', {})
             self.users_button.setEnabled(self.permissions.get('admin', False))
             self.create_board_button.setEnabled(True)
-            self.new_task_button.setEnabled(self.permissions.get('create', False) and bool(selected))
             if page == 4:
                 self.my_tasks.update_data(personal)
             elif page == 3:

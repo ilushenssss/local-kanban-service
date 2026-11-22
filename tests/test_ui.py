@@ -652,6 +652,8 @@ class UITest(unittest.TestCase):
             w.show()
             wait_for(lambda: not w.loading and w.create_project_item is not None)
         self.assertFalse(w.create_project_item.isDisabled())
+        tabs = w.project_sections
+        self.assertFalse(tabs.tabBar().isVisible())
 
         def fill(dialog):
             self.assertEqual([dialog.folder.itemText(i) for i in range(dialog.folder.count())],
@@ -675,6 +677,22 @@ class UITest(unittest.TestCase):
         self.assertEqual(created.parent().parent().text(0), 'Проекты')
         self.assertIs(w.board_tree.currentItem(), created)
         self.assertIn('Разработка / Спринт', [b['name'] for b in self.store.boards()])
+        self.assertTrue(tabs.tabBar().isVisible())
+        self.assertEqual([tabs.tabText(i) for i in range(tabs.count())],
+                         ['Текущие работы', 'ИД', 'Будет определена в дальнейшем'])
+        self.assertEqual(tabs.currentIndex(), 0)
+        canvas = w.scroll.widget()
+        for index in (1, 2):
+            QTest.mouseClick(tabs.tabBar(), Qt.LeftButton, pos=tabs.tabBar().tabRect(index).center())
+            self.assertEqual(tabs.currentIndex(), index)
+            self.assertIsNone(tabs.currentWidget().layout())
+            self.assertFalse(w.scroll.isVisible())
+            self.assertFalse(w.new_task_button.isEnabled())
+        tabs.setCurrentIndex(0)
+        self.assertIs(w.scroll.widget(), canvas)
+        self.assertTrue(w.scroll.isVisible())
+        self.assertTrue(w.new_task_button.isEnabled())
+        tabs.setCurrentIndex(2)
 
         def fill_new_project(dialog):
             self.assertEqual(dialog.folder.currentData(), 'work')
@@ -690,7 +708,13 @@ class UITest(unittest.TestCase):
         created = w.board_items[w.board_id]
         self.assertEqual(created.text(0), 'Планирование')
         self.assertEqual(created.parent().text(0), 'Новый проект')
+        self.assertEqual(tabs.currentIndex(), 0)
         self.assertEqual(created.parent().parent().text(0), 'Проекты')
+
+        w.select_tree_board(w.board_items[self.bid], 0)
+        wait_for(lambda: not w.loading and w.board_id == self.bid)
+        self.assertFalse(tabs.tabBar().isVisible())
+        self.assertTrue(w.scroll.isVisible())
 
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
