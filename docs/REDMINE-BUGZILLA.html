@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeamSync · Схема интеграции с Redmine и Bugzilla</title>
+<style>
+  :root {
+    color-scheme: light;
+    --canvas: #f4f5f8;
+    --surface: #fff;
+    --line: #dce2e9;
+    --text: #1b1f2a;
+    --muted: #515c70;
+    --teal: #122c34;
+    --teal-soft: #e4eeee;
+    --green: #155848;
+    --green-soft: #dbefe7;
+    --red: #8d302b;
+    --red-soft: #f8e5e4;
+    --amber: #79501c;
+    --amber-soft: #f9efdc;
+    font: 15px/1.55 system-ui, "Segoe UI", sans-serif;
+  }
+  *, *::before, *::after { box-sizing: border-box; }
+  body { margin: 0; background: var(--canvas); color: var(--text); }
+  a { color: var(--green); text-underline-offset: .22em; }
+  :focus-visible { outline: 2px solid var(--green); outline-offset: 4px; }
+  .wrap { width: min(1280px, calc(100% - 64px)); margin-inline: auto; }
+  .top { background: var(--surface); border-bottom: 1px solid var(--line); }
+  .top .wrap { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 24px; padding-block: 14px; }
+  .brand { color: var(--teal); font-weight: 750; font-size: 19px; }
+  nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+  nav a { color: var(--muted); font-size: 14px; }
+  main { padding-block: 32px 44px; }
+  h1, h2, h3, h4, p, dl { margin: 0; }
+  h1 { color: var(--teal); font-size: clamp(30px, 4vw, 46px); line-height: 1.13; letter-spacing: -.04em; }
+  h2 { font-size: 22px; line-height: 1.25; letter-spacing: -.02em; }
+  h3 { font-size: 17px; line-height: 1.3; }
+  h4 { font-size: 14px; }
+  .lead { color: var(--muted); margin-top: 12px; max-width: 76ch; }
+  .section { margin-top: 30px; scroll-margin-top: 16px; }
+  .section-title { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 12px; }
+  .pill { display: inline-block; padding: 2px 8px; font-size: 12px; font-weight: 650; border-radius: 5px; background: var(--teal-soft); color: var(--teal); }
+  .pill.later, .pill.unknown { background: #e9edf2; color: #3f4d60; }
+  .pill.yes { background: var(--green-soft); color: var(--green); }
+  .pill.no { background: var(--red-soft); color: var(--red); }
+  .pill.pending { background: var(--amber-soft); color: var(--amber); }
+  .flow { display: grid; grid-template-columns: minmax(0, 1fr) 76px minmax(0, 1fr) 76px minmax(0, 1fr); align-items: stretch; }
+  .lane, .panel { border: 1px solid var(--line); background: var(--surface); border-radius: 10px; padding: 16px; min-width: 0; }
+  .lane { border-top: 3px solid #8d9cb0; }
+  .lane.rules { border-top-color: #b18342; }
+  .lane.result { border-top-color: #348373; }
+  .stack { display: grid; gap: 8px; margin-top: 12px; }
+  .node { background: var(--canvas); border: 1px solid var(--line); border-radius: 7px; padding: 9px 10px; }
+  .node p, .panel p, .sample-note { color: var(--muted); font-size: 14px; }
+  .node h4 + p, .panel h3 + p, .panel p + p { margin-top: 4px; }
+  .edge { display: grid; align-content: center; justify-items: center; padding-inline: 4px; color: #526779; font-size: 11px; text-align: center; }
+  .edge::after { content: "⟶"; color: var(--green); font-size: 31px; line-height: 1.1; }
+  .flow.secondary .lane { border-top-color: #a3adba; }
+  code { font-family: ui-monospace, Consolas, monospace; font-size: .88em; overflow-wrap: anywhere; }
+  .rules-list { margin: 10px 0 0; padding-left: 20px; }
+  .rules-list li + li { margin-top: 7px; }
+  .preview { display: grid; grid-template-columns: minmax(240px, 325px) minmax(0, 1fr); gap: 14px; align-items: start; }
+  .sample-board { background: #e9edf3; border: 1px solid var(--line); border-top: 3px solid #b18342; padding: 10px; border-radius: 9px; }
+  .sample-card { margin-top: 8px; padding: 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); }
+  .sample-heading { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
+  .sample-card p { font-size: 14px; }
+  .sample-block { margin-top: 11px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 4px; }
+  .sample-note { margin-top: 8px; }
+  .metric { display: flex; gap: 8px; justify-content: space-between; }
+  progress { display: block; margin-top: 4px; width: 100%; height: 8px; border: 0; border-radius: 4px; background: #e9edf2; accent-color: #348373; overflow: hidden; }
+  progress::-webkit-progress-bar { background: #e9edf2; }
+  progress::-webkit-progress-value { background: #348373; }
+  progress::-moz-progress-bar { background: #348373; }
+  details + details { border-top: 1px solid var(--line); }
+  summary { cursor: pointer; font-weight: 650; padding: 9px 0; }
+  details p:last-child, details ul { margin-bottom: 10px; }
+  .references { margin-top: 20px; color: var(--muted); font-size: 14px; }
+  .references a + a { margin-left: 12px; }
+  @media (max-width: 900px) {
+    .wrap { width: calc(100% - 36px); }
+    .flow { grid-template-columns: minmax(0, 1fr) 54px minmax(0, 1fr) 54px minmax(0, 1fr); }
+  }
+  @media (max-width: 700px) {
+    .flow, .preview { grid-template-columns: minmax(0, 1fr); }
+    .edge { padding-block: 5px; }
+    .edge::after { content: "↓"; font-size: 25px; }
+    .references a { display: block; }
+    .references a + a { margin-left: 0; }
+  }
+  @media print {
+    body { background: white; }
+    nav { display: none; }
+    .wrap { width: 100%; }
+    main { padding: 12px 0; }
+    .lane, .sample-board, .panel { break-inside: avoid; }
+  }
+</style>
+</head>
+<body>
+<header class="top">
+  <div class="wrap">
+    <span class="brand">TeamSync</span>
+    <nav aria-label="Разделы схемы">
+      <a href="#redmine">Redmine</a>
+      <a href="#bugzilla">Bugzilla</a>
+      <a href="#card">Пример карточки</a>
+      <a href="#mapping">Поля и статусы</a>
+    </nav>
+  </div>
+</header>
+
+<main class="wrap">
+  <h1>Схема интеграции с Redmine и Bugzilla</h1>
+  <p class="lead">На первом этапе TeamSync показывает текущее состояние ТИ из Redmine в режиме просмотра. По номеру ТИ собираются статусы КРИС_ТИ и согласования отделов. Сверка номеров багов с Bugzilla предусмотрена для следующего этапа.</p>
+
+  <section class="section" id="redmine" aria-labelledby="redmine-title">
+    <div class="section-title">
+      <h2 id="redmine-title">Redmine → TeamSync</h2>
+      <span class="pill">Этап 1 · чтение</span>
+    </div>
+    <div class="flow">
+      <article class="lane">
+        <h3>Redmine</h3>
+        <div class="stack">
+          <div class="node"><h4>ТИ и редакции ТИ</h4><p>Получить задачу по её ID в Redmine. Прочитать номер ТИ, название и текущий статус.</p></div>
+          <div class="node"><h4>КРИС_ТИ</h4><p>Найти связанную задачу по номеру ТИ. Получить её подзадачи и их статусы.</p></div>
+          <div class="node"><h4>Согласование отделов</h4><p>Получить актуальный результат по каждому отделу из данных Redmine, связанных с ТИ.</p></div>
+        </div>
+      </article>
+      <div class="edge">Данные API</div>
+      <article class="lane rules">
+        <h3>Сбор данных по ТИ</h3>
+        <div class="stack">
+          <div class="node"><h4>Общий ключ</h4><p>Номер ТИ связывает записи. ID задачи Redmine хранится отдельно для повторного чтения.</p></div>
+          <div class="node"><h4>Выполнение КРИС_ТИ</h4><p>Посчитать завершённые подзадачи и общее число. Сохранить исходный статус каждой подзадачи.</p></div>
+          <div class="node"><h4>Состояние согласования</h4><p>Сопоставить исходный статус Redmine со статусом отдела в интерфейсе.</p></div>
+        </div>
+      </article>
+      <div class="edge">Данные карточки</div>
+      <article class="lane result">
+        <h3>TeamSync</h3>
+        <div class="stack">
+          <div class="node"><h4>Доска «Задачи Redmine»</h4><p>Колонка определяется текущим статусом ТИ. Примеры: «Новая», «На согласовании», «На доработке».</p></div>
+          <div class="node"><h4>Карточка ТИ</h4><p>Номер и название, прогресс КРИС_ТИ, согласование отделов.</p></div>
+          <div class="node"><h4>Подробности</h4><p>Статусы отдельных подзадач и решений отделов. Обновление повторно читает данные из Redmine.</p></div>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" id="bugzilla" aria-labelledby="bugzilla-title">
+    <div class="section-title">
+      <h2 id="bugzilla-title">Сверка багов</h2>
+      <span class="pill later">Следующий этап</span>
+    </div>
+    <div class="flow secondary">
+      <article class="lane">
+        <h3>Bugzilla и Redmine</h3>
+        <div class="stack">
+          <div class="node"><h4>Bugzilla</h4><p>Собрать номера багов, у которых поле «Номер ТИ» соответствует карточке.</p></div>
+          <div class="node"><h4>Redmine</h4><p>Из соответствующей задачи ТИ извлечь номера упомянутых багов.</p></div>
+        </div>
+      </article>
+      <div class="edge">Два списка</div>
+      <article class="lane rules">
+        <h3>Сравнение по номеру</h3>
+        <ol class="rules-list">
+          <li>Связать баги Bugzilla с карточкой по значению поля «Номер ТИ».</li>
+          <li>Убрать повторы и проверить точное совпадение каждого номера со списком из Redmine.</li>
+        </ol>
+      </article>
+      <div class="edge">Итог сверки</div>
+      <article class="lane result">
+        <h3>Баги на карточке</h3>
+        <div class="stack">
+          <p><span class="pill yes">Есть в ТИ</span> Зелёный номер.</p>
+          <p><span class="pill no">Нет в ТИ</span> Красный номер после успешной сверки.</p>
+          <p><span class="pill unknown">Нет данных</span> Нейтральная отметка, если сверка недоступна.</p>
+        </div>
+      </article>
+    </div>
+  </section>
+
+  <section class="section" id="card" aria-labelledby="card-title">
+    <div class="section-title"><h2 id="card-title">Пример карточки ТИ</h2></div>
+    <div class="preview">
+      <div class="sample-board">
+        <h3>На согласовании</h3>
+        <article class="sample-card" aria-label="Пример карточки ТИ-1150">
+          <div class="sample-heading"><h4>ТИ-1150</h4><span class="pill">Redmine</span></div>
+          <p>Согласовать закупку лицензий на 2027 год</p>
+          <div class="sample-block">
+            <p class="metric"><span>КРИС_ТИ</span><strong>2 / 4</strong></p>
+            <progress value="2" max="4" aria-label="КРИС_ТИ: завершены 2 из 4 подзадач"></progress>
+          </div>
+          <div class="sample-block">
+            <p>Согласование отделов</p>
+            <div class="chips">
+              <span class="pill pending">ОСП · на согласовании</span>
+              <span class="pill yes">ОСЗ · согласовано</span>
+            </div>
+          </div>
+          <div class="sample-block">
+            <p>Баги <span class="pill later">Следующий этап</span></p>
+            <div class="chips">
+              <span class="pill yes">25983 · есть в ТИ</span>
+              <span class="pill no">64317 · нет в ТИ</span>
+            </div>
+          </div>
+        </article>
+        <p class="sample-note">Условные данные для иллюстрации.</p>
+      </div>
+
+      <div class="panel" id="mapping">
+        <h3>Поля и статусы</h3>
+        <details open>
+          <summary>Ключи и правила сопоставления</summary>
+          <ul class="rules-list">
+            <li>ТИ открывается по ID задачи Redmine, например через <code>rm.issue.get(issue_id)</code>. Логический номер берётся из согласованного поля, если он отличается от ID.</li>
+            <li>Уточнить проект КРИС_ТИ и признак связи с номером ТИ: поле, связь задач или ссылка в описании. Согласовать, какие подзадачи входят в расчёт и какие статусы считаются завершёнными.</li>
+            <li>Уточнить источник решений отделов и соответствие статусов. Для Bugzilla подтвердить техническое имя поля «Номер ТИ», для Redmine — поле, содержащее номера багов.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>Пустые данные, ошибки и неоднозначные связи</summary>
+          <ul class="rules-list">
+            <li>КРИС_ТИ: «Связь не найдена», «Найдено несколько задач» и «Подзадач нет» показываются отдельно от прогресса 0 / N.</li>
+            <li>Согласование: при отсутствии данных об отделе показывается «Нет данных». При ошибке обновления показывается время последней успешной загрузки, если данные есть.</li>
+            <li>Баги: отсутствие номера в успешно загруженном списке ТИ отличается от ошибки доступа или загрузки. При ошибке сверки цвет результата нейтральный.</li>
+          </ul>
+        </details>
+        <details>
+          <summary>Блоки исходного эскиза на будущее</summary>
+          <p>«Страница текущей версии», «Неосмеченные баги и СП» и «Страница ИД» остаются в карте будущих экранов. Поля и связи для СППИ ЛиП, СП, ИД и согласования приложений уточняются отдельно.</p>
+          <p>Редактирование задачи и отправка изменений, показанные на макете, появятся только на отдельном этапе.</p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <p class="references">
+    <a href="https://python-redmine.com/resources/issue.html">Python-Redmine · задачи</a>
+    <a href="https://bugzilla.readthedocs.io/en/latest/api/core/v1/bug.html">Bugzilla REST API · баги</a>
+  </p>
+</main>
+</body>
+</html>
