@@ -10,10 +10,20 @@ class RedmineAuthError(RedmineError):
     pass
 
 
+def validate_url(url):
+    try:
+        parts = urlsplit(url)
+        valid = (parts.scheme == 'https' and parts.hostname and '@' not in parts.netloc
+                 and not parts.query and not parts.fragment and not any(ch.isspace() for ch in url)
+                 and parts.port != 0)
+    except ValueError:
+        valid = False
+    if not valid:
+        raise RedmineError('Укажите HTTPS-адрес Redmine без учётных данных.')
+
+
 def connect(url, login, password):
-    parts = urlsplit(url)
-    if parts.scheme != 'https' or not parts.hostname or parts.username or '@' in parts.netloc or parts.query or parts.fragment:
-        raise RedmineError('Укажите HTTPS-адрес Redmine в kanban.ini без учётных данных.')
+    validate_url(url)
     try:
         from redminelib import Redmine
         from redminelib.engines import SyncEngine

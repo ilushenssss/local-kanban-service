@@ -726,6 +726,64 @@ class UITest(unittest.TestCase):
         self.assertFalse(tabs.tabBar().isVisible())
         self.assertTrue(w.scroll.isVisible())
 
+    def test_admin_configures_installation_and_redmine_without_ini(self):
+        from PyQt5.QtWidgets import QLineEdit, QPushButton, QTextEdit
+        from kanban import installation
+
+        base = Path(self.tmp.name) / 'installation'
+        base.mkdir()
+        legacy = base / 'kanban.ini'
+        legacy.write_text('[storage]\nfolder = {}\n[redmine]\nurl = https://redmine.example.test\n'
+                          '[redmine.status]\nНовый = Проект ТИ\n'.format(self.store.folder), encoding='utf-8')
+        window = MainWindow(None, installation_base=base)
+        self.windows.append(window)
+        self.assertIsNone(window.store)
+
+        def save(dialog):
+            folder = next(field for field in dialog.findChildren(QLineEdit)
+                          if field.accessibleName() == 'Папка базы')
+            self.assertEqual(folder.text(), str(self.store.folder))
+            submit = next(b for b in dialog.findChildren(QPushButton) if b.text() == 'Сохранить')
+            submit.click()
+            wait_for(lambda: not window.jobs)
+            return dialog.result()
+
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')), \
+             patch.object(QDialog, 'exec_', new=save):
+            window.open_connection_settings()
+            wait_for(lambda: not window.loading and bool(window.card_lists))
+        self.assertEqual(installation.load_folder(base), str(self.store.folder))
+        self.assertEqual(window.redmine_url, 'https://redmine.example.test')
+        self.assertEqual(window.redmine_statuses, {'новый': 'Проект ТИ'})
+        legacy.unlink()
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'colleague')):
+            colleague = MainWindow(None, installation_base=base)
+            self.windows.append(colleague)
+            wait_for(lambda: not colleague.loading and bool(colleague.card_lists))
+        self.assertEqual(colleague.redmine_url, 'https://redmine.example.test')
+        with patch.object(QDialog, 'exec_') as exec_dialog:
+            colleague.open_connection_settings()
+            exec_dialog.assert_not_called()
+
+        window.redmine_client = object()
+        def edit(dialog):
+            url = next(field for field in dialog.findChildren(QLineEdit)
+                       if field.placeholderText() == 'https://redmine.example.org')
+            url.setText('https://new-redmine.example.test')
+            dialog.findChild(QTextEdit).setPlainText('Открыт = ТИ открыто')
+            next(b for b in dialog.findChildren(QPushButton) if b.text() == 'Сохранить').click()
+            wait_for(lambda: not window.jobs)
+            return dialog.result()
+
+        with patch.object(QDialog, 'exec_', new=edit):
+            window.open_connection_settings()
+            wait_for(lambda: not window.loading)
+        self.assertIsNone(window.redmine_client)
+        colleague.refresh()
+        wait_for(lambda: not colleague.loading)
+        self.assertEqual(colleague.redmine_url, 'https://new-redmine.example.test')
+        self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
+
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit
         from kanban.redmine import RedmineAuthError

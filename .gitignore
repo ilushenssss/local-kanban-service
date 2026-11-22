@@ -11,6 +11,7 @@ __pycache__/
 htmlcov/
 /data/
 kanban.ini
+teamsync-settings.json
 *.log
 /wheelhouse/
 *.zip

@@ -1,4 +1,3 @@
-import configparser
 import logging
 from pathlib import Path
 import sys
@@ -16,11 +15,6 @@ def main():
         sys.__excepthook__(kind, value, traceback)
     sys.excepthook = exception_hook
     base = Path(__file__).resolve().parent.parent
-    config = configparser.ConfigParser(interpolation=None)
-    config.read(str(base / 'kanban.ini'), encoding='utf-8-sig')
-    folder = Path(config.get('storage', 'folder', fallback='data'))
-    if not folder.is_absolute():
-        folder = base / folder
     QLocale.setDefault(QLocale('ru_RU'))
     app = QApplication(sys.argv)
     translator = QTranslator(app)
@@ -30,9 +24,7 @@ def main():
     app.setOrganizationName('TeamSync')
     app.setStyle('Fusion')
     apply_theme(app, theme_settings().value('dark', False, type=bool))
-    redmine_url = config.get('redmine', 'url', fallback='').strip()
-    redmine_statuses = dict(config.items('redmine.status')) if config.has_section('redmine.status') else {}
-    window = MainWindow(str(folder), redmine_url, redmine_statuses)
+    window = MainWindow(None, installation_base=base)
     window.showMaximized()
     return app.exec_()
 

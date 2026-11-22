@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 
-from .redmine import status_key
+from .redmine import status_key, validate_url
 
 
 SCHEMA_VERSION = 10
@@ -315,7 +315,7 @@ class Store:
 
     def authorize_write(self, c, operation, payload):
         self.actor(c)
-        if operation in ('role', 'user', 'timezone', 'user_restricted'):
+        if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -341,6 +341,29 @@ class Store:
             task = self.task_row(c, payload[0])
             if operation in ('task_notice_read', 'subscribe'):
                 self.active_board(c, task['board_id'])
+
+    @staticmethod
+    def redmine_settings_in(c):
+        row = c.execute("SELECT value FROM settings WHERE key='redmine'").fetchone()
+        return json.loads(row[0]) if row else None
+
+    def redmine_settings(self):
+        with self.connection() as c:
+            self.actor(c)
+            return self.redmine_settings_in(c)
+
+    def set_redmine_settings(self, url, mapping):
+        url = url.strip().rstrip('/')
+        if url:
+            validate_url(url)
+        settings = {'url': url, 'statuses': {status_key(k): v.strip() for k, v in mapping.items()}}
+
+        def apply(c, uid):
+            c.execute("INSERT OR REPLACE INTO settings VALUES('redmine',?)",
+                      (json.dumps(settings, ensure_ascii=False),))
+            return settings
+
+        return self.write('redmine_settings', settings, apply)
 
     def timezone(self):
         with self.connection() as c:
@@ -992,6 +1015,7 @@ class Store:
             selected = board_id if board_id in ids else next(iter(ids), None)
             columns = self.columns_in(c, selected)
             catalogs = self.catalogs_in(c, selected, actor)
+            catalogs['redmine'] = self.redmine_settings_in(c)
             tasks, totals, personal = [], {}, []
             if view == 'personal':
                 personal = self.cards_in(c, None, {'assignee': self.login}, actor)

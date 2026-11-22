@@ -31,6 +31,17 @@ class StoreTest(unittest.TestCase):
     def create(self):
         r = self.s.save_task(self.base)
         return self.s.detail(r['id'])
+    def test_only_admin_can_change_shared_redmine_settings(self):
+        member = Store(self.s.folder, 'bob')
+        self.assertIsNone(member.redmine_settings())
+        with self.assertRaises(AccessDenied):
+            member.set_redmine_settings('https://redmine.example.test', {})
+        with self.assertRaises(ValueError):
+            self.s.set_redmine_settings('https://login:secret@redmine.example.test', {})
+        settings = self.s.set_redmine_settings('https://redmine.example.test/', {' Новый ': 'Проект ТИ'})
+        self.assertEqual(settings, {'url': 'https://redmine.example.test', 'statuses': {'новый': 'Проект ТИ'}})
+        self.assertEqual(member.redmine_settings(), settings)
+
     def test_shared_redmine_cards_and_status_updates(self):
         board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
         member = Store(self.s.folder, 'bob')

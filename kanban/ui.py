@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
 from .store import Store, Conflict, AccessRestricted, DatabaseTooNew
-from . import redmine
+from . import installation, redmine
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
@@ -1201,10 +1201,17 @@ class ColumnsDialog(QDialog):
 
 
 class MainWindow(QMainWindow, Async):
-    def __init__(self, folder, redmine_url='', redmine_statuses=None):
+    def __init__(self, folder, redmine_url='', redmine_statuses=None, installation_base=None):
         super().__init__()
         self.init_async()
         self.folder = folder
+        self.installation_base = installation_base
+        self.installation_error = ''
+        if installation_base is not None:
+            try:
+                self.folder = installation.load_folder(installation_base)
+            except (OSError, ValueError, KeyError, TypeError):
+                self.installation_error = 'Не удалось прочитать настройки установки. Откройте «Настройки → Подключение…».'
         self.redmine_url = redmine_url
         self.redmine_statuses = {redmine.status_key(k): v.strip() for k, v in (redmine_statuses or {}).items()}
         self.redmine_client = None
@@ -1530,6 +1537,9 @@ class MainWindow(QMainWindow, Async):
             text = action.text()
             if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…'):
                 action.setEnabled(permissions.get('admin', False))
+            elif text == 'Подключение…':
+                action.setEnabled((self.store is None and self.installation_base is not None)
+                                  or permissions.get('admin', False))
             elif text == 'Создать доску':
                 action.setEnabled(bool(permissions))
             elif text == 'Участники доски':
@@ -1555,11 +1565,156 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh_workspace)
+        menu.addAction('Подключение…', self.open_connection_settings)
         self.notifications.add_settings(menu)
         menu.addAction('Часовой пояс…', self.change_timezone)
         menu.addAction('Резервная копия', self.backup)
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
+
+    def open_connection_settings(self):
+        if self.loading or self.mutating or self.pending_action:
+            self.status.setText('Дождитесь завершения текущей операции.')
+            return
+        store = self.store
+        if store is not None and not getattr(self, 'permissions', {}).get('admin', False):
+            return
+        folder, url, statuses = self.folder or '', self.redmine_url, self.redmine_statuses
+        if not folder and not self.installation_error and self.installation_base is not None:
+            try:
+                folder, url, statuses = installation.legacy_settings(self.installation_base)
+            except (OSError, ValueError):
+                pass
+
+        class ConnectionDialog(QDialog):
+            def reject(self):
+                if self.isEnabled():
+                    super().reject()
+
+        dialog = ConnectionDialog(self)
+        dialog.setWindowTitle('Подключение TeamSync')
+        dialog.setMinimumWidth(490)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        folder_input = QLineEdit(str(folder))
+        folder_input.setPlaceholderText('Папка с kanban.db')
+        folder_input.setReadOnly(self.installation_base is None)
+        folder_row = QHBoxLayout()
+        folder_row.addWidget(folder_input, 1)
+
+        def select_folder():
+            selected = QFileDialog.getExistingDirectory(dialog, 'Папка с kanban.db', folder_input.text())
+            if selected:
+                folder_input.setText(selected)
+
+        browse = button('Выбрать…', select_folder, folder_row)
+        browse.setEnabled(not folder_input.isReadOnly())
+        form.addRow('Папка базы', folder_row)
+        folder_input.setAccessibleName('Папка базы')
+        url_input = QLineEdit(url)
+        url_input.setPlaceholderText('https://redmine.example.org')
+        url_input.setAccessibleName('Адрес Redmine')
+        form.addRow('Адрес Redmine', url_input)
+        mapping_input = QTextEdit()
+        mapping_input.setAcceptRichText(False)
+        mapping_input.setAccessibleName('Статусы Redmine')
+        mapping_input.setPlaceholderText('Новый = Проект ТИ\nОткрыт = ТИ открыто')
+        mapping_input.setPlainText('\n'.join('{} = {}'.format(k, v) for k, v in statuses.items()))
+        mapping_input.setMaximumHeight(130)
+        form.addRow('Статусы Redmine', mapping_input)
+        style_form(form)
+        layout.addLayout(form)
+        hint = QLabel('Укажите соответствия по одному на строку. Если поле пустое, колонки подбираются по названию статуса.')
+        if self.installation_base is not None:
+            hint.setText(hint.text() + '\nПри подключении к другой базе используются её настройки Redmine.')
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        status = QLabel()
+        status.setTextFormat(Qt.PlainText)
+        status.setWordWrap(True)
+        layout.addWidget(status)
+        actions = QHBoxLayout()
+        actions.addStretch()
+        button('Сохранить', lambda: save_settings(), actions, 'primary')
+        button('Отмена', dialog.reject, actions)
+        layout.addLayout(actions)
+        saved = {}
+
+        def save_settings():
+            raw_folder = folder_input.text().strip()
+            if not raw_folder:
+                status.setText('Укажите папку с существующей базой TeamSync.')
+                folder_input.setFocus()
+                return
+            target = Path(raw_folder).expanduser()
+            if not target.is_absolute():
+                status.setText('Укажите полный путь к папке базы.')
+                folder_input.setFocus()
+                return
+            url = url_input.text().strip()
+            mapping = {}
+            try:
+                if url:
+                    redmine.validate_url(url)
+                for line in mapping_input.toPlainText().splitlines():
+                    if not line.strip():
+                        continue
+                    source, _, destination = line.partition('=')
+                    key = redmine.status_key(source)
+                    if not key or not destination.strip() or key in mapping:
+                        raise ValueError('Каждая строка должна содержать уникальный статус и название колонки через «=».')
+                    mapping[key] = destination.strip()
+            except ValueError as error:
+                status.setText(str(error))
+                return
+
+            def apply():
+                if store is not None and store.profile()['role'] != 'admin':
+                    raise ValueError('Изменить подключение может администратор текущей базы.')
+                if not (target / 'kanban.db').is_file():
+                    raise ValueError('В указанной папке нет kanban.db.')
+                same_database = store is not None and target == store.folder
+                destination = store if same_database else Store(target)
+                if destination.profile()['role'] != 'admin':
+                    raise ValueError('Сохранить подключение может администратор выбранной базы.')
+                result = destination.redmine_settings()
+                if same_database or (store is None and result is None and (url or mapping)):
+                    result = destination.set_redmine_settings(url, mapping)
+                if self.installation_base is not None and self.folder != str(target):
+                    installation.save_folder(self.installation_base, target)
+                return result
+
+            def done(result, error):
+                dialog.setEnabled(True)
+                if error:
+                    status.setText(error_text(error))
+                    return
+                saved.update(folder=str(target), redmine=result)
+                dialog.accept()
+
+            status.setText('Сохранение…')
+            dialog.setEnabled(False)
+            self.work(apply, done)
+
+        dialog.exec_()
+        dialog.deleteLater()
+        if not saved:
+            return
+        if store is not None and Path(saved['folder']) != store.folder:
+            self.status.setText('Путь сохранён. Полностью выйдите из TeamSync и запустите его снова.')
+            return
+        self.installation_error = ''
+        self.folder = saved['folder']
+        self.apply_redmine_settings(saved['redmine'])
+        self.refresh()
+
+    def apply_redmine_settings(self, settings):
+        if settings is None:
+            return
+        if settings['url'] != self.redmine_url:
+            self.redmine_client = None
+        self.redmine_url = settings['url']
+        self.redmine_statuses = settings['statuses']
 
     def change_timezone(self):
         zones = sorted({bytes(zone).decode('ascii') for zone in QTimeZone.availableTimeZoneIds()})
@@ -1799,6 +1954,10 @@ class MainWindow(QMainWindow, Async):
                 self.messenger.activate()
 
     def connect_store(self):
+        if not self.folder:
+            self.status.setText(self.installation_error or
+                                'Администратору нужно указать папку базы в «Настройки → Подключение…».')
+            return
         if self.loading:
             return
         self.loading = True
@@ -1811,12 +1970,17 @@ class MainWindow(QMainWindow, Async):
                 self.status.setText(str(error))
                 return
             if error:
-                self.status.setText('Общая папка недоступна: ' + error_text(error) + '. Проверьте kanban.ini и нажмите «Обновить».')
+                self.status.setText('Общая папка недоступна: ' + error_text(error) + '. Проверьте путь в «Настройки → Подключение…» и нажмите «Обновить».')
                 return
             self.store = store
             self.notifications.poll()
             self.refresh()
-        self.work(lambda: Store(self.folder), done)
+        def connect():
+            if self.installation_base is not None and not (Path(self.folder) / 'kanban.db').is_file():
+                raise ValueError('В указанной папке нет kanban.db')
+            return Store(self.folder)
+
+        self.work(connect, done)
 
     def filters_changed(self, *args):
         count = sum(bool(v) for v in (self.assignee_filter.currentData(), self.label_filter.currentData(), self.due_from.value(), self.due_to.value()))
@@ -1962,6 +2126,7 @@ class MainWindow(QMainWindow, Async):
             self.last_snapshot = snapshot
             boards, selected, columns, tasks, totals, catalogs, personal = result
             self.permissions = catalogs.get('permissions', {})
+            self.apply_redmine_settings(catalogs.get('redmine'))
             self.users_button.setEnabled(self.permissions.get('admin', False))
             self.create_board_button.setEnabled(True)
             if page == 4:
@@ -2274,9 +2439,11 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Дождитесь завершения текущей операции')
             return
         if not self.redmine_url:
-            self.status.setText('Укажите HTTPS-адрес Redmine в разделе [redmine] файла kanban.ini.')
+            self.status.setText('Администратору нужно указать адрес Redmine в «Настройки → Подключение…».')
             return
         client = self.redmine_client
+        url = self.redmine_url
+        statuses = self.redmine_statuses
         credentials = None
         if client is None:
             dialog = QDialog(self)
@@ -2289,6 +2456,10 @@ class MainWindow(QMainWindow, Async):
             form.addRow('Логин Redmine', login)
             form.addRow('Пароль Redmine', password)
             layout.addLayout(form)
+            server = QLabel(url)
+            server.setTextFormat(Qt.PlainText)
+            server.setWordWrap(True)
+            layout.insertWidget(0, server)
             layout.addWidget(QLabel('Вход сохраняется до выхода из TeamSync.'))
             actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
             actions.button(QDialogButtonBox.Ok).setText('Войти')
@@ -2310,13 +2481,17 @@ class MainWindow(QMainWindow, Async):
         def apply(rid):
             # Drop the password captured by the retry closure once a client is made.
             nonlocal client, credentials
+            current = self.store.redmine_settings()
+            if current is not None and (current['url'] != url or current['statuses'] != statuses):
+                credentials = None
+                raise redmine.RedmineError('Настройки Redmine изменились. Повторите операцию после обновления доски.')
             if client is None:
                 try:
-                    client = redmine.connect(self.redmine_url, *credentials)
+                    client = redmine.connect(url, *credentials)
                 finally:
                     credentials = None
             try:
-                return {'redmine_client': client, 'redmine_errors': operation(client, rid)}
+                return {'redmine_client': client, 'redmine_errors': operation(client, rid, statuses)}
             except redmine.RedmineAuthError:
                 raise
             except ValueError as error:
@@ -2334,7 +2509,7 @@ class MainWindow(QMainWindow, Async):
             self.refresh()
             return
 
-        def update(client, rid):
+        def update(client, rid, statuses):
             updates, errors = [], []
             for task in self.store.redmine_tasks(board_id):
                 issue_id = task['issue_id']
@@ -2345,7 +2520,7 @@ class MainWindow(QMainWindow, Async):
                 except redmine.RedmineError as error:
                     errors.append(str(error))
                     continue
-                target = redmine.column_name(issue['status'], self.redmine_statuses)
+                target = redmine.column_name(issue['status'], statuses)
                 updates.append((issue_id, task['revision'], issue['title'], issue['status'], target))
             if updates:
                 errors.extend(self.store.update_redmine_tasks(board_id, updates))
@@ -2355,7 +2530,7 @@ class MainWindow(QMainWindow, Async):
 
     def add_redmine_task(self):
         if not self.redmine_url:
-            self.status.setText('Укажите HTTPS-адрес Redmine в разделе [redmine] файла kanban.ini.')
+            self.status.setText('Администратору нужно указать адрес Redmine в «Настройки → Подключение…».')
             return
         board_id = self.board_id
         value, accepted = QInputDialog.getText(self, 'Добавить задачу Redmine', 'Номер задачи в Redmine')
@@ -2369,11 +2544,11 @@ class MainWindow(QMainWindow, Async):
 
         issue = None
 
-        def add(client, rid):
+        def add(client, rid, statuses):
             nonlocal issue
             if issue is None:
                 issue = redmine.read_issue(client, issue_id)
-            target = redmine.column_name(issue['status'], self.redmine_statuses)
+            target = redmine.column_name(issue['status'], statuses)
             self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid)
             return []
 

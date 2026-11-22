@@ -10,8 +10,9 @@ def main():
     parser = argparse.ArgumentParser(description='Назначение первого администратора. Закройте все клиенты и сохраните резервную копию.')
     parser.add_argument('--data', required=True, help='Папка с существующим kanban.db')
     parser.add_argument('--account', required=True, help='Точный login Windows, который возвращает getpass.getuser() у администратора')
+    parser.add_argument('--create', action='store_true', help='Разрешить создание новой базы в указанной папке')
     args = parser.parse_args()
-    if not (Path(args.data) / 'kanban.db').is_file():
+    if not args.create and not (Path(args.data) / 'kanban.db').is_file():
         parser.error('В указанной папке нет kanban.db; существующие данные не найдены')
     try:
         store = Store(args.data)
