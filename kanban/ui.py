@@ -2418,11 +2418,13 @@ class MainWindow(QMainWindow, Async):
             heading.setWordWrap(True)
             layout.addWidget(heading)
             form = QFormLayout()
-            for label, value in [
-                ('Статус задачи', current['status']), ('Основание', '—'),
-                ('Баги', '—'), ('КРИС ТИ', '—'), ('Согласование отделов', '—'),
-                ('Согласование приложений', '—'), ('Приложения', '—'),
-            ]:
+            fields = [('Статус задачи', current['status']), ('Основание', '—'),
+                      ('Баги', '—'), ('КРИС ТИ', '—')]
+            if current['approvals']:
+                fields.append(('Согласование отделов', '\n'.join(
+                    '{}: {}'.format(entry['department'], entry['status']) for entry in current['approvals'])))
+            fields.extend([('Согласование приложений', '—'), ('Приложения', '—')])
+            for label, value in fields:
                 field = QLabel(value)
                 field.setTextFormat(Qt.PlainText)
                 field.setWordWrap(True)
@@ -2522,7 +2524,8 @@ class MainWindow(QMainWindow, Async):
                     errors.append(str(error))
                     continue
                 target = redmine.column_name(issue['status'], statuses)
-                updates.append((issue_id, task['revision'], issue['title'], issue['status'], target, issue['tracker_name']))
+                updates.append((issue_id, task['revision'], issue['title'], issue['status'], target,
+                                issue['tracker_name'], issue['approvals']))
             if updates:
                 errors.extend(self.store.update_redmine_tasks(board_id, updates))
             return errors
@@ -2551,7 +2554,7 @@ class MainWindow(QMainWindow, Async):
                 issue = redmine.read_issue(client, issue_id)
             target = redmine.column_name(issue['status'], statuses)
             self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid,
-                                          tracker_name=issue['tracker_name'])
+                                          tracker_name=issue['tracker_name'], approvals=issue['approvals'])
             return []
 
         self.redmine_operation(add, 'Задача Redmine добавлена')

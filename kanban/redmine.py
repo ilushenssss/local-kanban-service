@@ -1,5 +1,8 @@
 # Модуль читает данные Redmine. Учётные данные клиента остаются в памяти сеанса TeamSync.
 """Read-only Redmine access. The client and its credentials live in one TeamSync session."""
+# Ищет префикс поля согласования в имени, полученном из Redmine.
+import re
+
 # Разбирает URL на схему, адрес, порт и путь без сетевого запроса.
 from urllib.parse import urlsplit
 
@@ -86,7 +89,38 @@ def connect(url, login, password):
     return client
 
 
-# Читает заголовок, статус и имя трекера задачи по числовому ID из её адреса в Redmine.
+# Цвета состояний, которые нужны для карточки. Прочие значения не выводятся.
+APPROVAL_COLORS = {
+    'нет': 'red',
+    'на согласовании': 'red',
+    'есть замечания': 'yellow',
+    'да': 'green',
+}
+# «Со» — вариант предлога «с». После предлога оставляем полное название отдела.
+DEPARTMENT_PREFIX = re.compile(r'\bТИ\s+согласовано\s+со?(?=\s|[:–—-]|$)', re.IGNORECASE)
+
+
+# Собирает названия отделов и их текущие решения.
+def department_approvals(fields):
+    # issue.raw()['custom_fields'] содержит те же словари, что и issue.custom_fields._resources.
+    approvals = []
+    for field in fields:
+        # Неожиданные форматы поля или значения пропускаем.
+        if not isinstance(field, dict):
+            continue
+        name, value = field.get('name'), field.get('value')
+        if not isinstance(name, str) or not isinstance(value, str):
+            continue
+        match = DEPARTMENT_PREFIX.search(name)
+        if match and status_key(value) in APPROVAL_COLORS:
+            # После префикса может стоять разделитель между фразой и названием отдела.
+            department = name[match.end():].strip().lstrip(':–—-').strip()
+            if department:
+                approvals.append({'department': department, 'status': value.strip()})
+    return approvals
+
+
+# Читает заголовок, статус, имя трекера и согласования задачи по числовому ID из её адреса в Redmine.
 def read_issue(client, issue_id):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
@@ -103,6 +137,8 @@ def read_issue(client, issue_id):
         tracker = fields.get('tracker')
         # Старые или изменённые ответы API могут не содержать объект трекера.
         tracker_name = tracker.get('name') if isinstance(tracker, dict) else None
+        # Читаем исходные пользовательские поля без построения дополнительных объектов Redmine.
+        approvals = department_approvals(fields.get('custom_fields') or [])
     # Если Redmine вернул HTTP 401, TeamSync запросит вход повторно при следующем обращении.
     except AuthError:
         # Отдельный тип ошибки позволяет интерфейсу сбросить сохранённый в памяти клиент.
@@ -122,7 +158,8 @@ def read_issue(client, issue_id):
     # Пустое имя трекера допустимо. Для таких карточек есть подпись по ID.
     tracker_name = tracker_name.strip() if isinstance(tracker_name, str) else ''
     # ID задачи используется отдельно, для связи с Redmine.
-    return {'title': title.strip(), 'status': status.strip(), 'tracker_name': tracker_name}
+    return {'title': title.strip(), 'status': status.strip(), 'tracker_name': tracker_name,
+            'approvals': approvals}
 
 
 # Формирует подпись карточки, пока для старой записи ещё не загрузилось имя трекера.

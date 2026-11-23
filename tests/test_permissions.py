@@ -153,5 +153,5 @@ class PermissionsTest(unittest.TestCase):
         self.assertEqual(migrated.boards()[0]['id'], 9)
         self.assertEqual(migrated.team_chat(board_id=next(b['id'] for b in migrated.boards() if b['name'] == 'С-А'))['messages'][0]['body'], 'Переписка')
         with migrated.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 11)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 12)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())

@@ -3,12 +3,17 @@ import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
-from .redmine import issue_label
+from .redmine import APPROVAL_COLORS, issue_label, status_key
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
 TASK_NOTICE_ROLE = Qt.UserRole + 2
 DETAILS_ROLE = Qt.UserRole + 3
+
+
+DEPARTMENT_CHIPS_PER_ROW = 4
+DEPARTMENT_CHIP_PITCH = 23
+DEPARTMENT_PALETTE = {'red': STICKERS[0], 'yellow': STICKERS[3], 'green': STICKERS[2]}
 
 
 def title_font(base_font):
@@ -49,7 +54,9 @@ class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         task = index.data(Qt.UserRole) or {}
         if task.get('redmine_id'):
-            return QSize(292, 205 + title_extra_height(QFontMetrics(title_font(option.font))))
+            rows = (len(task['approvals']) + DEPARTMENT_CHIPS_PER_ROW - 1) // DEPARTMENT_CHIPS_PER_ROW
+            approval_height = 19 + rows * DEPARTMENT_CHIP_PITCH if rows else 0
+            return QSize(292, 163 + approval_height + title_extra_height(QFontMetrics(title_font(option.font))))
         height = card_height(task, QFontMetrics(title_font(option.font)))
         if index.data(EXPANDED_ROLE):
             width = max(220, self.parent().viewport().width() - 32)
@@ -243,17 +250,19 @@ class CardDelegate(QStyledItemDelegate):
             painter.drawText(QRect(left, top, span, height), Qt.AlignLeft | Qt.AlignVCenter,
                              painter.fontMetrics().elidedText(caption, Qt.ElideRight, span))
 
-        def chip(caption, left, top, span, center=False):
+        def chip(caption, left, top, span, center=False, palette=None):
             rect = QRect(left, top, span, 19)
+            foreground, background = palette or (TOKENS['secondary'], TOKENS['hover'])
             painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(TOKENS['hover']))
+            painter.setBrush(QColor(background))
             painter.drawRoundedRect(rect, 4, 4)
             font = QFont(option.font)
             font.setPixelSize(11)
             painter.setFont(font)
-            painter.setPen(QColor(TOKENS['secondary']))
+            painter.setPen(QColor(foreground))
             painter.drawText(rect.adjusted(3, 0, -3, 0), Qt.AlignCenter if center else
-                             Qt.AlignVCenter | Qt.AlignLeft, caption)
+                             Qt.AlignVCenter | Qt.AlignLeft,
+                             painter.fontMetrics().elidedText(caption, Qt.ElideRight, span-6))
 
         text(issue_label(task['tracker_name'], task['redmine_id']), x, y, width-68, bold=True, color='text')
         chip('Redmine', x+width-60, y, 60, center=True)
@@ -271,12 +280,19 @@ class CardDelegate(QStyledItemDelegate):
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(TOKENS['hover']))
         painter.drawRoundedRect(QRect(x, y+63, width, 4), 2, 2)
-        text('Согласование отделов', x, y+69, width)
-        span = (width-12)//4
-        for index, department in enumerate(('55', '201', 'ОСП', 'ОСЗ')):
-            chip(department+' —', x+index*(span+4), y+88, span, center=True)
-        text('Прил. —', x, y+111, width-20)
-        text('—', x+width-16, y+111, 16)
+        footer = y+69
+        if task['approvals']:
+            text('Согласование отделов', x, footer, width)
+            footer += 19
+            span = (width - 4*(DEPARTMENT_CHIPS_PER_ROW-1)) // DEPARTMENT_CHIPS_PER_ROW
+            for index, approval in enumerate(task['approvals']):
+                row, column = divmod(index, DEPARTMENT_CHIPS_PER_ROW)
+                palette = DEPARTMENT_PALETTE[APPROVAL_COLORS[status_key(approval['status'])]]
+                chip(approval['department'], x+column*(span+4), footer+row*DEPARTMENT_CHIP_PITCH,
+                     span, center=True, palette=palette)
+            footer += (row+1)*DEPARTMENT_CHIP_PITCH
+        text('Прил. —', x, footer, width-20)
+        text('—', x+width-16, footer, 16)
         painter.restore()
 
 
@@ -388,8 +404,12 @@ def set_card_notice(item, count):
 def set_card_data(item, task, count):
     item.setData(Qt.UserRole, task)
     if task.get('redmine_id'):
-        item.setText('{} #{} · Redmine\n{}\n{}\nСП — · Баги — · КРИС ТИ —\nСогласование отделов — · Приложения —'.format(
-            issue_label(task['tracker_name'], task['redmine_id']), task['redmine_id'], task['title'], task['status']))
+        summary = '{} #{} · Redmine\n{}\n{}\nСП — · Баги — · КРИС ТИ —\nПриложения —'.format(
+            issue_label(task['tracker_name'], task['redmine_id']), task['redmine_id'], task['title'], task['status'])
+        if task['approvals']:
+            summary += '\nСогласование отделов: ' + ', '.join(
+                '{}: {}'.format(entry['department'], entry['status']) for entry in task['approvals'])
+        item.setText(summary)
         set_card_notice(item, count)
         return
     names = ', '.join(task['assignee_names']) or 'Без исполнителя'
