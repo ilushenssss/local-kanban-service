@@ -166,7 +166,7 @@ def read_kris_children(client, parent_id):
     # Вложенные потомки не учитываются. Статус прямой подзадачи может потребовать отдельного запроса.
     parent = client.issue.get(parent_id, include='children').raw()
     children = parent.get('children') or []
-    done = 0
+    done = total = 0
     for child in children:
         status = (child.get('status') or {}).get('name')
         if not status:
@@ -174,8 +174,13 @@ def read_kris_children(client, parent_id):
             status = (issue.get('status') or {}).get('name')
         if not status:
             raise RedmineError('Redmine не вернул статус подзадачи.')
-        done += 'выполнено' in status_key(status)
-    return {'done': done, 'total': len(children)}
+        key = status_key(status)
+        # Статус «Действие не требуется» исключает подзадачу из расчёта прогресса.
+        if key == 'действие не требуется':
+            continue
+        total += 1
+        done += 'выполнено' in key
+    return {'done': done, 'total': total}
 
 
 def read_kris_progress(client, issue_ids):

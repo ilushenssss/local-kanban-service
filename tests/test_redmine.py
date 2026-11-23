@@ -25,9 +25,11 @@ class RedmineTest(unittest.TestCase):
             72: resource({'id': 72, 'children': [
                 {'id': 101, 'status': {'name': 'Выполнено (проверено)'}, 'children': [{'id': 999}]},
                 {'id': 102}, {'id': 103, 'status': {'name': 'В работе'}},
+                {'id': 104, 'status': {'name': 'Действие не требуется'}},
             ]}),
             102: resource({'id': 102, 'status': {'name': 'ВЫПОЛНЕНО'}}),
-            73: resource({'id': 73}),
+            73: resource({'id': 73, 'children': [{'id': 105}]}),
+            105: resource({'id': 105, 'status': {'name': ' ДЕЙСТВИЕ  НЕ ТРЕБУЕТСЯ '}}),
         }
         def issue_get(issue_id, **kwargs):
             return issues[issue_id]
@@ -40,7 +42,8 @@ class RedmineTest(unittest.TestCase):
         self.assertEqual(kris_progress_text(progress[45]), '—')
         client.issue.filter.assert_called_once_with(project_id=49, status_id='open', parent_id='!*')
         self.assertEqual(client.issue.get.call_args_list,
-                         [call(72, include='children'), call(102), call(73, include='children'), call(74, include='children')])
+                         [call(72, include='children'), call(102), call(73, include='children'), call(105),
+                          call(74, include='children')])
 
     def test_issue_references_from_custom_fields(self):
         fields = [
