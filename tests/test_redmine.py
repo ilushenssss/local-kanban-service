@@ -2,6 +2,7 @@ import unittest
 from importlib.util import find_spec
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 from unittest.mock import Mock, call
 
 from kanban.installation import load_redmine_project_id
@@ -12,7 +13,17 @@ from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_referen
 class RedmineTest(unittest.TestCase):
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_identification_keeps_all_values_except_not_required(self):
+        from redminelib.exceptions import ResourceNotFoundError
+
         client = Mock()
+        versions = {1342: SimpleNamespace(name='2.0-218 И-01'), 1343: SimpleNamespace(name='2.0-219')}
+
+        def get_version(version_id):
+            if version_id not in versions:
+                raise ResourceNotFoundError()
+            return versions[version_id]
+
+        client.version.get.side_effect = get_version
         for_filter = []
         for suffix, field, approval, status in (
             ('01', 'ТИ согласовано с отд.ЦЗ', 'Да', 'ТИ утверждено'),
@@ -24,6 +35,8 @@ class RedmineTest(unittest.TestCase):
             data = {'subject': 'Проверка ' + suffix, 'status': {'name': status}, 'custom_fields': [
                 {'name': field, 'value': approval},
                 {'name': 'Регистрационный номер_ЛПИВ', 'value': 'ТИ(200)-1234-' + suffix + ' описание'},
+                {'name': 'Приоритет реализации_ЛПИВ',
+                 'value': ['1342'] if suffix == '01' else '1343' if suffix == '02' else ['1342', '9999']},
             ]}
             for_filter.append(Mock(**{'raw.return_value': data}))
         for_filter.append(Mock(**{'raw.return_value': {'id': 99, 'subject': 'Задача без номера', 'custom_fields': [
@@ -32,12 +45,15 @@ class RedmineTest(unittest.TestCase):
         client.issue.filter.return_value = for_filter
         cards = read_identification_cards(client, 88)
         self.assertEqual(cards, [
-            {'number': 'ТИ(200)-1234-01', 'subject': 'Проверка 01', 'approval': 'Да', 'status': 'ТИ утверждено'},
-            {'number': 'ТИ(200)-1234-02', 'subject': 'Проверка 02', 'approval': 'Нет', 'status': 'В работе'},
-            {'number': 'ТИ(200)-1234-03', 'subject': 'Проверка 03', 'approval': 'На согласовании', 'status': 'В работе'},
-            {'number': 'Задача без номера', 'subject': '', 'approval': 'Да', 'status': ''},
+            {'number': 'ТИ(200)-1234-01', 'subject': 'Проверка 01', 'approval': 'Да',
+             'status': 'ТИ утверждено', 'versions': ['2.0-218 И-01']},
+            {'number': 'ТИ(200)-1234-02', 'subject': 'Проверка 02', 'approval': 'Нет',
+             'status': 'В работе', 'versions': ['2.0-219']},
+            {'number': 'ТИ(200)-1234-03', 'subject': 'Проверка 03', 'approval': 'На согласовании',
+             'status': 'В работе', 'versions': ['2.0-218 И-01']},
         ])
         client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
+        self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343), call(9999)])
 
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_basis_lookup_uses_fixed_number_and_registration_field(self):

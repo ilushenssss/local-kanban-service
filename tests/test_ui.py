@@ -914,7 +914,7 @@ class UITest(unittest.TestCase):
         save_folder(base, self.store.folder)
         (base / 'all_project.json').write_text('{"Основания": 88}', encoding='utf-8')
         self.store.set_redmine_settings('https://redmine.example.test', {})
-        board = self.store.board_action('Разработка / ИД')
+        board = self.store.board_action('Разработка / 2.0-218')
         self.grant_all(board)
         self.store.set_redmine_basis_project(board, 'Основания')
         number = 'ТИ(200)-1234-01'
@@ -933,8 +933,10 @@ class UITest(unittest.TestCase):
         wait_for(lambda: page.refresh_button.isEnabled())
         window.redmine_client = object()
         with patch('kanban.redmine.read_identification_cards', return_value=[
-                {'number': number, 'subject': 'Согласовать спецификацию', 'approval': 'Да', 'status': 'ТИ утверждено'},
-                {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе'},
+                {'number': number, 'subject': 'Согласовать спецификацию', 'approval': 'Да', 'status': 'ТИ утверждено',
+                 'versions': ['2.0-218 И-01']},
+                {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе', 'versions': ['2.0-218 И-02']},
+                {'number': 'ТИ(200)-1234-03', 'approval': 'Нет', 'status': 'В работе', 'versions': ['2.0-219 И-01']},
         ]) as fetch:
             page.refresh_button.click()
             wait_for(lambda: not window.mutating and page.cards.count() == 2)
@@ -942,6 +944,7 @@ class UITest(unittest.TestCase):
         self.assertIn('ТИ-701', page.cards.item(0).toolTip())
         self.assertIn(number + '\nСогласовать спецификацию', page.cards.item(0).toolTip())
         self.assertIn('Не привязано', page.cards.item(1).toolTip())
+        self.assertIn('ТИ(200)-1234-02', page.cards.item(1).toolTip())
         self.assertFalse(page.cards.grab().isNull())
 
     def test_redesigned_workspace_groups_and_message_badges(self):

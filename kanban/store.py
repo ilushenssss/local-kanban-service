@@ -422,11 +422,16 @@ class Store:
 
         return self.write('redmine_identification', [board_id, project, cards], apply, request_id)
 
-    def identification_in(self, c, board_id, actor):
-        row = c.execute('SELECT value FROM settings WHERE key=?', ('redmine_identification:{}'.format(board_id),)).fetchone()
+    def identification_in(self, c, board, actor):
+        key = 'redmine_identification:{}'.format(board['id'])
+        row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
         if row is None:
             return None
         cards = json.loads(row[0])
+        if any('versions' not in card for card in cards):
+            return None
+        name = status_key(board['name'].partition(' / ')[2])
+        cards = [card for card in cards if any(name in status_key(version) for version in card['versions'])]
         if not cards:
             return cards
         links = {card['number']: {} for card in cards}
@@ -1122,7 +1127,7 @@ class Store:
                 board = next(b for b in boards if b['id'] == selected)
                 if self.project_board(board):
                     catalogs['identification_project'] = self.redmine_basis_project_in(c, selected)
-                    tasks = self.identification_in(c, selected, actor)
+                    tasks = self.identification_in(c, board, actor)
             elif selected is not None:
                 board = next(b for b in boards if b['id'] == selected)
                 tasks = self.cards_in(c, selected, {} if view == 'statistics' else filters)

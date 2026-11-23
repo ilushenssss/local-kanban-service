@@ -83,7 +83,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.s.redmine_basis_project(other), '')
 
     def test_identification_links_only_to_visible_active_boards(self):
-        board = self.s.board_action('Проект / ИД')
+        board = self.s.board_action('Проект / 2.0-218')
         private = self.s.board_action('Проект / Другая доска')
         member = Store(self.s.folder, 'bob')
         self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
@@ -97,6 +97,10 @@ class StoreTest(unittest.TestCase):
         with self.assertRaises(AccessDenied):
             member.save_identification_cards(private, 'Проверка', cards)
         self.s.save_identification_cards(board, 'Проверка', cards)
+        self.assertIsNone(member.board_snapshot(board, {}, 'identification')[3])
+        updated = [dict(card, versions=['2.0-218 И-01']) for card in cards]
+        updated.append(dict(cards[0], number='ТИ(200)-1234-03', versions=['2.0-219']))
+        self.s.save_identification_cards(board, 'Проверка', updated)
         self.assertEqual([card['links'] for card in member.board_snapshot(board, {}, 'identification')[3]], [['ТИ-701'], []])
         self.assertEqual([card['links'] for card in self.s.board_snapshot(board, {}, 'identification')[3]], [['ТИ-701'], ['ТИ-702']])
         self.s.set_redmine_basis_project(board, 'Другой проект')

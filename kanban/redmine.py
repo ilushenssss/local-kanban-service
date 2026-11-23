@@ -183,9 +183,10 @@ def with_basis_statuses(references, project, statuses):
 
 
 def read_identification_cards(client, project_id):
-    from redminelib.exceptions import AuthError
+    from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
     cards = []
+    version_names = {}
     try:
         for issue in client.issue.filter(project_id=project_id, status_id='*'):
             data = issue.raw()
@@ -198,10 +199,30 @@ def read_identification_cards(client, project_id):
             registration = fields.get('регистрационный номер_лпив') or ''
             subject = data.get('subject') or ''
             number = BASIS_NUMBER.search(str(registration)) or BASIS_NUMBER.search(subject)
+            if not number:
+                continue
+            # Redmine отдаёт ID версии строкой или списком для поля с множественным выбором.
+            version_ids = fields.get('приоритет реализации_лпив')
+            if not isinstance(version_ids, list):
+                version_ids = [version_ids]
+            versions = []
+            for value in version_ids:
+                value = str(value).strip()
+                if not value.isascii() or not value.isdecimal() or int(value) == 0:
+                    continue
+                version_id = int(value)
+                if version_id not in version_names:
+                    try:
+                        version_names[version_id] = client.version.get(version_id).name
+                    except (ForbiddenError, ResourceNotFoundError):
+                        version_names[version_id] = None
+                name = version_names[version_id]
+                if name and name not in versions:
+                    versions.append(name)
             status = (data.get('status') or {}).get('name') or ''
-            label = number.group().upper() if number else subject or '#{}'.format(data['id'])
+            label = number.group().upper()
             cards.append({'number': label, 'subject': subject if subject != label else '',
-                          'approval': approval, 'status': status})
+                          'approval': approval, 'status': status, 'versions': versions})
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:
