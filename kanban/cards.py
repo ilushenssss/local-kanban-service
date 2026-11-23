@@ -14,6 +14,22 @@ DETAILS_ROLE = Qt.UserRole + 3
 DEPARTMENT_CHIPS_PER_ROW = 4
 DEPARTMENT_CHIP_PITCH = 23
 DEPARTMENT_PALETTE = {'red': STICKERS[0], 'yellow': STICKERS[3], 'green': STICKERS[2]}
+REDMINE_REFERENCE_GROUPS = (('СП', 'basis', 3, 60), ('Баги', 'bugs', 4, 19))
+CHIP_GAP = 4
+
+
+def chip_rows(values, per_row):
+    return (len(values) + per_row - 1) // per_row
+
+
+def reference_group_height(values, per_row, chip_height):
+    return 22 + chip_rows(values, per_row) * (chip_height + CHIP_GAP)
+
+
+def redmine_title_font(base_font):
+    font = QFont(base_font)
+    font.setPixelSize(13)
+    return font
 
 
 def title_font(base_font):
@@ -54,9 +70,13 @@ class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         task = index.data(Qt.UserRole) or {}
         if task.get('redmine_id'):
-            rows = (len(task['approvals']) + DEPARTMENT_CHIPS_PER_ROW - 1) // DEPARTMENT_CHIPS_PER_ROW
+            rows = chip_rows(task['approvals'], DEPARTMENT_CHIPS_PER_ROW)
             approval_height = 19 + rows * DEPARTMENT_CHIP_PITCH if rows else 0
-            return QSize(292, 163 + approval_height + title_extra_height(QFontMetrics(title_font(option.font))))
+            references = task['issue_references']
+            reference_height = sum(reference_group_height(references.get(key, []), per_row, height)
+                                   for _, key, per_row, height in REDMINE_REFERENCE_GROUPS)
+            title_height = 2 * QFontMetrics(redmine_title_font(option.font)).lineSpacing()
+            return QSize(292, 94 + title_height + reference_height + approval_height)
         height = card_height(task, QFontMetrics(title_font(option.font)))
         if index.data(EXPANDED_ROLE):
             width = max(220, self.parent().viewport().width() - 32)
@@ -250,14 +270,14 @@ class CardDelegate(QStyledItemDelegate):
             painter.drawText(QRect(left, top, span, height), Qt.AlignLeft | Qt.AlignVCenter,
                              painter.fontMetrics().elidedText(caption, Qt.ElideRight, span))
 
-        def chip(caption, left, top, span, center=False, palette=None):
-            rect = QRect(left, top, span, 19)
+        def chip(caption, left, top, span, center=False, palette=None, height=19, font_size=11):
+            rect = QRect(left, top, span, height)
             foreground, background = palette or (TOKENS['secondary'], TOKENS['hover'])
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(background))
             painter.drawRoundedRect(rect, 4, 4)
             font = QFont(option.font)
-            font.setPixelSize(11)
+            font.setPixelSize(font_size)
             painter.setFont(font)
             painter.setPen(QColor(foreground))
             painter.drawText(rect.adjusted(3, 0, -3, 0), Qt.AlignCenter if center else
@@ -266,21 +286,30 @@ class CardDelegate(QStyledItemDelegate):
 
         text(issue_label(task['tracker_name'], task['redmine_id']), x, y, width-68, bold=True, color='text')
         chip('Redmine', x+width-60, y, 60, center=True)
-        font = QFont(option.font)
-        font.setPixelSize(13)
-        painter.setFont(font)
+        painter.setFont(redmine_title_font(option.font))
         painter.setPen(QColor(TOKENS['secondary']))
         title_rect = QRect(x, y+23, width, 2*painter.fontMetrics().lineSpacing()+2)
         painter.drawText(title_rect, Qt.AlignTop | Qt.TextWordWrap, ' '.join(task['title'].split()))
         y = title_rect.bottom()+6
-        chip('СП —', x, y, 48)
-        text('Баги  —', x, y+22, width)
-        text('КРИС ТИ', x, y+44, width-20)
-        text('—', x+width-16, y+44, 16)
+        references = task['issue_references']
+        for label, key, per_row, height in REDMINE_REFERENCE_GROUPS:
+            values = references.get(key, [])
+            text(label if values else label + ' —', x, y, width)
+            span = (width - CHIP_GAP * (per_row - 1)) // per_row
+            square = key == 'basis'
+            chip_width = min(span, height) if square else span
+            chip_height = chip_width if square else height
+            for index, value in enumerate(values):
+                row, column = divmod(index, per_row)
+                chip(value, x+column*(chip_width+CHIP_GAP), y+22+row*(height+CHIP_GAP),
+                     chip_width, center=True, height=chip_height, font_size=10 if square else 11)
+            y += reference_group_height(values, per_row, height)
+        text('КРИС ТИ', x, y, width-20)
+        text('—', x+width-16, y, 16)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(TOKENS['hover']))
-        painter.drawRoundedRect(QRect(x, y+63, width, 4), 2, 2)
-        footer = y+69
+        painter.drawRoundedRect(QRect(x, y+19, width, 4), 2, 2)
+        footer = y+25
         if task['approvals']:
             text('Согласование отделов', x, footer, width)
             footer += 19
@@ -404,8 +433,12 @@ def set_card_notice(item, count):
 def set_card_data(item, task, count):
     item.setData(Qt.UserRole, task)
     if task.get('redmine_id'):
-        summary = '{} #{} · Redmine\n{}\n{}\nСП — · Баги — · КРИС ТИ —\nПриложения —'.format(
+        summary = '{} #{} · Redmine\n{}\n{}'.format(
             issue_label(task['tracker_name'], task['redmine_id']), task['redmine_id'], task['title'], task['status'])
+        for label, key, _, _ in REDMINE_REFERENCE_GROUPS:
+            values = task['issue_references'].get(key, [])
+            summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
+        summary += '\nКРИС ТИ —\nПриложения —'
         if task['approvals']:
             summary += '\nСогласование отделов: ' + ', '.join(
                 '{}: {}'.format(entry['department'], entry['status']) for entry in task['approvals'])

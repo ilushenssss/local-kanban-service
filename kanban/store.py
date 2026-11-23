@@ -15,7 +15,7 @@ import uuid
 from .redmine import issue_label, status_key, validate_url
 
 
-SCHEMA_VERSION = 12
+SCHEMA_VERSION = 13
 
 
 # Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
@@ -177,6 +177,11 @@ class Store:
                         c.execute("ALTER TABLE redmine_links ADD COLUMN approvals TEXT NOT NULL DEFAULT '[]'")
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(12,?)', (now(),))
                     c.execute('PRAGMA user_version=12')
+                if version < 13:
+                    if 'issue_references' not in {row[1] for row in c.execute('PRAGMA table_info(redmine_links)')}:
+                        c.execute("ALTER TABLE redmine_links ADD COLUMN issue_references TEXT NOT NULL DEFAULT '{}'")
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(13,?)', (now(),))
+                    c.execute('PRAGMA user_version=13')
                 uid = self.user(c, self.login)
                 restricted = c.execute('SELECT restricted FROM users WHERE id=?', (uid,)).fetchone()[0]
                 c.commit()
@@ -971,8 +976,12 @@ class Store:
             c.execute('BEGIN')
             self.require(c, 'read', board_id)
             self.active_board(c, board_id)
-            return [dict(row, approvals=json.loads(row['approvals'])) for row in c.execute(
+            return [self.redmine_entry(row) for row in c.execute(
                 'SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (board_id,))]
+
+    @staticmethod
+    def redmine_entry(row):
+        return dict(row, approvals=json.loads(row['approvals']), issue_references=json.loads(row['issue_references']))
 
     @staticmethod
     def redmine_column(c, board_id, name):
@@ -982,35 +991,40 @@ class Store:
             raise ValueError('На доске должна быть ровно одна колонка «{}» для этого статуса Redmine'.format(name))
         return matches[0]
 
-    def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None, *, tracker_name='', approvals=()):
+    def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None, *,
+                           tracker_name='', approvals=(), issue_references=None):
         if type(issue_id) is not int or not 0 < issue_id <= 2**63 - 1:
             raise ValueError('Введите положительный номер задачи Redmine')
 
         def apply(c, uid):
             column_id = self.redmine_column(c, board_id, target_column)
             if not c.execute('''INSERT OR IGNORE INTO redmine_links
-                                (board_id,issue_id,title,status,column_id,tracker_name,approvals) VALUES(?,?,?,?,?,?,?)''',
+                                (board_id,issue_id,title,status,column_id,tracker_name,approvals,issue_references)
+                                VALUES(?,?,?,?,?,?,?,?)''',
                              (board_id, issue_id, title, status, column_id, tracker_name,
-                              json.dumps(approvals, ensure_ascii=False))).rowcount:
+                              json.dumps(approvals, ensure_ascii=False),
+                              json.dumps(issue_references or {}, ensure_ascii=False))).rowcount:
                 raise ValueError('Задача Redmine #{} уже добавлена на эту доску'.format(issue_id))
             return True
 
-        return self.write('redmine_link', [board_id, issue_id, title, status, target_column, tracker_name, approvals], apply, request_id)
+        return self.write('redmine_link',
+                          [board_id, issue_id, title, status, target_column, tracker_name, approvals, issue_references],
+                          apply, request_id)
 
     def update_redmine_tasks(self, board_id, updates):
         def apply(c, uid):
             errors = []
-            for issue_id, revision, title, status, target_column, tracker_name, approvals in updates:
+            for issue_id, revision, title, status, target_column, tracker_name, approvals, references in updates:
                 try:
                     column_id = self.redmine_column(c, board_id, target_column)
                 except ValueError as error:
                     errors.append('#{}: {}'.format(issue_id, error))
                     continue
                 if not c.execute('''UPDATE redmine_links SET title=?, status=?, column_id=?, revision=revision+1,
-                                     tracker_name=COALESCE(NULLIF(?,''), tracker_name), approvals=?
+                                     tracker_name=COALESCE(NULLIF(?,''), tracker_name), approvals=?, issue_references=?
                                      WHERE board_id=? AND issue_id=? AND revision=?''',
                                  (title, status, column_id, tracker_name, json.dumps(approvals, ensure_ascii=False),
-                                  board_id, issue_id, revision)).rowcount:
+                                  json.dumps(references, ensure_ascii=False), board_id, issue_id, revision)).rowcount:
                     errors.append('#{}: карточка уже обновлена другим пользователем'.format(issue_id))
             return errors
 
@@ -1056,9 +1070,8 @@ class Store:
                         label = issue_label(entry['tracker_name'], entry['issue_id'])
                         if query and query not in ('{} #{} {}'.format(label, entry['issue_id'], entry['title'])).casefold():
                             continue
-                        tasks.append(dict(entry, id=-entry['issue_id'], redmine_id=entry['issue_id'],
+                        tasks.append(dict(self.redmine_entry(entry), id=-entry['issue_id'], redmine_id=entry['issue_id'],
                                           number=entry['issue_id'], version=entry['revision'], archived=False,
-                                          approvals=json.loads(entry['approvals']),
                                           assignees=[], assignee_names=[], labels=[], due_date=None,
                                           completed_at=None, priority='Обычный', unread_count=0))
             return boards, selected, columns, tasks, totals, catalogs, personal

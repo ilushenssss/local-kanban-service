@@ -817,7 +817,8 @@ class UITest(unittest.TestCase):
              patch.object(QDialog, 'exec_', new=password_dialog), \
              patch('kanban.redmine.connect', side_effect=[RedmineAuthError('Неверный пароль'), object()]) as auth, \
              patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-1157',
-                                                           'approvals': [{'department': 'ОСП', 'status': 'Нет'}]}):
+                                                           'approvals': [{'department': 'ОСП', 'status': 'Нет'}],
+                                                           'issue_references': {'basis': ['СП-23578'], 'bugs': ['48316', '70245']}}):
             admin.new_task_button.click()
             wait_for(lambda: not admin.mutating)
             self.assertIsNone(admin.redmine_client)
@@ -828,13 +829,15 @@ class UITest(unittest.TestCase):
         member.refresh()
         wait_for(lambda: not member.loading and member.card_lists[0].count() == 1)
         self.assertIsNone(member.redmine_client)
-        self.assertIn('СП —', member.card_lists[0].item(0).text())
+        self.assertIn('СП: СП-23578', member.card_lists[0].item(0).text())
+        self.assertIn('Баги: 48316, 70245', member.card_lists[0].item(0).text())
         self.assertTrue(member.card_lists[0].item(0).text().startswith('ТИ-1157 #23018'))
         self.assertIn('ОСП: Нет', member.card_lists[0].item(0).text())
 
         with patch('kanban.redmine.connect') as auth, patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
-                                                        'approvals': [{'department': 'ОСЗ', 'status': 'Да'}]}):
+                                                        'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
+                                                        'issue_references': {'bugs': ['61428']}}):
             admin.refresh_workspace()
             wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[1].count() == 1)
             auth.assert_not_called()
@@ -843,6 +846,9 @@ class UITest(unittest.TestCase):
         self.assertEqual(member.card_lists[0].count(), 0)
         item = member.card_lists[1].item(0)
         self.assertIn('Открытая ТИ', item.text())
+        self.assertIn('СП —', item.text())
+        self.assertIn('Баги: 61428', item.toolTip())
+        self.assertNotIn('48316', item.text())
         self.assertIn('ОСЗ: Да', item.text())
         self.assertNotIn('ОСП', item.text())
         self.assertTrue(item.text().startswith('Редакция к ТИ-1157р4 #23018'))

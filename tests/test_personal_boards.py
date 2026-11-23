@@ -114,5 +114,5 @@ class PersonalBoardsTest(unittest.TestCase):
         self.assertEqual(migrated.boards()[0]['personal'], 0)
         self.assertEqual(migrated.boards()[0]['name'], 'Рабочая')
         with migrated.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 12)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 13)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())

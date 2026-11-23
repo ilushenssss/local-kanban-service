@@ -2418,8 +2418,10 @@ class MainWindow(QMainWindow, Async):
             heading.setWordWrap(True)
             layout.addWidget(heading)
             form = QFormLayout()
-            fields = [('Статус задачи', current['status']), ('Основание', '—'),
-                      ('Баги', '—'), ('КРИС ТИ', '—')]
+            references = current['issue_references']
+            fields = [('Статус задачи', current['status']),
+                      ('СП', ', '.join(references.get('basis', [])) or '—'),
+                      ('Баги', ', '.join(references.get('bugs', [])) or '—'), ('КРИС ТИ', '—')]
             if current['approvals']:
                 fields.append(('Согласование отделов', '\n'.join(
                     '{}: {}'.format(entry['department'], entry['status']) for entry in current['approvals'])))
@@ -2525,7 +2527,7 @@ class MainWindow(QMainWindow, Async):
                     continue
                 target = redmine.column_name(issue['status'], statuses)
                 updates.append((issue_id, task['revision'], issue['title'], issue['status'], target,
-                                issue['tracker_name'], issue['approvals']))
+                                issue['tracker_name'], issue['approvals'], issue['issue_references']))
             if updates:
                 errors.extend(self.store.update_redmine_tasks(board_id, updates))
             return errors
@@ -2554,7 +2556,8 @@ class MainWindow(QMainWindow, Async):
                 issue = redmine.read_issue(client, issue_id)
             target = redmine.column_name(issue['status'], statuses)
             self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid,
-                                          tracker_name=issue['tracker_name'], approvals=issue['approvals'])
+                                          tracker_name=issue['tracker_name'], approvals=issue['approvals'],
+                                          issue_references=issue['issue_references'])
             return []
 
         self.redmine_operation(add, 'Задача Redmine добавлена')

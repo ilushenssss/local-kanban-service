@@ -120,7 +120,22 @@ def department_approvals(fields):
     return approvals
 
 
-# Читает заголовок, статус, имя трекера и согласования задачи по числовому ID из её адреса в Redmine.
+# Собирает номера СП и багов из двух пользовательских полей Redmine.
+def issue_references(fields):
+    names = {'основание для открытия ти': 'basis', '№ bz': 'bugs'}
+    references = {}
+    for field in fields:
+        if not isinstance(field, dict):
+            continue
+        name, value = field.get('name'), field.get('value')
+        key = names.get(status_key(name)) if isinstance(name, str) else None
+        if key and isinstance(value, str):
+            # Пробелы (включая переносы строк) и запятые разделяют элементы.
+            references[key] = re.findall(r'[^\s,]+', value)
+    return references
+
+
+# Читает поля задачи по числовому ID из её адреса в Redmine.
 def read_issue(client, issue_id):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
@@ -138,7 +153,9 @@ def read_issue(client, issue_id):
         # Старые или изменённые ответы API могут не содержать объект трекера.
         tracker_name = tracker.get('name') if isinstance(tracker, dict) else None
         # Читаем исходные пользовательские поля без построения дополнительных объектов Redmine.
-        approvals = department_approvals(fields.get('custom_fields') or [])
+        custom_fields = fields.get('custom_fields') or []
+        approvals = department_approvals(custom_fields)
+        references = issue_references(custom_fields)
     # Если Redmine вернул HTTP 401, TeamSync запросит вход повторно при следующем обращении.
     except AuthError:
         # Отдельный тип ошибки позволяет интерфейсу сбросить сохранённый в памяти клиент.
@@ -159,7 +176,7 @@ def read_issue(client, issue_id):
     tracker_name = tracker_name.strip() if isinstance(tracker_name, str) else ''
     # ID задачи используется отдельно, для связи с Redmine.
     return {'title': title.strip(), 'status': status.strip(), 'tracker_name': tracker_name,
-            'approvals': approvals}
+            'approvals': approvals, 'issue_references': references}
 
 
 # Формирует подпись карточки, пока для старой записи ещё не загрузилось имя трекера.
