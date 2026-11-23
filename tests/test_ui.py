@@ -786,7 +786,12 @@ class UITest(unittest.TestCase):
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit
+        from kanban.installation import save_folder
         from kanban.redmine import RedmineAuthError
+        base = Path(self.tmp.name)
+        save_folder(base, self.store.folder)
+        projects = base / 'all_project.json'
+        projects.write_text('{"Разработка": 49, "Внедрение": 88}', encoding='utf-8')
         board = self.store.board_action('Разработка / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
         self.grant_all(board)
         colleague_id = next(u['id'] for u in self.store.access_users() if u['login'] == 'colleague')
@@ -794,7 +799,7 @@ class UITest(unittest.TestCase):
 
         def window_for(login):
             with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, login)):
-                window = MainWindow(str(self.store.folder), 'https://redmine.example.test')
+                window = MainWindow(None, 'https://redmine.example.test', installation_base=base)
                 self.windows.append(window)
                 window.show()
                 wait_for(lambda: not window.loading and board in window.board_items)
@@ -816,7 +821,7 @@ class UITest(unittest.TestCase):
         with patch.object(QInputDialog, 'getText', return_value=('23018', True)), \
              patch.object(QDialog, 'exec_', new=password_dialog), \
              patch('kanban.redmine.connect', side_effect=[RedmineAuthError('Неверный пароль'), object()]) as auth, \
-             patch('kanban.redmine.read_kris_progress', return_value=({23018: {'done': 2, 'total': 3}}, [])), \
+             patch('kanban.redmine.read_kris_progress', return_value=({23018: {'done': 2, 'total': 3}}, [])) as kris, \
              patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-1157',
                                                            'approvals': [{'department': 'ОСП', 'status': 'Нет'}],
                                                            'issue_references': {'basis': ['СП-23578'], 'bugs': ['48316', '70245']}}):
@@ -827,6 +832,7 @@ class UITest(unittest.TestCase):
             admin.new_task_button.click()
             wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[0].count() == 1)
             self.assertEqual(auth.call_count, 2)
+            kris.assert_called_once_with(admin.redmine_client, [23018], 49)
         member.refresh()
         wait_for(lambda: not member.loading and member.card_lists[0].count() == 1)
         self.assertIsNone(member.redmine_client)
@@ -836,14 +842,16 @@ class UITest(unittest.TestCase):
         self.assertTrue(member.card_lists[0].item(0).text().startswith('ТИ-1157 #23018'))
         self.assertIn('ОСП: Нет', member.card_lists[0].item(0).text())
 
+        projects.write_text('{"Разработка": 73, "Внедрение": 88}', encoding='utf-8')
         with patch('kanban.redmine.connect') as auth, patch(
-                'kanban.redmine.read_kris_progress', return_value=({23018: {'done': 3, 'total': 3}}, [])), patch(
+                'kanban.redmine.read_kris_progress', return_value=({23018: {'done': 3, 'total': 3}}, [])) as kris, patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
                                                         'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
                                                         'issue_references': {'bugs': ['61428']}}):
             admin.refresh_workspace()
             wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[1].count() == 1)
             auth.assert_not_called()
+            self.assertEqual(kris.call_args.args[2], 73)
         member.refresh()
         wait_for(lambda: not member.loading and member.card_lists[1].count() == 1)
         self.assertEqual(member.card_lists[0].count(), 0)

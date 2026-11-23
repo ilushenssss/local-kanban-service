@@ -1,12 +1,29 @@
 import unittest
 from importlib.util import find_spec
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, call
 
+from kanban.installation import load_kris_project_id
 from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_progress_text,
                             read_kris_progress, status_key)
 
 
 class RedmineTest(unittest.TestCase):
+    def test_kris_project_id_uses_exact_project_name(self):
+        with TemporaryDirectory() as folder:
+            base = Path(folder)
+            path = base / 'all_project.json'
+            with self.assertRaisesRegex(ValueError, 'all_project.json'):
+                load_kris_project_id(base, 'Разработка')
+            path.write_text('{"Разработка": 49, "Внедрение": 73, "Некорректный": true}', encoding='utf-8-sig')
+            self.assertEqual(load_kris_project_id(base, 'Разработка'), 49)
+            self.assertEqual(load_kris_project_id(base, 'Внедрение'), 73)
+            with self.assertRaisesRegex(ValueError, 'нет проекта'):
+                load_kris_project_id(base, 'разработка')
+            with self.assertRaisesRegex(ValueError, 'числовой ID'):
+                load_kris_project_id(base, 'Некорректный')
+
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_kris_progress_reads_exact_ti_links_and_direct_children(self):
         def resource(data):
@@ -34,13 +51,13 @@ class RedmineTest(unittest.TestCase):
         def issue_get(issue_id, **kwargs):
             return issues[issue_id]
         client.issue.get.side_effect = issue_get
-        progress, errors = read_kris_progress(client, iter([42, 43, 44, 45]))
+        progress, errors = read_kris_progress(client, iter([42, 43, 44, 45]), 73)
         self.assertEqual(progress, {42: {'done': 2, 'total': 3}, 43: {'done': 0, 'total': 0}, 45: None})
         self.assertEqual(errors, ['Не удалось прочитать подзадачи КРИС_ТИ #74.'])
         self.assertEqual(kris_progress_text(progress[42]), '67% (2/3)')
         self.assertEqual(kris_progress_text(progress[43]), 'Подзадач нет')
         self.assertEqual(kris_progress_text(progress[45]), '—')
-        client.issue.filter.assert_called_once_with(project_id=49, status_id='open', parent_id='!*')
+        client.issue.filter.assert_called_once_with(project_id=73, status_id='open', parent_id='!*')
         self.assertEqual(client.issue.get.call_args_list,
                          [call(72, include='children'), call(102), call(73, include='children'), call(105),
                           call(74, include='children')])

@@ -2506,6 +2506,14 @@ class MainWindow(QMainWindow, Async):
 
         self.mutate(apply, success)
 
+    def read_project_kris_progress(self, client, issue_ids, project):
+        base = self.installation_base or Path(__file__).resolve().parent.parent
+        try:
+            project_id = installation.load_kris_project_id(base, project)
+        except ValueError as error:
+            return {}, [str(error)]
+        return redmine.read_kris_progress(client, issue_ids, project_id)
+
     def refresh_workspace(self):
         if not self.store or self.project_sections_board is None or self.project_sections_board != self.board_id:
             self.refresh()
@@ -2514,6 +2522,7 @@ class MainWindow(QMainWindow, Async):
         if not self.redmine_url:
             self.refresh()
             return
+        project = self.board_items[board_id].parent().text(0)
 
         def update(client, rid, statuses):
             issues, errors = [], []
@@ -2529,7 +2538,8 @@ class MainWindow(QMainWindow, Async):
                 issues.append((task, issue))
             updates = []
             if issues:
-                progress, warnings = redmine.read_kris_progress(client, (task['issue_id'] for task, _ in issues))
+                progress, warnings = self.read_project_kris_progress(
+                    client, (task['issue_id'] for task, _ in issues), project)
                 errors.extend(warnings)
                 for task, issue in issues:
                     issue_id = task['issue_id']
@@ -2548,6 +2558,7 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Администратору нужно указать адрес Redmine в «Настройки → Подключение…».')
             return
         board_id = self.board_id
+        project = self.board_items[board_id].parent().text(0)
         value, accepted = QInputDialog.getText(self, 'Добавить задачу Redmine', 'Номер задачи в Redmine')
         if not accepted:
             return
@@ -2563,7 +2574,7 @@ class MainWindow(QMainWindow, Async):
             nonlocal snapshot
             if snapshot is None:
                 issue = redmine.read_issue(client, issue_id)
-                progress, warnings = redmine.read_kris_progress(client, [issue_id])
+                progress, warnings = self.read_project_kris_progress(client, [issue_id], project)
                 snapshot = issue, progress.get(issue_id), warnings
             issue, progress, warnings = snapshot
             target = redmine.column_name(issue['status'], statuses)

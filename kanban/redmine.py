@@ -136,18 +136,17 @@ def issue_references(fields):
     return references
 
 
-# ID проекта КРИС_ТИ и имя поля, в котором хранится ссылка на исходную ТИ.
-KRIS_PROJECT_ID = 49
+# Имя поля, в котором хранится ссылка на исходную ТИ.
 TI_LOCATION_FIELD = 'расположение ти'
 
 
-def find_kris_issues(client, issue_ids):
+def find_kris_issues(client, issue_ids, project_id):
     # Один проход по открытым верхнеуровневым задачам для всех ТИ на доске.
     pending = {str(issue_id) for issue_id in issue_ids}
     matches = {}
     if not pending:
         return matches
-    candidates = client.issue.filter(project_id=KRIS_PROJECT_ID, status_id='open', parent_id='!*')
+    candidates = client.issue.filter(project_id=project_id, status_id='open', parent_id='!*')
     for candidate in candidates:
         for field in candidate.raw().get('custom_fields') or []:
             if status_key(field.get('name') or '') != TI_LOCATION_FIELD:
@@ -183,17 +182,17 @@ def read_kris_children(client, parent_id):
     return {'done': done, 'total': total}
 
 
-def read_kris_progress(client, issue_ids):
+def read_kris_progress(client, issue_ids, project_id):
     from redminelib.exceptions import AuthError
 
     # None означает, что задача КРИС_ТИ не найдена. При сбое оставляем прежний снимок.
     progress = dict.fromkeys(issue_ids)
     try:
-        matches = find_kris_issues(client, progress)
+        matches = find_kris_issues(client, progress, project_id)
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:
-        return {}, ['Не удалось найти задачи КРИС_ТИ в проекте #{}.'.format(KRIS_PROJECT_ID)]
+        return {}, ['Не удалось найти задачи КРИС_ТИ в проекте #{}.'.format(project_id)]
     errors = []
     children = {}
     for issue_id, parent_id in matches.items():

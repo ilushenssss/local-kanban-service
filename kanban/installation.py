@@ -1,4 +1,4 @@
-"""Installation-wide database location, available before SQLite can be opened."""
+"""Configuration files stored next to the TeamSync launcher."""
 import configparser
 import json
 import os
@@ -14,6 +14,24 @@ def load_folder(base):
     if not isinstance(folder, str) or not Path(folder).is_absolute():
         raise ValueError('Путь к базе должен быть абсолютным')
     return folder
+
+
+def load_kris_project_id(base, project):
+    path = base / 'all_project.json'
+    try:
+        projects = json.loads(path.read_text(encoding='utf-8-sig'))
+    except FileNotFoundError:
+        raise ValueError('Для поиска КРИС_ТИ положите all_project.json рядом с main.pyw.') from None
+    except (OSError, ValueError):
+        raise ValueError('Не удалось прочитать all_project.json. Проверьте файл и его формат.') from None
+    if not isinstance(projects, dict):
+        raise ValueError('В all_project.json ожидается словарь «название проекта: ID».')
+    if project not in projects:
+        raise ValueError('В all_project.json нет проекта «{}».'.format(project))
+    project_id = projects[project]
+    if type(project_id) is not int or project_id <= 0:
+        raise ValueError('В all_project.json укажите положительный числовой ID для проекта «{}».'.format(project))
+    return project_id
 
 
 def save_folder(base, folder):
