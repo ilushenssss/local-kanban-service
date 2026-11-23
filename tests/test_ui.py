@@ -815,6 +815,8 @@ class UITest(unittest.TestCase):
         member = window_for('colleague')
         self.assertTrue(admin.new_task_button.isEnabled())
         self.assertFalse(member.new_task_button.isEnabled())
+        self.assertTrue(member.refresh_ti_button.isEnabled())
+        self.assertFalse(member.import_sppi_button.isEnabled())
         self.assertTrue(all(cards.add_task.isHidden() for cards in admin.card_lists))
         with patch.object(QInputDialog, 'getText', return_value=('Внедрение', True)):
             admin.edit_basis_project()
@@ -908,7 +910,7 @@ class UITest(unittest.TestCase):
             self.assertEqual(cards.visualItemRect(item).height(), full_height)
             self.assertIn('Баги', item.toolTip())
 
-    def test_current_work_refresh_imports_sppi_tasks_with_the_regular_card_fields(self):
+    def test_current_work_refreshes_linked_ti_and_imports_sppi_with_separate_buttons(self):
         from kanban.installation import save_folder
         base = Path(self.tmp.name)
         save_folder(base, self.store.folder)
@@ -917,13 +919,14 @@ class UITest(unittest.TestCase):
         self.store.set_redmine_settings('https://redmine.example.test', {})
         self.store.set_redmine_sppi_project('СППИ')
         board = self.store.board_action('Проект / 2.0-218', column_names=['Проект ТИ'])
+        self.store.link_redmine_issue(board, 118, 'Старые данные', 'Проект ТИ', 'Проект ТИ')
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
             window = MainWindow(None, installation_base=base)
             self.windows.append(window)
             window.show()
             wait_for(lambda: not window.loading and board in window.board_items)
         window.select_tree_board(window.board_items[board], 0)
-        wait_for(lambda: not window.loading and window.project_sections_board == board and bool(window.card_lists))
+        wait_for(lambda: not window.loading and window.project_sections_board == board and window.card_lists[0].count() == 1)
         window.redmine_client = object()
         subtasks = [{'id': 120, 'title': 'Подзадача', 'status': 'В работе'}]
         issue = {'title': 'ТИ из СППИ', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-119',
@@ -937,17 +940,28 @@ class UITest(unittest.TestCase):
         with patch('kanban.redmine.read_sppi_issue_ids', side_effect=scan) as discover, \
              patch('kanban.redmine.read_issue', return_value=issue) as fetch, \
              patch('kanban.redmine.read_kris_progress', return_value=({119: None}, [])):
-            window.refresh_workspace()
-            wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 1)
+            self.assertTrue(window.refresh_ti_button.isVisible())
+            self.assertTrue(window.import_sppi_button.isVisible())
+            window.refresh_ti_button.click()
+            wait_for(lambda: not window.mutating and not window.loading)
+            discover.assert_not_called()
+            fetch.assert_called_once_with(window.redmine_client, 118)
+            self.assertEqual(window.card_lists[0].count(), 1)
+            self.assertIn('ТИ из СППИ', window.card_lists[0].item(0).toolTip())
+            fetch.reset_mock()
+
+            window.import_sppi_button.click()
+            wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 2)
             self.assertEqual(discover.call_args.args, (window.redmine_client, 88, '2.0-218', ['Иванова Анна']))
-            fetch.assert_called_once_with(window.redmine_client, 119, skip_closed=True)
+            self.assertEqual([(args[1], kwargs['skip_closed']) for args, kwargs in fetch.call_args_list],
+                             [(118, True), (119, True)])
         self.assertTrue(window.sppi_log.isVisible())
         self.assertEqual([line.full_text for line in window.sppi_log_lines],
                          ['Проверка #{}'.format(i) for i in range(116, 120)])
-        item = window.card_lists[0].item(0)
+        item = window.card_lists[0].item(1)
         self.assertIn('Основание: СП-12', item.toolTip())
         self.assertIn('ОСП: Да', item.toolTip())
-        self.assertEqual(self.store.redmine_tasks(board)[0]['issue_references']['children'], subtasks)
+        self.assertEqual(self.store.redmine_tasks(board)[1]['issue_references']['children'], subtasks)
 
     def test_identification_tab_loads_basis_project_and_shows_linked_ti(self):
         from kanban.installation import save_folder

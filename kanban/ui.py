@@ -1414,6 +1414,17 @@ class MainWindow(QMainWindow, Async):
         content = QVBoxLayout(current_work)
         content.setContentsMargins(20, 16, 20, 12)
         content.setSpacing(14)
+        self.ti_actions = QWidget()
+        ti_actions = QHBoxLayout(self.ti_actions)
+        ti_actions.setContentsMargins(0, 0, 0, 0)
+        ti_actions.setSpacing(8)
+        self.refresh_ti_button = button('Обновить по #ID', self.refresh_workspace, ti_actions)
+        self.refresh_ti_button.setToolTip('Обновить уже добавленные ТИ по их ID в Redmine')
+        self.import_sppi_button = button('Выгрузить из Redmine', self.import_sppi_ti, ti_actions)
+        self.import_sppi_button.setToolTip('Проверить проект СППИ, добавить новые ТИ и обновить загруженные')
+        ti_actions.addStretch()
+        self.ti_actions.hide()
+        content.addWidget(self.ti_actions)
         filters = QHBoxLayout()
         filters.setSpacing(8)
         self.assignee_filter = QComboBox()
@@ -1558,6 +1569,10 @@ class MainWindow(QMainWindow, Async):
         project = self.project_sections_board == self.board_id and self.board_id is not None
         current_work = self.pages.currentIndex() == 0 and not empty_section
         self.new_task_button.setEnabled(can_create and bool(self.board_id) and (current_work or not project))
+        self.ti_actions.setVisible(project and current_work)
+        ready = not self.mutating and not self.pending_action
+        self.refresh_ti_button.setEnabled(ready)
+        self.import_sppi_button.setEnabled(ready and can_create)
 
     def apply_menu_permissions(self, menu):
         permissions = getattr(self, 'permissions', {})
@@ -2655,22 +2670,34 @@ class MainWindow(QMainWindow, Async):
         if not self.store or self.project_sections_board is None or self.project_sections_board != self.board_id:
             self.refresh()
             return
+        self.sync_project_ti(scan_sppi=False)
+
+    def import_sppi_ti(self):
+        if not self.store or self.board_id is None or self.project_sections_board != self.board_id:
+            return
+        if not self.permissions.get('create'):
+            self.status.setText('Выгружать ТИ из СППИ могут менеджер и администратор')
+            return
+        self.sync_project_ti(scan_sppi=True)
+
+    def sync_project_ti(self, *, scan_sppi):
         board_id = self.board_id
-        if not self.redmine_url:
+        if not self.redmine_url and not scan_sppi:
             self.refresh()
             return
         project = self.board_items[board_id].parent().text(0)
         board_name = self.board_items[board_id].text(0)
-        scan_sppi = self.pages.currentIndex() == 0 and self.project_sections.currentIndex() == 0 and self.permissions.get('create')
         snapshot = None
 
         def prepare(client, statuses):
             issues, errors = [], []
             linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
             sppi_project = self.store.redmine_sppi_project() if scan_sppi else ''
+            if scan_sppi and not sppi_project:
+                raise ValueError('Укажите проект СППИ в настройках.')
+            self.sppi_progress.emit(board_id, '')
             issue_ids = list(linked)
             if sppi_project:
-                self.sppi_progress.emit(board_id, '')
                 issue_ids = [issue_id for issue_id, task in linked.items() if not redmine.ti_is_closed(task['status'])]
                 try:
                     employees = installation.load_redmine_employees(self.redmine_config_base())
@@ -2719,7 +2746,8 @@ class MainWindow(QMainWindow, Async):
                 return errors + self.store.update_redmine_tasks(board_id, updates, sppi_project=sppi_project, request_id=rid)
             return errors
 
-        self.redmine_operation(update, 'Данные Redmine обновлены')
+        message = 'Выгрузка из Redmine завершена' if scan_sppi else 'Добавленные ТИ обновлены'
+        self.redmine_operation(update, message)
 
     def add_redmine_task(self):
         if not self.redmine_url:
@@ -2780,6 +2808,7 @@ class MainWindow(QMainWindow, Async):
         rid = self.pending_action[2]
         self.generation += 1
         self.mutating = True
+        self.update_board_controls()
         self.status.setText('Сохранение…')
         def done(result, error):
             self.mutating = False
@@ -2807,6 +2836,7 @@ class MainWindow(QMainWindow, Async):
                     success_message = success
                 self.status.setText(success_message)
                 self.refresh()
+            self.update_board_controls()
         self.work(lambda: fn(rid), done)
 
     def retry_mutation(self):
