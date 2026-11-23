@@ -3,7 +3,7 @@ import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
-from .redmine import APPROVAL_COLORS, issue_label, kris_coding_lines, kris_progress_text, status_key
+from .redmine import APPROVAL_COLORS, issue_label, kris_coding_deadline, kris_coding_lines, kris_progress_text, status_key
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
@@ -20,6 +20,7 @@ CHIP_PITCH = CHIP_HEIGHT + CHIP_GAP
 CHIP_TEXT_INSET = 3
 REFERENCE_LABEL_HEIGHT = 22
 CODING_LINE_HEIGHT = 19
+COMPACT_TI_HEIGHT = 38
 
 
 def chip_rows(values, per_row):
@@ -99,6 +100,8 @@ class CardDelegate(QStyledItemDelegate):
     def sizeHint(self, option, index):
         task = index.data(Qt.UserRole) or {}
         if task.get('redmine_id'):
+            if self.parent().redmine_is_compact(task):
+                return QSize(292, COMPACT_TI_HEIGHT)
             rows = chip_rows(task['approvals'], DEPARTMENT_CHIPS_PER_ROW)
             approval_height = 19 + rows * CHIP_PITCH if rows else 0
             _, basis_height = self.basis_layout(task, option)
@@ -116,6 +119,10 @@ class CardDelegate(QStyledItemDelegate):
     @staticmethod
     def disclosure_rect(rect, height):
         return QRect(rect.right()-30, rect.y()+height-32, 26, 26)
+
+    @staticmethod
+    def ti_disclosure_rect(rect):
+        return QRect(rect.right()-37, rect.top()+4, 26, 26)
 
     def paint(self, p, option, index):
         t = index.data(Qt.UserRole)
@@ -323,8 +330,29 @@ class CardDelegate(QStyledItemDelegate):
 
         progress = task.get('kris_progress')
         label = issue_label(task['tracker_name'], task['redmine_id'], progress)
-        text(label, x, y, width-68, bold=True, color='text')
-        chip('Redmine', QRect(x+width-60, y, 60, CHIP_HEIGHT))
+        collapsible = self.parent().redmine_can_collapse(task)
+        compact = self.parent().redmine_is_compact(task)
+        control_width = 28 if collapsible else 0
+        if collapsible:
+            control = self.ti_disclosure_rect(option.rect)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(TOKENS['hover']))
+            painter.drawRoundedRect(control, 5, 5)
+            painter.setPen(QPen(QColor(TOKENS['secondary']), 1.5))
+            cx, cy = control.center().x(), control.center().y()
+            direction = 1 if compact else -1
+            painter.drawPolyline(QPointF(cx-4, cy-2*direction), QPointF(cx, cy+2*direction),
+                                 QPointF(cx+4, cy-2*direction))
+        if compact:
+            deadline = kris_coding_deadline(progress)
+            deadline_width = 99 if deadline else 0
+            text(label, x, y-2, width-control_width-deadline_width, bold=True, color='text')
+            if deadline:
+                text(deadline, x+width-control_width-deadline_width, y-2, deadline_width-4, align=Qt.AlignRight)
+            painter.restore()
+            return
+        text(label, x, y, width-68-control_width, bold=True, color='text')
+        chip('Redmine', QRect(x+width-60-control_width, y, 60, CHIP_HEIGHT))
         painter.setFont(redmine_title_font(option.font))
         painter.setPen(QColor(TOKENS['secondary']))
         title_rect = QRect(x, y+23, width, 2*painter.fontMetrics().lineSpacing()+2)
@@ -376,10 +404,11 @@ class Cards(QListWidget):
     moved = pyqtSignal(int, int, object)
     dragging = pyqtSignal(bool)
     details_requested = pyqtSignal(object)
-    def __init__(self, column_id, expanded_ids=None):
+    def __init__(self, column_id, expanded_ids=None, *, compact_ti_ids=None):
         super().__init__()
         self.column_id = column_id
         self.expanded_ids = expanded_ids if expanded_ids is not None else set()
+        self.compact_ti_ids = compact_ti_ids
         self.setObjectName('Cards')
         self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.setItemDelegate(CardDelegate(self))
@@ -404,9 +433,28 @@ class Cards(QListWidget):
             self.doItemsLayout()
             self.update_card_height()
 
+    def redmine_can_collapse(self, task):
+        return self.compact_ti_ids is not None and bool(task.get('redmine_id'))
+
+    def redmine_is_compact(self, task):
+        return self.redmine_can_collapse(task) and (task['board_id'], task['redmine_id']) in self.compact_ti_ids
+
     def toggle_details(self, item):
-        if item.data(Qt.UserRole).get('redmine_id'):
-            self.itemClicked.emit(item)
+        task = item.data(Qt.UserRole)
+        if task.get('redmine_id'):
+            if not self.redmine_can_collapse(task):
+                self.itemClicked.emit(item)
+                return
+            key = task['board_id'], task['redmine_id']
+            if key in self.compact_ti_ids:
+                self.compact_ti_ids.remove(key)
+            else:
+                self.compact_ti_ids.add(key)
+            set_card_notice(item, item.data(TASK_NOTICE_ROLE) or 0)
+            self.doItemsLayout()
+            self.update_card_height()
+            self.scrollToItem(item)
+            self.viewport().update()
             return
         expanded = not item.data(EXPANDED_ROLE)
         item.setData(EXPANDED_ROLE, expanded)
@@ -429,6 +477,10 @@ class Cards(QListWidget):
         item = self.itemAt(event.pos())
         if item and event.button() == Qt.LeftButton:
             task = item.data(Qt.UserRole)
+            if self.redmine_can_collapse(task) and CardDelegate.ti_disclosure_rect(self.visualItemRect(item)).contains(event.pos()):
+                self.toggle_details(item)
+                event.accept()
+                return
             metrics = QFontMetrics(title_font(self.viewOptions().font))
             if not task.get('redmine_id') and CardDelegate.disclosure_rect(self.visualItemRect(item), card_height(task, metrics)).contains(event.pos()):
                 self.toggle_details(item)
@@ -479,8 +531,20 @@ def set_card_notice(item, count):
     summary = item.text()
     if count:
         summary += '\nНепрочитанных уведомлений: {}'.format(count)
+    hint = 'Пробел — подробности, Enter — открыть задачу'
+    task = item.data(Qt.UserRole)
+    cards = item.listWidget()
+    if task.get('redmine_id') and isinstance(cards, Cards):
+        if cards.redmine_is_compact(task):
+            progress = task.get('kris_progress')
+            label = issue_label(task['tracker_name'], task['redmine_id'], progress)
+            summary = '\n'.join([label, *kris_coding_lines(progress)])
+            hint = 'Пробел — развернуть карточку, Enter — открыть задачу'
+        elif cards.redmine_can_collapse(task):
+            hint = 'Пробел — свернуть карточку, Enter — открыть задачу'
+        item.setData(Qt.AccessibleDescriptionRole, hint)
     item.setData(Qt.AccessibleTextRole, summary)
-    item.setToolTip(summary + '\nПробел — подробности, Enter — открыть задачу')
+    item.setToolTip(summary + '\n' + hint)
 
 
 def set_card_data(item, task, count):
@@ -556,6 +620,8 @@ def update_cards(lists, tasks_by_column, counts, expanded_ids):
                 if item.listWidget() is cards:
                     cards.takeItem(cards.row(item))
                 cards.insertItem(row, item)
+                if task.get('redmine_id'):
+                    set_card_notice(item, counts.get(tid, 0))
             if item.data(EXPANDED_ROLE) and item.data(DETAILS_ROLE) is None:
                 # Signals are blocked during reconciliation.
                 cards.blockSignals(False)

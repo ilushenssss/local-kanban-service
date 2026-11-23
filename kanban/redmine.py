@@ -268,6 +268,18 @@ def kris_coding_lines(progress):
     return lines
 
 
+def kris_coding_deadline(progress):
+    coding = (progress or {}).get('coding', [])
+    dates = sorted({issue['due_date'] for issue in coding if issue['due_date']})
+    if not dates:
+        return 'Срок не указан' if coding else ''
+    first = date.fromisoformat(dates[0]).strftime('%d.%m')
+    if len(dates) == 1:
+        return 'до ' + first
+    last = date.fromisoformat(dates[-1]).strftime('%d.%m')
+    return first + '–' + last
+
+
 # Читает поля задачи по числовому ID из её адреса в Redmine.
 def read_issue(client, issue_id):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.

@@ -787,6 +787,7 @@ class UITest(unittest.TestCase):
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit
         from kanban.installation import save_folder
+        from kanban.cards import CardDelegate
         from kanban.redmine import RedmineAuthError
         base = Path(self.tmp.name)
         save_folder(base, self.store.folder)
@@ -844,11 +845,13 @@ class UITest(unittest.TestCase):
         self.assertIn('Кодирование до 03.02', member.card_lists[0].item(0).toolTip())
         self.assertTrue(member.card_lists[0].item(0).text().startswith('ТИ-1157 #23018'))
         self.assertIn('ОСП: Нет', member.card_lists[0].item(0).text())
+        self.assertFalse(member.card_lists[0].redmine_can_collapse(member.card_lists[0].item(0).data(Qt.UserRole)))
 
         projects.write_text('{"Разработка": 73, "Внедрение": 88}', encoding='utf-8')
         with patch('kanban.redmine.connect') as auth, patch(
                 'kanban.redmine.read_kris_progress', return_value=({23018: {
                     'done': 3, 'total': 3, 'subject': 'ТИ-1157р4 из КРИС',
+                    'coding': [{'subject': 'Интерфейс', 'due_date': '2027-02-04'}],
                 }}, [])) as kris, patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
                                                         'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
@@ -865,7 +868,7 @@ class UITest(unittest.TestCase):
         self.assertIn('СП —', item.text())
         self.assertIn('Баги: 61428', item.toolTip())
         self.assertIn('КРИС ТИ: 100% (3/3)', item.toolTip())
-        self.assertNotIn('Кодирование до', item.toolTip())
+        self.assertNotIn('Кодирование до 03.02', item.toolTip())
         self.assertNotIn('48316', item.text())
         self.assertIn('ОСЗ: Да', item.text())
         self.assertNotIn('ОСП', item.text())
@@ -873,6 +876,26 @@ class UITest(unittest.TestCase):
         self.assertEqual(item.data(Qt.UserRole)['status'], 'ТИ открыто')
         self.assertFalse(member.card_lists[1].grab().isNull())
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
+
+        cards = member.card_lists[1]
+        cards.setCurrentItem(item)
+        full_height = cards.visualItemRect(item).height()
+        with patch.object(member, 'show_redmine_task') as open_task:
+            button = CardDelegate.ti_disclosure_rect(cards.visualItemRect(item)).center()
+            QTest.mouseClick(cards.viewport(), Qt.LeftButton, pos=button)
+            open_task.assert_not_called()
+            self.assertLess(cards.visualItemRect(item).height(), full_height)
+            self.assertIn('Кодирование до 04.02', item.toolTip())
+            self.assertNotIn('Баги', item.toolTip())
+            member.refresh()
+            wait_for(lambda: not member.loading)
+            self.assertIs(cards.item(0), item)
+            self.assertLess(cards.visualItemRect(item).height(), full_height)
+            QTest.keyClick(cards, Qt.Key_Return)
+            open_task.assert_called_once()
+            QTest.keyClick(cards, Qt.Key_Space)
+            self.assertEqual(cards.visualItemRect(item).height(), full_height)
+            self.assertIn('Баги', item.toolTip())
 
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']

@@ -1230,6 +1230,7 @@ class MainWindow(QMainWindow, Async):
         self.refresh_deferred = False
         self.last_snapshot = None
         self.expanded_task_ids = set()
+        self.compact_ti_ids = set()
         self.board_counts = {}
         self.task_notice_counts = {}
         self.timezone = 'UTC'
@@ -2275,7 +2276,9 @@ class MainWindow(QMainWindow, Async):
                 add_task.setObjectName('AddColumnTask')
                 add_task.setVisible(board_id != self.project_sections_board)
                 add_task.setCursor(Qt.PointingHandCursor)
-                cards = Cards(column['id'], self.expanded_task_ids)
+                can_collapse_ti = structure[2] and redmine.status_key(column['name']) == 'ти открыто'
+                cards = Cards(column['id'], self.expanded_task_ids,
+                              compact_ti_ids=self.compact_ti_ids if can_collapse_ti else None)
                 cards.counter = counter
                 cards.add_task = add_task
                 cards.details_requested.connect(self.load_card_details)

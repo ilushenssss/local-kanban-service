@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, call
 
 from kanban.installation import load_kris_project_id
-from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_lines,
+from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_deadline, kris_coding_lines,
                             kris_progress_text, read_kris_progress, status_key)
 
 
@@ -73,11 +73,14 @@ class RedmineTest(unittest.TestCase):
         coding = [{'subject': 'Сервис', 'due_date': '2027-02-03'},
                   {'subject': 'Интерфейс', 'due_date': '2027-02-03'}]
         self.assertEqual(kris_coding_lines({'coding': coding}), ['Кодирование до 03.02'])
+        self.assertEqual(kris_coding_deadline({'coding': coding}), 'до 03.02')
         coding[1]['due_date'] = '2027-02-04'
         self.assertEqual(kris_coding_lines({'coding': coding}), ['Сервис: 03.02', 'Интерфейс: 04.02'])
+        self.assertEqual(kris_coding_deadline({'coding': coding}), '03.02–04.02')
         coding[1]['due_date'] = None
         self.assertEqual(kris_coding_lines({'coding': coding}), ['Сервис: 03.02', 'Интерфейс: срок не указан'])
         self.assertEqual(kris_coding_lines({'done': 2, 'total': 3}), [])
+        self.assertEqual(kris_coding_deadline({'done': 2, 'total': 3}), '')
 
     def test_issue_references_from_custom_fields(self):
         fields = [
