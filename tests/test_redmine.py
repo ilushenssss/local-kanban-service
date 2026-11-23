@@ -16,10 +16,10 @@ class RedmineTest(unittest.TestCase):
     def test_sppi_filters_resolved_users_and_versions_and_reads_nested_subtasks(self):
         client = Mock()
 
-        def candidate(issue_id, responsible, version):
+        def candidate(issue_id, responsible, version, status='Проект ТИ'):
             issue = Mock()
             issue.id = issue_id
-            issue.raw.return_value = {'custom_fields': [
+            issue.raw.return_value = {'subject': 'Задача {}'.format(issue_id), 'status': {'name': status}, 'custom_fields': [
                 {'name': 'Ответственный за ТИ', 'value': responsible},
                 {'name': 'Приоритет реализации', 'value': version},
             ]}
@@ -28,12 +28,15 @@ class RedmineTest(unittest.TestCase):
         client.issue.filter.return_value = [
             candidate(1, ['42'], ['1342']), candidate(2, '43', ['1342']),
             candidate(3, '42', ['1343']), candidate(4, '42', '1342'),
+            candidate(5, '99', '9999', 'ТИ закрыто'),
         ]
         client.version.get.side_effect = lambda version: SimpleNamespace(
             name={1342: '2.0-218 И-01', 1343: '2.0-219 И-01'}[version])
         client.user.get.side_effect = lambda user_id: Mock(**{'raw.return_value': {
             'firstname': 'Анна', 'lastname': 'Иванова' if user_id == 42 else 'Смирнова'}})
-        self.assertEqual(read_sppi_issue_ids(client, 88, '2.0-218', ['Иванова Анна']), [1, 4])
+        progress = []
+        self.assertEqual(read_sppi_issue_ids(client, 88, '2.0-218', ['Иванова Анна'], on_issue=progress.append), [1, 4])
+        self.assertEqual(progress, ['Проверка #{} · Задача {}'.format(i, i) for i in range(1, 5)])
         client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
         self.assertEqual(client.user.get.call_args_list, [call(42), call(43)])
         self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343)])
@@ -44,6 +47,7 @@ class RedmineTest(unittest.TestCase):
                 'children': [{'id': 2, 'subject': 'Подзадача'}]},
             2: {'status': {'name': 'В работе'},
                 'children': [{'id': 3, 'subject': 'Вложенная', 'status': {'name': 'Готово'}}]},
+            4: {'status': {'name': 'ТИ закрыто'}, 'children': [{'id': 99}]},
         }
         client.issue.get.side_effect = lambda issue_id, **params: Mock(**{'raw.return_value': issues[issue_id]})
         self.assertEqual(read_issue(client, 1)['issue_references'], {
@@ -52,7 +56,9 @@ class RedmineTest(unittest.TestCase):
                 {'id': 3, 'title': 'Вложенная', 'status': 'Готово'},
             ],
         })
-        self.assertEqual(client.issue.get.call_args_list, [call(1, include='children'), call(2, include='children')])
+        self.assertIsNone(read_issue(client, 4, skip_closed=True))
+        self.assertEqual(client.issue.get.call_args_list,
+                         [call(1, include='children'), call(2, include='children'), call(4, include='children')])
 
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_identification_keeps_all_values_except_not_required(self):

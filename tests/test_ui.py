@@ -929,13 +929,21 @@ class UITest(unittest.TestCase):
         issue = {'title': 'ТИ из СППИ', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-119',
                  'approvals': [{'department': 'ОСП', 'status': 'Да'}],
                  'issue_references': {'basis': ['СП-12'], 'bugs': ['42'], 'children': subtasks}}
-        with patch('kanban.redmine.read_sppi_issue_ids', return_value=[119]) as discover, \
+        def scan(client, project_id, board_name, employees, *, on_issue):
+            for issue_id in range(115, 120):
+                on_issue('Проверка #{}'.format(issue_id))
+            return [119]
+
+        with patch('kanban.redmine.read_sppi_issue_ids', side_effect=scan) as discover, \
              patch('kanban.redmine.read_issue', return_value=issue) as fetch, \
              patch('kanban.redmine.read_kris_progress', return_value=({119: None}, [])):
             window.refresh_workspace()
             wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 1)
-            discover.assert_called_once_with(window.redmine_client, 88, '2.0-218', ['Иванова Анна'])
-            fetch.assert_called_once_with(window.redmine_client, 119)
+            self.assertEqual(discover.call_args.args, (window.redmine_client, 88, '2.0-218', ['Иванова Анна']))
+            fetch.assert_called_once_with(window.redmine_client, 119, skip_closed=True)
+        self.assertTrue(window.sppi_log.isVisible())
+        self.assertEqual([line.full_text for line in window.sppi_log_lines],
+                         ['Проверка #{}'.format(i) for i in range(116, 120)])
         item = window.card_lists[0].item(0)
         self.assertIn('Основание: СП-12', item.toolTip())
         self.assertIn('ОСП: Да', item.toolTip())

@@ -1202,6 +1202,8 @@ class ColumnsDialog(QDialog):
 
 
 class MainWindow(QMainWindow, Async):
+    sppi_progress = pyqtSignal(int, str)
+
     def __init__(self, folder, redmine_url='', redmine_statuses=None, installation_base=None):
         super().__init__()
         self.init_async()
@@ -1458,6 +1460,22 @@ class MainWindow(QMainWindow, Async):
         self.scroll = QScrollArea()
         self.scroll.setWidgetResizable(True)
         content.addWidget(self.scroll, 1)
+        self.sppi_log_board = None
+        self.sppi_log_lines = [ElidedLabel() for _ in range(4)]
+        self.sppi_log = QWidget()
+        self.sppi_log.setAccessibleName('Журнал проверки ТИ')
+        log_layout = QVBoxLayout(self.sppi_log)
+        log_layout.setContentsMargins(0, 0, 0, 0)
+        log_layout.setSpacing(2)
+        for line in self.sppi_log_lines:
+            line.setObjectName('Muted')
+            line.setTextFormat(Qt.PlainText)
+            line.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
+            line.hide()
+            log_layout.addWidget(line)
+        self.sppi_log.hide()
+        content.addWidget(self.sppi_log)
+        self.sppi_progress.connect(self.show_sppi_progress, Qt.QueuedConnection)
         self.status = QuietStatus('Подключение…')
         self.status.setObjectName('Status')
         self.status.setTextFormat(Qt.PlainText)
@@ -1521,6 +1539,7 @@ class MainWindow(QMainWindow, Async):
         project_board = self.board_id if board_node is not None and board_node.parent().parent() is not None else None
         if project_board != self.project_sections_board:
             self.project_sections_board = project_board
+            self.sppi_log.setVisible(project_board is not None and project_board == self.sppi_log_board)
             self.identification_page.show_cards(None, '', None)
             self.project_sections.setCurrentIndex(0)
             self.project_sections.tabBar().setVisible(project_board is not None)
@@ -2616,6 +2635,19 @@ class MainWindow(QMainWindow, Async):
 
         self.redmine_operation(update, 'Карточки ИД обновлены')
 
+    def show_sppi_progress(self, board_id, message):
+        if self.access_restricted or board_id != self.board_id:
+            return
+        lines = []
+        if message and self.sppi_log_board == board_id:
+            lines = [line.full_text for line in self.sppi_log_lines if getattr(line, 'full_text', '')]
+        self.sppi_log_board = board_id
+        lines = [*lines, message][-4:] if message else []
+        for index, line in enumerate(self.sppi_log_lines):
+            line.setText(lines[index] if index < len(lines) else '')
+            line.setVisible(index < len(lines))
+        self.sppi_log.setVisible(bool(lines))
+
     def refresh_workspace(self):
         if self.pages.currentIndex() == 0 and self.project_sections.currentWidget() is self.identification_page:
             self.refresh_identification()
@@ -2638,9 +2670,13 @@ class MainWindow(QMainWindow, Async):
             sppi_project = self.store.redmine_sppi_project() if scan_sppi else ''
             issue_ids = list(linked)
             if sppi_project:
+                self.sppi_progress.emit(board_id, '')
+                issue_ids = [issue_id for issue_id, task in linked.items() if not redmine.ti_is_closed(task['status'])]
                 try:
                     employees = installation.load_redmine_employees(self.redmine_config_base())
-                    imported = redmine.read_sppi_issue_ids(client, self.redmine_project_id(sppi_project), board_name, employees)
+                    imported = redmine.read_sppi_issue_ids(
+                        client, self.redmine_project_id(sppi_project), board_name, employees,
+                        on_issue=lambda message: self.sppi_progress.emit(board_id, message))
                     issue_ids = list(dict.fromkeys([*issue_ids, *imported]))
                 except redmine.RedmineAuthError:
                     raise
@@ -2648,13 +2684,15 @@ class MainWindow(QMainWindow, Async):
                     errors.append(str(error))
             for issue_id in issue_ids:
                 try:
-                    issue = redmine.read_issue(client, issue_id)
+                    issue = (redmine.read_issue(client, issue_id, skip_closed=True) if sppi_project
+                             else redmine.read_issue(client, issue_id))
                 except redmine.RedmineAuthError:
                     raise
                 except redmine.RedmineError as error:
                     errors.append(str(error))
                     continue
-                issues.append((issue_id, issue))
+                if issue is not None:
+                    issues.append((issue_id, issue))
             updates = []
             if issues:
                 progress, warnings = self.read_project_kris_progress(

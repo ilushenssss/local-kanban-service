@@ -208,7 +208,11 @@ def version_names_for(client, value, cache):
             yield cache[version_id]
 
 
-def read_sppi_issue_ids(client, project_id, board, employees):
+def ti_is_closed(status):
+    return status_key(status or '') == 'ти закрыто'
+
+
+def read_sppi_issue_ids(client, project_id, board, employees, *, on_issue=None):
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
     board_key = status_key(board)
@@ -219,7 +223,13 @@ def read_sppi_issue_ids(client, project_id, board, employees):
         return issue_ids
     try:
         for issue in client.issue.filter(project_id=project_id, status_id='*'):
-            fields = custom_field_values(issue.raw())
+            data = issue.raw()
+            if ti_is_closed((data.get('status') or {}).get('name')):
+                continue
+            if on_issue is not None:
+                subject = ' '.join((data.get('subject') or '').split())
+                on_issue('Проверка #{}{}'.format(issue.id, ' · ' + subject if subject else ''))
+            fields = custom_field_values(data)
             responsible = list(resource_ids(fields.get('ответственный за ти')))
             if not responsible or not any(board_key in status_key(name) for name in
                                           version_names_for(client, fields.get('приоритет реализации'), versions)):
@@ -434,7 +444,7 @@ def issue_subtasks(client, fields, issue_id):
 
 
 # Читает поля задачи по числовому ID из её адреса в Redmine.
-def read_issue(client, issue_id):
+def read_issue(client, issue_id, *, skip_closed=False):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
@@ -446,6 +456,8 @@ def read_issue(client, issue_id):
         title = fields.get('subject')
         # Обычно status выглядит как {"id": 1, "name": "Новая"}. Берём имя для показа и подбора колонки.
         status = (fields.get('status') or {}).get('name')
+        if skip_closed and ti_is_closed(status):
+            return None
         # Redmine формирует подпись «имя трекера #ID». Берём имя целиком, включая редакцию.
         tracker = fields.get('tracker')
         # Старые или изменённые ответы API могут не содержать объект трекера.
