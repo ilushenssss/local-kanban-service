@@ -2515,7 +2515,7 @@ class MainWindow(QMainWindow, Async):
             for task in self.store.redmine_tasks(board_id):
                 issue_id = task['issue_id']
                 try:
-                    issue = redmine.read_issue(client, issue_id, previous_label=task['tracker_name'])
+                    issue = redmine.read_issue(client, issue_id)
                 except redmine.RedmineAuthError:
                     raise
                 except redmine.RedmineError as error:
