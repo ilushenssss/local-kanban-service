@@ -3,7 +3,7 @@ import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
-from .redmine import APPROVAL_COLORS, issue_label, status_key
+from .redmine import APPROVAL_COLORS, issue_label, kris_progress_text, status_key
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
@@ -288,13 +288,13 @@ class CardDelegate(QStyledItemDelegate):
         painter.setClipRect(card)
         x, y, width = card.left()+12, card.top()+9, card.width()-24
 
-        def text(caption, left, top, span, height=19, bold=False, color='muted'):
+        def text(caption, left, top, span, height=19, bold=False, color='muted', align=Qt.AlignLeft):
             font = QFont(option.font)
             font.setPixelSize(12 if not bold else 15)
             font.setBold(bold)
             painter.setFont(font)
             painter.setPen(QColor(TOKENS[color]))
-            painter.drawText(QRect(left, top, span, height), Qt.AlignLeft | Qt.AlignVCenter,
+            painter.drawText(QRect(left, top, span, height), align | Qt.AlignVCenter,
                              painter.fontMetrics().elidedText(caption, Qt.ElideRight, span))
 
         def chip(caption, rect, palette=None, text_width=None):
@@ -339,11 +339,16 @@ class CardDelegate(QStyledItemDelegate):
             row, column = divmod(index, BUG_CHIPS_PER_ROW)
             chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT))
         y += chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
-        text('КРИС ТИ', x, y, width-20)
-        text('—', x+width-16, y, 16)
+        progress = task.get('kris_progress')
+        text('КРИС ТИ', x, y, width-106)
+        text(kris_progress_text(progress), x+width-100, y, 100, align=Qt.AlignRight)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor(TOKENS['hover']))
-        painter.drawRoundedRect(QRect(x, y+19, width, 4), 2, 2)
+        painter.drawRoundedRect(QRectF(x, y+19, width, 4), 2, 2)
+        if progress and progress['total'] and progress['done']:
+            painter.setBrush(QColor(TOKENS['accent']))
+            fill = width * progress['done'] / progress['total']
+            painter.drawRoundedRect(QRectF(x, y+19, fill, 4), 2, 2)
         footer = y+25
         if task['approvals']:
             text('Согласование отделов', x, footer, width)
@@ -479,7 +484,7 @@ def set_card_data(item, task, count):
         for label, key in (('СП', 'basis'), ('Баги', 'bugs')):
             values = task['issue_references'].get(key, [])
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
-        summary += '\nКРИС ТИ —\nПриложения —'
+        summary += '\nКРИС ТИ: {}\nПриложения —'.format(kris_progress_text(task.get('kris_progress')))
         if task['approvals']:
             summary += '\nСогласование отделов: ' + ', '.join(
                 '{}: {}'.format(entry['department'], entry['status']) for entry in task['approvals'])

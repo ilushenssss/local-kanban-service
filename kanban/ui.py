@@ -2421,7 +2421,8 @@ class MainWindow(QMainWindow, Async):
             references = current['issue_references']
             fields = [('Статус задачи', current['status']),
                       ('СП', ', '.join(references.get('basis', [])) or '—'),
-                      ('Баги', ', '.join(references.get('bugs', [])) or '—'), ('КРИС ТИ', '—')]
+                      ('Баги', ', '.join(references.get('bugs', [])) or '—'),
+                      ('КРИС ТИ', redmine.kris_progress_text(current['kris_progress']))]
             if current['approvals']:
                 fields.append(('Согласование отделов', '\n'.join(
                     '{}: {}'.format(entry['department'], entry['status']) for entry in current['approvals'])))
@@ -2515,7 +2516,7 @@ class MainWindow(QMainWindow, Async):
             return
 
         def update(client, rid, statuses):
-            updates, errors = [], []
+            issues, errors = [], []
             for task in self.store.redmine_tasks(board_id):
                 issue_id = task['issue_id']
                 try:
@@ -2525,9 +2526,17 @@ class MainWindow(QMainWindow, Async):
                 except redmine.RedmineError as error:
                     errors.append(str(error))
                     continue
-                target = redmine.column_name(issue['status'], statuses)
-                updates.append((issue_id, task['revision'], issue['title'], issue['status'], target,
-                                issue['tracker_name'], issue['approvals'], issue['issue_references']))
+                issues.append((task, issue))
+            updates = []
+            if issues:
+                progress, warnings = redmine.read_kris_progress(client, (task['issue_id'] for task, _ in issues))
+                errors.extend(warnings)
+                for task, issue in issues:
+                    issue_id = task['issue_id']
+                    target = redmine.column_name(issue['status'], statuses)
+                    updates.append((issue_id, task['revision'], issue['title'], issue['status'], target,
+                                    issue['tracker_name'], issue['approvals'], issue['issue_references'],
+                                    progress.get(issue_id, task['kris_progress'])))
             if updates:
                 errors.extend(self.store.update_redmine_tasks(board_id, updates))
             return errors
@@ -2548,17 +2557,20 @@ class MainWindow(QMainWindow, Async):
             return
         issue_id = int(value)
 
-        issue = None
+        snapshot = None
 
         def add(client, rid, statuses):
-            nonlocal issue
-            if issue is None:
+            nonlocal snapshot
+            if snapshot is None:
                 issue = redmine.read_issue(client, issue_id)
+                progress, warnings = redmine.read_kris_progress(client, [issue_id])
+                snapshot = issue, progress.get(issue_id), warnings
+            issue, progress, warnings = snapshot
             target = redmine.column_name(issue['status'], statuses)
             self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid,
                                           tracker_name=issue['tracker_name'], approvals=issue['approvals'],
-                                          issue_references=issue['issue_references'])
-            return []
+                                          issue_references=issue['issue_references'], kris_progress=progress)
+            return warnings
 
         self.redmine_operation(add, 'Задача Redmine добавлена')
 

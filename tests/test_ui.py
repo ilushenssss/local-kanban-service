@@ -816,6 +816,7 @@ class UITest(unittest.TestCase):
         with patch.object(QInputDialog, 'getText', return_value=('23018', True)), \
              patch.object(QDialog, 'exec_', new=password_dialog), \
              patch('kanban.redmine.connect', side_effect=[RedmineAuthError('Неверный пароль'), object()]) as auth, \
+             patch('kanban.redmine.read_kris_progress', return_value=({23018: {'done': 2, 'total': 3}}, [])), \
              patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-1157',
                                                            'approvals': [{'department': 'ОСП', 'status': 'Нет'}],
                                                            'issue_references': {'basis': ['СП-23578'], 'bugs': ['48316', '70245']}}):
@@ -831,10 +832,12 @@ class UITest(unittest.TestCase):
         self.assertIsNone(member.redmine_client)
         self.assertIn('СП: СП-23578', member.card_lists[0].item(0).text())
         self.assertIn('Баги: 48316, 70245', member.card_lists[0].item(0).text())
+        self.assertIn('КРИС ТИ: 67% (2/3)', member.card_lists[0].item(0).toolTip())
         self.assertTrue(member.card_lists[0].item(0).text().startswith('ТИ-1157 #23018'))
         self.assertIn('ОСП: Нет', member.card_lists[0].item(0).text())
 
         with patch('kanban.redmine.connect') as auth, patch(
+                'kanban.redmine.read_kris_progress', return_value=({23018: {'done': 3, 'total': 3}}, [])), patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
                                                         'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
                                                         'issue_references': {'bugs': ['61428']}}):
@@ -848,6 +851,7 @@ class UITest(unittest.TestCase):
         self.assertIn('Открытая ТИ', item.text())
         self.assertIn('СП —', item.text())
         self.assertIn('Баги: 61428', item.toolTip())
+        self.assertIn('КРИС ТИ: 100% (3/3)', item.toolTip())
         self.assertNotIn('48316', item.text())
         self.assertIn('ОСЗ: Да', item.text())
         self.assertNotIn('ОСП', item.text())

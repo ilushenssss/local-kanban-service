@@ -15,7 +15,7 @@ import uuid
 from .redmine import issue_label, status_key, validate_url
 
 
-SCHEMA_VERSION = 13
+SCHEMA_VERSION = 14
 
 
 # Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
@@ -182,6 +182,11 @@ class Store:
                         c.execute("ALTER TABLE redmine_links ADD COLUMN issue_references TEXT NOT NULL DEFAULT '{}'")
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(13,?)', (now(),))
                     c.execute('PRAGMA user_version=13')
+                if version < 14:
+                    if 'kris_progress' not in {row[1] for row in c.execute('PRAGMA table_info(redmine_links)')}:
+                        c.execute("ALTER TABLE redmine_links ADD COLUMN kris_progress TEXT NOT NULL DEFAULT 'null'")
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(14,?)', (now(),))
+                    c.execute('PRAGMA user_version=14')
                 uid = self.user(c, self.login)
                 restricted = c.execute('SELECT restricted FROM users WHERE id=?', (uid,)).fetchone()[0]
                 c.commit()
@@ -981,7 +986,8 @@ class Store:
 
     @staticmethod
     def redmine_entry(row):
-        return dict(row, approvals=json.loads(row['approvals']), issue_references=json.loads(row['issue_references']))
+        return dict(row, approvals=json.loads(row['approvals']), issue_references=json.loads(row['issue_references']),
+                    kris_progress=json.loads(row['kris_progress']))
 
     @staticmethod
     def redmine_column(c, board_id, name):
@@ -992,39 +998,41 @@ class Store:
         return matches[0]
 
     def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None, *,
-                           tracker_name='', approvals=(), issue_references=None):
+                           tracker_name='', approvals=(), issue_references=None, kris_progress=None):
         if type(issue_id) is not int or not 0 < issue_id <= 2**63 - 1:
             raise ValueError('Введите положительный номер задачи Redmine')
 
         def apply(c, uid):
             column_id = self.redmine_column(c, board_id, target_column)
             if not c.execute('''INSERT OR IGNORE INTO redmine_links
-                                (board_id,issue_id,title,status,column_id,tracker_name,approvals,issue_references)
-                                VALUES(?,?,?,?,?,?,?,?)''',
+                                (board_id,issue_id,title,status,column_id,tracker_name,approvals,issue_references,kris_progress)
+                                VALUES(?,?,?,?,?,?,?,?,?)''',
                              (board_id, issue_id, title, status, column_id, tracker_name,
                               json.dumps(approvals, ensure_ascii=False),
-                              json.dumps(issue_references or {}, ensure_ascii=False))).rowcount:
+                              json.dumps(issue_references or {}, ensure_ascii=False), json.dumps(kris_progress))).rowcount:
                 raise ValueError('Задача Redmine #{} уже добавлена на эту доску'.format(issue_id))
             return True
 
         return self.write('redmine_link',
-                          [board_id, issue_id, title, status, target_column, tracker_name, approvals, issue_references],
+                          [board_id, issue_id, title, status, target_column, tracker_name, approvals, issue_references, kris_progress],
                           apply, request_id)
 
     def update_redmine_tasks(self, board_id, updates):
         def apply(c, uid):
             errors = []
-            for issue_id, revision, title, status, target_column, tracker_name, approvals, references in updates:
+            for issue_id, revision, title, status, target_column, tracker_name, approvals, references, progress in updates:
                 try:
                     column_id = self.redmine_column(c, board_id, target_column)
                 except ValueError as error:
                     errors.append('#{}: {}'.format(issue_id, error))
                     continue
                 if not c.execute('''UPDATE redmine_links SET title=?, status=?, column_id=?, revision=revision+1,
-                                     tracker_name=COALESCE(NULLIF(?,''), tracker_name), approvals=?, issue_references=?
+                                     tracker_name=COALESCE(NULLIF(?,''), tracker_name), approvals=?, issue_references=?,
+                                     kris_progress=?
                                      WHERE board_id=? AND issue_id=? AND revision=?''',
                                  (title, status, column_id, tracker_name, json.dumps(approvals, ensure_ascii=False),
-                                  json.dumps(references, ensure_ascii=False), board_id, issue_id, revision)).rowcount:
+                                  json.dumps(references, ensure_ascii=False), json.dumps(progress),
+                                  board_id, issue_id, revision)).rowcount:
                     errors.append('#{}: карточка уже обновлена другим пользователем'.format(issue_id))
             return errors
 

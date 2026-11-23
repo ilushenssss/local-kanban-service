@@ -136,6 +136,89 @@ def issue_references(fields):
     return references
 
 
+# ID проекта КРИС_ТИ и имя поля, в котором хранится ссылка на исходную ТИ.
+KRIS_PROJECT_ID = 49
+TI_LOCATION_FIELD = 'расположение ти'
+
+
+def find_kris_issues(client, issue_ids):
+    # Один проход по открытым верхнеуровневым задачам для всех ТИ на доске.
+    pending = {str(issue_id) for issue_id in issue_ids}
+    matches = {}
+    if not pending:
+        return matches
+    candidates = client.issue.filter(project_id=KRIS_PROJECT_ID, status_id='open', parent_id='!*')
+    for candidate in candidates:
+        for field in candidate.raw().get('custom_fields') or []:
+            if status_key(field.get('name') or '') != TI_LOCATION_FIELD:
+                continue
+            # Берём целые номера, в том числе из #ID и /issues/ID. ID 42 не совпадёт с 142.
+            linked = pending.intersection(re.findall(r'[0-9]+', str(field.get('value') or '')))
+            for issue_id in linked:
+                matches[int(issue_id)] = candidate.id
+            pending.difference_update(linked)
+        if not pending:
+            break
+    return matches
+
+
+def read_kris_children(client, parent_id):
+    # Вложенные потомки не учитываются. Статус прямой подзадачи может потребовать отдельного запроса.
+    parent = client.issue.get(parent_id, include='children').raw()
+    children = parent.get('children') or []
+    done = 0
+    for child in children:
+        status = (child.get('status') or {}).get('name')
+        if not status:
+            issue = client.issue.get(child['id']).raw()
+            status = (issue.get('status') or {}).get('name')
+        if not status:
+            raise RedmineError('Redmine не вернул статус подзадачи.')
+        done += 'выполнено' in status_key(status)
+    return {'done': done, 'total': len(children)}
+
+
+def read_kris_progress(client, issue_ids):
+    from redminelib.exceptions import AuthError
+
+    # None означает, что задача КРИС_ТИ не найдена. При сбое оставляем прежний снимок.
+    progress = dict.fromkeys(issue_ids)
+    try:
+        matches = find_kris_issues(client, progress)
+    except AuthError:
+        raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+    except Exception:
+        return {}, ['Не удалось найти задачи КРИС_ТИ в проекте #{}.'.format(KRIS_PROJECT_ID)]
+    errors = []
+    children = {}
+    for issue_id, parent_id in matches.items():
+        if parent_id not in children:
+            try:
+                children[parent_id] = read_kris_children(client, parent_id)
+            except AuthError:
+                raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+            except Exception:
+                children[parent_id] = None
+                errors.append('Не удалось прочитать подзадачи КРИС_ТИ #{}.'.format(parent_id))
+        if children[parent_id] is None:
+            del progress[issue_id]
+        else:
+            progress[issue_id] = children[parent_id]
+    return progress, errors
+
+
+def kris_percent(progress):
+    return round(100 * progress['done'] / progress['total']) if progress['total'] else 0
+
+
+def kris_progress_text(progress):
+    if progress is None:
+        return '—'
+    if not progress['total']:
+        return 'Подзадач нет'
+    return '{}% ({}/{})'.format(kris_percent(progress), progress['done'], progress['total'])
+
+
 # Читает поля задачи по числовому ID из её адреса в Redmine.
 def read_issue(client, issue_id):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
