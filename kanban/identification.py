@@ -1,6 +1,6 @@
 """Read-only ИД cards from the board's Redmine basis project."""
 from PyQt5.QtCore import QRect, QSize, Qt
-from PyQt5.QtGui import QColor, QFont
+from PyQt5.QtGui import QColor, QFont, QFontMetrics
 from PyQt5.QtWidgets import (QLabel, QListView, QListWidget, QListWidgetItem, QPushButton,
                              QHBoxLayout, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
@@ -11,7 +11,7 @@ from .theme import STICKERS, TOKENS
 class IdentificationCard(QStyledItemDelegate):
     def paint(self, painter, option, index):
         card = index.data(Qt.UserRole)
-        box = option.rect.adjusted(2, 2, -13, -13)
+        box = option.rect.adjusted(2, 2, -22, -22)
         painter.save()
         painter.setRenderHint(painter.Antialiasing)
         focused = option.state & (QStyle.State_Selected | QStyle.State_HasFocus)
@@ -19,22 +19,27 @@ class IdentificationCard(QStyledItemDelegate):
         painter.setBrush(QColor(TOKENS['background']))
         painter.drawRoundedRect(box, 9, 9)
         left, top, width = box.x() + 12, box.y() + 8, box.width() - 24
+        body_font = QFont(option.font)
+        body_font.setPixelSize(12)
+        body_font.setBold(False)
+        heading_font = QFont(body_font)
+        heading_font.setPixelSize(15)
+        heading_font.setBold(True)
+        body_metrics = QFontMetrics(body_font)
 
         def text(value, x, y, span, color, bold=False, align=Qt.AlignLeft):
-            font = QFont(option.font)
-            font.setPixelSize(15 if bold else 12)
-            font.setBold(bold)
-            painter.setFont(font)
+            painter.setFont(heading_font if bold else body_font)
             painter.setPen(QColor(color))
             painter.drawText(QRect(x, y, span, 22), Qt.AlignVCenter | align,
                              painter.fontMetrics().elidedText(value, Qt.ElideRight, span))
 
-        def badge(value, x, y, span, colors, height=24):
+        def badge(value, x, y, max_width, colors):
             foreground, background = colors
+            span = min(max_width, body_metrics.horizontalAdvance(value) + 9)
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(background))
-            painter.drawRoundedRect(QRect(x, y, span, height), 4, 4)
-            text(value, x + 3, y + (height - 22) // 2, span - 6, foreground, align=Qt.AlignHCenter)
+            painter.drawRoundedRect(QRect(x, y, span, 20), 4, 4)
+            text(value, x + 4, y - 1, span - 8, foreground, align=Qt.AlignHCenter)
 
         red, green = STICKERS[0], STICKERS[2]
         offset = 0
@@ -51,14 +56,11 @@ class IdentificationCard(QStyledItemDelegate):
         approval = card['approval'] or '—'
         key = status_key(approval)
         colors = {'да': green, 'нет': red}.get(key, (TOKENS['secondary'], TOKENS['hover']))
-        if key in ('да', 'нет'):
-            badge(approval, left + 90, top + 24, 32, colors, height=32)
-        else:
-            badge(approval, left + 90, top + 28, width - 90, colors)
+        badge(approval, left + 90, top + 30, width - 90, colors)
         if card['links']:
             text(', '.join(card['links']), left, top + 59, width, TOKENS['text'])
         else:
-            badge('Не привязано', left, top + 59, 105, red)
+            badge('Не привязано', left, top + 60, width, red)
         painter.restore()
 
 
@@ -85,7 +87,7 @@ class IdentificationPage(QWidget):
         self.cards.setViewMode(QListView.IconMode)
         self.cards.setMovement(QListView.Static)
         self.cards.setResizeMode(QListView.Adjust)
-        self.cards.setGridSize(QSize(276, 138))
+        self.cards.setGridSize(QSize(285, 147))
         self.cards.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cards.setItemDelegate(IdentificationCard(self.cards))
         layout.addWidget(self.cards, 1)
