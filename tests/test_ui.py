@@ -769,7 +769,7 @@ class UITest(unittest.TestCase):
         def edit(dialog):
             url = next(field for field in dialog.findChildren(QLineEdit)
                        if field.placeholderText() == 'https://redmine.example.org')
-            url.setText('https://new-redmine.example.test')
+            url.setText('http://new-redmine.example.test')
             dialog.findChild(QTextEdit).setPlainText('Открыт = ТИ открыто')
             next(b for b in dialog.findChildren(QPushButton) if b.text() == 'Сохранить').click()
             wait_for(lambda: not window.jobs)
@@ -781,7 +781,7 @@ class UITest(unittest.TestCase):
         self.assertIsNone(window.redmine_client)
         colleague.refresh()
         wait_for(lambda: not colleague.loading)
-        self.assertEqual(colleague.redmine_url, 'https://new-redmine.example.test')
+        self.assertEqual(colleague.redmine_url, 'http://new-redmine.example.test')
         self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
 
     def test_redmine_import_and_shared_refresh(self):
@@ -816,7 +816,7 @@ class UITest(unittest.TestCase):
         with patch.object(QInputDialog, 'getText', return_value=('23018', True)), \
              patch.object(QDialog, 'exec_', new=password_dialog), \
              patch('kanban.redmine.connect', side_effect=[RedmineAuthError('Неверный пароль'), object()]) as auth, \
-             patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ'}):
+             patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-1157'}):
             admin.new_task_button.click()
             wait_for(lambda: not admin.mutating)
             self.assertIsNone(admin.redmine_client)
@@ -828,9 +828,10 @@ class UITest(unittest.TestCase):
         wait_for(lambda: not member.loading and member.card_lists[0].count() == 1)
         self.assertIsNone(member.redmine_client)
         self.assertIn('СП —', member.card_lists[0].item(0).text())
+        self.assertTrue(member.card_lists[0].item(0).text().startswith('ТИ-1157 #23018'))
 
         with patch('kanban.redmine.connect') as auth, patch(
-                'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто'}):
+                'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4'}):
             admin.refresh_workspace()
             wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[1].count() == 1)
             auth.assert_not_called()
@@ -839,6 +840,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(member.card_lists[0].count(), 0)
         item = member.card_lists[1].item(0)
         self.assertIn('Открытая ТИ', item.text())
+        self.assertTrue(item.text().startswith('Редакция к ТИ-1157р4 #23018'))
         self.assertEqual(item.data(Qt.UserRole)['status'], 'ТИ открыто')
         self.assertFalse(member.card_lists[1].grab().isNull())
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())

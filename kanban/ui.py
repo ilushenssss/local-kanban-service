@@ -2408,7 +2408,8 @@ class MainWindow(QMainWindow, Async):
             if current is None:
                 return
             dialog = QDialog(self)
-            dialog.setWindowTitle('ТИ-{} · Redmine'.format(current['issue_id']))
+            label = redmine.issue_label(current['tracker_name'], current['issue_id'])
+            dialog.setWindowTitle('{} #{} · Redmine'.format(label, current['issue_id']))
             dialog.setMinimumWidth(430)
             layout = QVBoxLayout(dialog)
             heading = QLabel(current['title'])
@@ -2521,7 +2522,7 @@ class MainWindow(QMainWindow, Async):
                     errors.append(str(error))
                     continue
                 target = redmine.column_name(issue['status'], statuses)
-                updates.append((issue_id, task['revision'], issue['title'], issue['status'], target))
+                updates.append((issue_id, task['revision'], issue['title'], issue['status'], target, issue['tracker_name']))
             if updates:
                 errors.extend(self.store.update_redmine_tasks(board_id, updates))
             return errors
@@ -2549,7 +2550,8 @@ class MainWindow(QMainWindow, Async):
             if issue is None:
                 issue = redmine.read_issue(client, issue_id)
             target = redmine.column_name(issue['status'], statuses)
-            self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid)
+            self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid,
+                                          tracker_name=issue['tracker_name'])
             return []
 
         self.redmine_operation(add, 'Задача Redmine добавлена')

@@ -12,10 +12,10 @@ import sqlite3
 import time
 import uuid
 
-from .redmine import status_key, validate_url
+from .redmine import issue_label, status_key, validate_url
 
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 
 # Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
@@ -167,6 +167,11 @@ class Store:
                         FOREIGN KEY(column_id,board_id) REFERENCES columns(id,board_id))''')
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(10,?)', (now(),))
                     c.execute('PRAGMA user_version=10')
+                if version < 11:
+                    if 'tracker_name' not in {row[1] for row in c.execute('PRAGMA table_info(redmine_links)')}:
+                        c.execute("ALTER TABLE redmine_links ADD COLUMN tracker_name TEXT NOT NULL DEFAULT ''")
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(11,?)', (now(),))
+                    c.execute('PRAGMA user_version=11')
                 uid = self.user(c, self.login)
                 restricted = c.execute('SELECT restricted FROM users WHERE id=?', (uid,)).fetchone()[0]
                 c.commit()
@@ -972,31 +977,33 @@ class Store:
             raise ValueError('На доске должна быть ровно одна колонка «{}» для этого статуса Redmine'.format(name))
         return matches[0]
 
-    def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None):
+    def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None, *, tracker_name=''):
         if type(issue_id) is not int or not 0 < issue_id <= 2**63 - 1:
             raise ValueError('Введите положительный номер задачи Redmine')
 
         def apply(c, uid):
             column_id = self.redmine_column(c, board_id, target_column)
-            if not c.execute('INSERT OR IGNORE INTO redmine_links(board_id,issue_id,title,status,column_id) VALUES(?,?,?,?,?)',
-                             (board_id, issue_id, title, status, column_id)).rowcount:
+            if not c.execute('''INSERT OR IGNORE INTO redmine_links
+                                (board_id,issue_id,title,status,column_id,tracker_name) VALUES(?,?,?,?,?,?)''',
+                             (board_id, issue_id, title, status, column_id, tracker_name)).rowcount:
                 raise ValueError('Задача Redmine #{} уже добавлена на эту доску'.format(issue_id))
             return True
 
-        return self.write('redmine_link', [board_id, issue_id, title, status, target_column], apply, request_id)
+        return self.write('redmine_link', [board_id, issue_id, title, status, target_column, tracker_name], apply, request_id)
 
     def update_redmine_tasks(self, board_id, updates):
         def apply(c, uid):
             errors = []
-            for issue_id, revision, title, status, target_column in updates:
+            for issue_id, revision, title, status, target_column, tracker_name in updates:
                 try:
                     column_id = self.redmine_column(c, board_id, target_column)
                 except ValueError as error:
                     errors.append('#{}: {}'.format(issue_id, error))
                     continue
-                if not c.execute('''UPDATE redmine_links SET title=?, status=?, column_id=?, revision=revision+1
+                if not c.execute('''UPDATE redmine_links SET title=?, status=?, column_id=?, revision=revision+1,
+                                     tracker_name=COALESCE(NULLIF(?,''), tracker_name)
                                      WHERE board_id=? AND issue_id=? AND revision=?''',
-                                 (title, status, column_id, board_id, issue_id, revision)).rowcount:
+                                 (title, status, column_id, tracker_name, board_id, issue_id, revision)).rowcount:
                     errors.append('#{}: карточка уже обновлена другим пользователем'.format(issue_id))
             return errors
 
@@ -1039,7 +1046,8 @@ class Store:
                                 or filters.get('priority') or filters.get('overdue') or filters.get('due_from')
                                 or filters.get('due_to')):
                             continue
-                        if query and query not in ('ТИ-{} {}'.format(entry['issue_id'], entry['title'])).casefold():
+                        label = issue_label(entry['tracker_name'], entry['issue_id'])
+                        if query and query not in ('{} #{} {}'.format(label, entry['issue_id'], entry['title'])).casefold():
                             continue
                         tasks.append(dict(entry, id=-entry['issue_id'], redmine_id=entry['issue_id'],
                                           number=entry['issue_id'], version=entry['revision'], archived=False,

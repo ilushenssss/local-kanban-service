@@ -3,6 +3,7 @@ import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
+from .redmine import issue_label
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
@@ -254,7 +255,7 @@ class CardDelegate(QStyledItemDelegate):
             painter.drawText(rect.adjusted(3, 0, -3, 0), Qt.AlignCenter if center else
                              Qt.AlignVCenter | Qt.AlignLeft, caption)
 
-        text('ТИ-{}'.format(task['redmine_id']), x, y, width-68, bold=True, color='text')
+        text(issue_label(task['tracker_name'], task['redmine_id']), x, y, width-68, bold=True, color='text')
         chip('Redmine', x+width-60, y, 60, center=True)
         font = QFont(option.font)
         font.setPixelSize(13)
@@ -387,8 +388,8 @@ def set_card_notice(item, count):
 def set_card_data(item, task, count):
     item.setData(Qt.UserRole, task)
     if task.get('redmine_id'):
-        item.setText('ТИ-{} · Redmine\n{}\n{}\nСП — · Баги — · КРИС ТИ —\nСогласование отделов — · Приложения —'.format(
-            task['redmine_id'], task['title'], task['status']))
+        item.setText('{} #{} · Redmine\n{}\n{}\nСП — · Баги — · КРИС ТИ —\nСогласование отделов — · Приложения —'.format(
+            issue_label(task['tracker_name'], task['redmine_id']), task['redmine_id'], task['title'], task['status']))
         set_card_notice(item, count)
         return
     names = ', '.join(task['assignee_names']) or 'Без исполнителя'

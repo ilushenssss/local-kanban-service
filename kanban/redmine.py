@@ -22,8 +22,8 @@ def validate_url(url):
     try:
         # Для установки в подпапке URL включает её, например https://server.example.org/redmine.
         parts = urlsplit(url)
-        # Требуем HTTPS и адрес сервера. Логин и пароль передаются отдельно, поэтому символ @ в адресе запрещён.
-        valid = (parts.scheme == 'https' and parts.hostname and '@' not in parts.netloc
+        # Допускаем HTTP и HTTPS, проверяем адрес сервера. Логин и пароль передаются отдельно, поэтому символ @ в адресе запрещён.
+        valid = (parts.scheme in ('http', 'https') and parts.hostname and '@' not in parts.netloc
                  # В базовом URL не нужны параметры запроса, фрагмент после # и пробельные символы.
                  and not parts.query and not parts.fragment and not any(ch.isspace() for ch in url)
                  # Порт можно опустить или указать явно. Разбор порта проверит его формат и диапазон.
@@ -35,12 +35,12 @@ def validate_url(url):
     # При проверке адреса не выполняем вход или запрос к серверу.
     if not valid:
         # Не включаем введённый URL в сообщение, чтобы не раскрыть случайно добавленные учётные данные.
-        raise RedmineError('Укажите HTTPS-адрес Redmine без учётных данных.')
+        raise RedmineError('Укажите адрес Redmine с http:// или https:// без учётных данных.')
 
 
 # Здесь создаётся клиент. Если у вашей установки другой поддерживаемый способ входа, менять его нужно здесь.
 def connect(url, login, password):
-    # Проверяем HTTPS и форму адреса до передачи пароля библиотеке.
+    # Проверяем схему и форму адреса до передачи пароля библиотеке.
     validate_url(url)
     # Загружаем необязательную зависимость только при попытке подключиться к Redmine.
     try:
@@ -68,7 +68,7 @@ def connect(url, login, password):
 
     # Создание клиента и проверка входа могут завершиться ошибками разных типов.
     try:
-        # Способ входа текущей версии — HTTP Basic по HTTPS с логином и паролем сотрудника.
+        # Для входа используется HTTP Basic. Только HTTPS защищает пароль при передаче.
         client = Redmine(url.rstrip('/'), username=login, password=password,
                          # Подставляем движок с тайм-аутами и запретом перенаправлений.
                          engine=ReadEngine)
@@ -81,12 +81,12 @@ def connect(url, login, password):
     # Сюда попадают, например, сбой сети, ошибка TLS, перенаправление или недоступный API.
     except Exception:
         # Сообщаем, что проверить, без вывода внутренних деталей запроса.
-        raise RedmineError('Не удалось подключиться к Redmine. Проверьте адрес, HTTPS и доступ к API.') from None
+        raise RedmineError('Не удалось подключиться к Redmine. Проверьте адрес, соединение и доступ к API.') from None
     # Интерфейс держит этот клиент в памяти на время сеанса и использует его для следующих запросов.
     return client
 
 
-# Читает заголовок и статус задачи по числовому ID из её адреса в Redmine.
+# Читает заголовок, статус и имя трекера задачи по числовому ID из её адреса в Redmine.
 def read_issue(client, issue_id):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
@@ -99,6 +99,10 @@ def read_issue(client, issue_id):
         title = fields.get('subject')
         # Обычно status выглядит как {"id": 1, "name": "Новая"}. Берём имя для показа и подбора колонки.
         status = (fields.get('status') or {}).get('name')
+        # Redmine формирует подпись «имя трекера #ID». Берём имя целиком, включая редакцию.
+        tracker = fields.get('tracker')
+        # Старые или изменённые ответы API могут не содержать объект трекера.
+        tracker_name = tracker.get('name') if isinstance(tracker, dict) else None
     # Если Redmine вернул HTTP 401, TeamSync запросит вход повторно при следующем обращении.
     except AuthError:
         # Отдельный тип ошибки позволяет интерфейсу сбросить сохранённый в памяти клиент.
@@ -115,8 +119,16 @@ def read_issue(client, issue_id):
     if not isinstance(title, str) or not title.strip() or not isinstance(status, str) or not status.strip():
         # При таком ответе карточка не создаётся, а ранее загруженные данные не затираются.
         raise RedmineError('Redmine не вернул заголовок или статус задачи #{}.'.format(issue_id))
-    # Дальше в TeamSync передаём только очищенные заголовок и статус.
-    return {'title': title.strip(), 'status': status.strip()}
+    # Пустое имя трекера допустимо. Для таких карточек есть подпись по ID.
+    tracker_name = tracker_name.strip() if isinstance(tracker_name, str) else ''
+    # ID задачи используется отдельно, для связи с Redmine.
+    return {'title': title.strip(), 'status': status.strip(), 'tracker_name': tracker_name}
+
+
+# Формирует подпись карточки, пока для старой записи ещё не загрузилось имя трекера.
+def issue_label(tracker_name, issue_id):
+    # Для записей из предыдущей схемы сохраняем привычный вид «ТИ-<ID>».
+    return tracker_name or 'ТИ-{}'.format(issue_id)
 
 
 # Приводит имя статуса к ключу для сравнения с настройками и названиями колонок.
