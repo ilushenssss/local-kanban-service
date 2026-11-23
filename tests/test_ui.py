@@ -975,7 +975,7 @@ class UITest(unittest.TestCase):
         number = 'ТИ(200)-1234-01'
         column = self.store.columns(board)[0]['name']
         self.store.link_redmine_issue(board, 701, 'ТИ на доске', column, column,
-                                      tracker_name='ТИ-701', issue_references={'basis': [number]})
+                                      tracker_name='ТИ-701', issue_references={'basis': [number, 'ТИ(200)-1234-04']})
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
             window = MainWindow(None, installation_base=base)
             self.windows.append(window)
@@ -992,15 +992,20 @@ class UITest(unittest.TestCase):
                  'versions': ['2.0-218 И-01']},
                 {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе', 'versions': ['2.0-218 И-02']},
                 {'number': 'ТИ(200)-1234-03', 'approval': 'Нет', 'status': 'В работе', 'versions': ['2.0-219 И-01']},
+                {'number': 'ТИ(200)-1234-04', 'approval': 'Нет', 'status': 'В работе', 'versions': ['2.0-218 И-01']},
+                {'number': 'ТИ(200)-1234-05', 'approval': 'Да', 'status': 'ТИ утверждено', 'versions': ['2.0-218 И-01']},
         ]) as fetch:
             page.refresh_button.click()
-            wait_for(lambda: not window.mutating and page.cards.count() == 2)
+            wait_for(lambda: not window.mutating and sum(column.count() for column in page.columns) == 4)
             fetch.assert_called_once_with(window.redmine_client, 88)
-        self.assertIn('ТИ-701', page.cards.item(0).toolTip())
-        self.assertIn(number + '\nСогласовать спецификацию', page.cards.item(0).toolTip())
-        self.assertIn('Не привязано', page.cards.item(1).toolTip())
-        self.assertIn('ТИ(200)-1234-02', page.cards.item(1).toolTip())
-        self.assertFalse(page.cards.grab().isNull())
+        self.assertEqual([column.count() for column in page.columns], [1, 1, 1, 1])
+        items = [column.item(0) for column in page.columns]
+        self.assertEqual([item.data(Qt.UserRole)['number'] for item in items],
+                         ['ТИ(200)-1234-02', 'ТИ(200)-1234-04', 'ТИ(200)-1234-05', number])
+        self.assertIn('ТИ-701', items[3].toolTip())
+        self.assertIn(number + '\nСогласовать спецификацию', items[3].toolTip())
+        self.assertIn('Не привязано', items[0].toolTip())
+        self.assertFalse(page.grab().isNull())
 
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
