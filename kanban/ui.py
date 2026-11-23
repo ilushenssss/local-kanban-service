@@ -1536,7 +1536,7 @@ class MainWindow(QMainWindow, Async):
         permissions = getattr(self, 'permissions', {})
         for action in menu.actions():
             text = action.text()
-            if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…'):
+            if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…', 'Проект поиска оснований…'):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Подключение…':
                 action.setEnabled((self.store is None and self.installation_base is not None)
@@ -1561,6 +1561,8 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Роли сотрудников', lambda: self.open_access())
         menu.addAction('Колонки доски', self.edit_columns)
         menu.addAction('Метки доски', lambda: self.open_catalog('labels'))
+        if self.board_id is not None and self.project_sections_board == self.board_id:
+            menu.addAction('Проект поиска оснований…', self.edit_basis_project)
         menu.addSeparator()
         menu.addAction('Переименовать доску', lambda: self.board_action('rename'))
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
@@ -2510,13 +2512,57 @@ class MainWindow(QMainWindow, Async):
 
         self.mutate(apply, success)
 
-    def read_project_kris_progress(self, client, issue_ids, project):
+    def redmine_project_id(self, project):
         base = self.installation_base or Path(__file__).resolve().parent.parent
+        return installation.load_redmine_project_id(base, project)
+
+    def edit_basis_project(self):
+        board_id = self.board_id
+        if not self.store or board_id is None or self.project_sections_board != board_id or not self.permissions.get('admin'):
+            return
+
+        def done(project, error):
+            if error:
+                self.status.setText(error_text(error))
+                return
+            if self.board_id != board_id:
+                return
+            value, accepted = QInputDialog.getText(
+                self, 'Проект поиска оснований', 'Название проекта из all_project.json (пусто — отключить)', text=project)
+            if not accepted or value.strip() == project:
+                return
+            value = value.strip()
+
+            def save(rid):
+                if value:
+                    self.redmine_project_id(value)
+                return self.store.set_redmine_basis_project(board_id, value, rid)
+
+            self.mutate(save, 'Проект поиска оснований сохранён')
+
+        self.work(lambda: self.store.redmine_basis_project(board_id), done)
+
+    def read_project_kris_progress(self, client, issue_ids, project):
         try:
-            project_id = installation.load_kris_project_id(base, project)
+            project_id = self.redmine_project_id(project)
         except ValueError as error:
             return {}, [str(error)]
         return redmine.read_kris_progress(client, issue_ids, project_id)
+
+    def read_project_basis_statuses(self, client, board_id, issues):
+        numbers = {number for issue in issues for number in issue['issue_references'].get('basis', [])
+                   if redmine.basis_number(number)}
+        if not numbers:
+            return '', {}, []
+        project = self.store.redmine_basis_project(board_id)
+        if not project:
+            return '', {}, []
+        try:
+            return project, redmine.read_basis_statuses(client, self.redmine_project_id(project), numbers), []
+        except redmine.RedmineAuthError:
+            raise
+        except ValueError as error:
+            return project, {}, [str(error)]
 
     def refresh_workspace(self):
         if not self.store or self.project_sections_board is None or self.project_sections_board != self.board_id:
@@ -2545,11 +2591,15 @@ class MainWindow(QMainWindow, Async):
                 progress, warnings = self.read_project_kris_progress(
                     client, (task['issue_id'] for task, _ in issues), project)
                 errors.extend(warnings)
+                basis_project, basis_statuses, warnings = self.read_project_basis_statuses(
+                    client, board_id, (issue for _, issue in issues))
+                errors.extend(warnings)
                 for task, issue in issues:
                     issue_id = task['issue_id']
                     target = redmine.column_name(issue['status'], statuses)
+                    references = redmine.with_basis_statuses(issue['issue_references'], basis_project, basis_statuses)
                     updates.append((issue_id, task['revision'], issue['title'], issue['status'], target,
-                                    issue['tracker_name'], issue['approvals'], issue['issue_references'],
+                                    issue['tracker_name'], issue['approvals'], references,
                                     progress.get(issue_id, task['kris_progress'])))
             if updates:
                 errors.extend(self.store.update_redmine_tasks(board_id, updates))
@@ -2579,12 +2629,14 @@ class MainWindow(QMainWindow, Async):
             if snapshot is None:
                 issue = redmine.read_issue(client, issue_id)
                 progress, warnings = self.read_project_kris_progress(client, [issue_id], project)
-                snapshot = issue, progress.get(issue_id), warnings
-            issue, progress, warnings = snapshot
+                basis_project, basis_statuses, basis_warnings = self.read_project_basis_statuses(client, board_id, [issue])
+                references = redmine.with_basis_statuses(issue['issue_references'], basis_project, basis_statuses)
+                snapshot = issue, progress.get(issue_id), references, warnings + basis_warnings
+            issue, progress, references, warnings = snapshot
             target = redmine.column_name(issue['status'], statuses)
             self.store.link_redmine_issue(board_id, issue_id, issue['title'], issue['status'], target, rid,
                                           tracker_name=issue['tracker_name'], approvals=issue['approvals'],
-                                          issue_references=issue['issue_references'], kris_progress=progress)
+                                          issue_references=references, kris_progress=progress)
             return warnings
 
         self.redmine_operation(add, 'Задача Redmine добавлена')

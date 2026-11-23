@@ -359,10 +359,13 @@ class CardDelegate(QStyledItemDelegate):
         painter.drawText(title_rect, Qt.AlignTop | Qt.TextWordWrap, ' '.join(task['title'].split()))
         y = title_rect.bottom()+6
         basis_chips, basis_height = self.basis_layout(task, option)
+        statuses = task['issue_references'].get('basis_statuses', {})
         text('Основание' if basis_chips else 'Основание —', x, y, width)
         y += REFERENCE_LABEL_HEIGHT
         for value, rect, text_width in basis_chips:
-            chip(value, rect.translated(x, y), text_width=text_width)
+            status = statuses.get(value)
+            palette = DEPARTMENT_PALETTE['green' if status_key(status) == 'ти утверждено' else 'red'] if status else None
+            chip(value, rect.translated(x, y), palette=palette, text_width=text_width)
         y += basis_height
         bugs = task['issue_references'].get('bugs', [])
         text('Баги' if bugs else 'Баги —', x, y, width)
@@ -556,6 +559,8 @@ def set_card_data(item, task, count):
         for label, key in (('Основание', 'basis'), ('Баги', 'bugs')):
             values = task['issue_references'].get(key, [])
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
+        for number, status in task['issue_references'].get('basis_statuses', {}).items():
+            summary += '\n{}: {}'.format(number, status or 'Задача не найдена')
         summary += '\nКРИС ТИ: {}\n'.format(kris_progress_text(progress))
         summary += '\n'.join([*kris_coding_lines(progress), 'Приложения —'])
         if task['approvals']:

@@ -813,6 +813,10 @@ class UITest(unittest.TestCase):
         self.assertTrue(admin.new_task_button.isEnabled())
         self.assertFalse(member.new_task_button.isEnabled())
         self.assertTrue(all(cards.add_task.isHidden() for cards in admin.card_lists))
+        with patch.object(QInputDialog, 'getText', return_value=('Внедрение', True)):
+            admin.edit_basis_project()
+            wait_for(lambda: not admin.jobs and not admin.mutating and not admin.loading)
+        self.assertEqual(self.store.redmine_basis_project(board), 'Внедрение')
 
         def password_dialog(dialog):
             password = next(field for field in dialog.findChildren(QLineEdit) if field.echoMode() == QLineEdit.Password)
@@ -822,12 +826,14 @@ class UITest(unittest.TestCase):
         with patch.object(QInputDialog, 'getText', return_value=('23018', True)), \
              patch.object(QDialog, 'exec_', new=password_dialog), \
              patch('kanban.redmine.connect', side_effect=[RedmineAuthError('Неверный пароль'), object()]) as auth, \
+             patch('kanban.redmine.read_basis_statuses', return_value={'ТИ(200)-0123-04': 'ТИ утверждено'}) as basis, \
              patch('kanban.redmine.read_kris_progress', return_value=({23018: {
                  'done': 2, 'total': 3, 'coding': [{'subject': 'Сервис', 'due_date': '2027-02-03'}],
              }}, [])) as kris, \
              patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-1157',
                                                            'approvals': [{'department': 'ОСП', 'status': 'Нет'}],
-                                                           'issue_references': {'basis': ['СП-23578'], 'bugs': ['48316', '70245']}}):
+                                                           'issue_references': {'basis': ['СП-23578', 'ТИ(200)-0123-04'],
+                                                                                'bugs': ['48316', '70245']}}):
             admin.new_task_button.click()
             wait_for(lambda: not admin.mutating)
             self.assertIsNone(admin.redmine_client)
@@ -836,10 +842,12 @@ class UITest(unittest.TestCase):
             wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[0].count() == 1)
             self.assertEqual(auth.call_count, 2)
             kris.assert_called_once_with(admin.redmine_client, [23018], 49)
+            basis.assert_called_once_with(admin.redmine_client, 88, {'ТИ(200)-0123-04'})
         member.refresh()
         wait_for(lambda: not member.loading and member.card_lists[0].count() == 1)
         self.assertIsNone(member.redmine_client)
         self.assertIn('Основание: СП-23578', member.card_lists[0].item(0).toolTip())
+        self.assertIn('ТИ(200)-0123-04: ТИ утверждено', member.card_lists[0].item(0).toolTip())
         self.assertIn('Баги: 48316, 70245', member.card_lists[0].item(0).text())
         self.assertIn('КРИС ТИ: 67% (2/3)', member.card_lists[0].item(0).toolTip())
         self.assertIn('Кодирование до 03.02', member.card_lists[0].item(0).toolTip())

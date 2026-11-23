@@ -16,12 +16,12 @@ def load_folder(base):
     return folder
 
 
-def load_kris_project_id(base, project):
+def load_redmine_project_id(base, project):
     path = base / 'all_project.json'
     try:
         projects = json.loads(path.read_text(encoding='utf-8-sig'))
     except FileNotFoundError:
-        raise ValueError('Для поиска КРИС_ТИ положите all_project.json рядом с main.pyw.') from None
+        raise ValueError('Для поиска в Redmine положите all_project.json рядом с main.pyw.') from None
     except (OSError, ValueError):
         raise ValueError('Не удалось прочитать all_project.json. Проверьте файл и его формат.') from None
     if not isinstance(projects, dict):

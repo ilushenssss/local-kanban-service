@@ -69,6 +69,19 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(totals, {columns[1]['id']: 1})
         self.assertEqual(member.board_snapshot(board, {'query': 'Основная задача КРИС'}, 'board')[3], tasks)
 
+    def test_basis_project_is_admin_only_and_scoped_to_the_project_board(self):
+        board = self.s.board_action('Проект / ТИ')
+        other = self.s.board_action('Проект / Другая доска')
+        member = Store(self.s.folder, 'bob')
+        self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        with self.assertRaises(AccessDenied):
+            member.set_redmine_basis_project(board, 'Внедрение')
+        with self.assertRaises(ValueError):
+            self.s.set_redmine_basis_project(self.bid, 'Внедрение')
+        self.s.set_redmine_basis_project(board, 'Внедрение')
+        self.assertEqual(member.redmine_basis_project(board), 'Внедрение')
+        self.assertEqual(self.s.redmine_basis_project(other), '')
+
     def test_board_cards_batch_filters_counts_and_access(self):
         original = self.create()
         bob = Store(self.s.folder, 'bob')

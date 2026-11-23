@@ -335,7 +335,7 @@ class Store:
 
     def authorize_write(self, c, operation, payload):
         self.actor(c)
-        if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings'):
+        if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings', 'redmine_basis_project'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -384,6 +384,31 @@ class Store:
             return settings
 
         return self.write('redmine_settings', settings, apply)
+
+    @staticmethod
+    def redmine_basis_project_in(c, board_id):
+        row = c.execute('SELECT value FROM settings WHERE key=?', ('redmine_basis_project:{}'.format(board_id),)).fetchone()
+        return row[0] if row else ''
+
+    def redmine_basis_project(self, board_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            self.require(c, 'read', board_id)
+            self.active_board(c, board_id)
+            return self.redmine_basis_project_in(c, board_id)
+
+    def set_redmine_basis_project(self, board_id, project, request_id=None):
+        project = project.strip()
+
+        def apply(c, uid):
+            board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (board_id,)).fetchone()
+            if not board or not self.project_board(board):
+                raise ValueError('Поиск оснований доступен только на активной проектной доске')
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                      ('redmine_basis_project:{}'.format(board_id), project))
+            return True
+
+        return self.write('redmine_basis_project', [board_id, project], apply, request_id)
 
     def timezone(self):
         with self.connection() as c:
@@ -981,12 +1006,16 @@ class Store:
             c.execute('BEGIN')
             self.require(c, 'read', board_id)
             self.active_board(c, board_id)
-            return [self.redmine_entry(row) for row in c.execute(
+            basis_project = self.redmine_basis_project_in(c, board_id)
+            return [self.redmine_entry(row, basis_project) for row in c.execute(
                 'SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (board_id,))]
 
     @staticmethod
-    def redmine_entry(row):
-        return dict(row, approvals=json.loads(row['approvals']), issue_references=json.loads(row['issue_references']),
+    def redmine_entry(row, basis_project):
+        references = json.loads(row['issue_references'])
+        if references.get('basis_project') != basis_project:
+            references.pop('basis_statuses', None)
+        return dict(row, approvals=json.loads(row['approvals']), issue_references=references,
                     kris_progress=json.loads(row['kris_progress']))
 
     @staticmethod
@@ -1068,6 +1097,7 @@ class Store:
                             totals[key] = totals.get(key, 0) + 1
                 if view in ('board', 'list') and self.project_board(board):
                     query = (filters.get('query') or '').casefold()
+                    basis_project = self.redmine_basis_project_in(c, selected)
                     for entry in c.execute('SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (selected,)):
                         col = entry['column_id']
                         totals[col] = totals.get(col, 0) + 1
@@ -1075,7 +1105,7 @@ class Store:
                                 or filters.get('priority') or filters.get('overdue') or filters.get('due_from')
                                 or filters.get('due_to')):
                             continue
-                        card = self.redmine_entry(entry)
+                        card = self.redmine_entry(entry, basis_project)
                         if query:
                             tracker = issue_label(entry['tracker_name'], entry['issue_id'])
                             label = issue_label(entry['tracker_name'], entry['issue_id'], card['kris_progress'])

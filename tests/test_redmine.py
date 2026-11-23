@@ -4,25 +4,45 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import Mock, call
 
-from kanban.installation import load_kris_project_id
+from kanban.installation import load_redmine_project_id
 from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_deadline, kris_coding_lines,
-                            kris_progress_text, read_kris_progress, status_key)
+                            kris_progress_text, read_basis_statuses, read_kris_progress, status_key)
 
 
 class RedmineTest(unittest.TestCase):
+    @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
+    def test_basis_lookup_uses_fixed_number_and_registration_field(self):
+        approved, red, missing = 'ТИ(200)-0123-04', 'ТИ(200)-0123-05', 'ТИ(200)-0123-06'
+        raw = [{'name': 'Основание для открытия ТИ', 'value': approved + 'доп. текст, СП-220\n' + red}]
+        self.assertEqual(issue_references(raw)['basis'], [approved, 'СП-220', red])
+
+        def issue(field_name, value, status):
+            return Mock(**{'raw.return_value': {'custom_fields': [{'name': field_name, 'value': value}],
+                                                'status': {'name': status}}})
+
+        client = Mock()
+        client.issue.filter.return_value = [
+            issue('Другое поле', missing, 'ТИ утверждено'),
+            issue('Регистрационный номер_ЛПИВ', 'Номер ' + approved, 'ТИ утверждено'),
+            issue('Регистрационный номер_ЛПИВ', [red], 'В работе'),
+        ]
+        self.assertEqual(read_basis_statuses(client, 88, {approved, red, missing}),
+                         {approved: 'ТИ утверждено', red: 'В работе', missing: None})
+        client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
+
     def test_kris_project_id_uses_exact_project_name(self):
         with TemporaryDirectory() as folder:
             base = Path(folder)
             path = base / 'all_project.json'
             with self.assertRaisesRegex(ValueError, 'all_project.json'):
-                load_kris_project_id(base, 'Разработка')
+                load_redmine_project_id(base, 'Разработка')
             path.write_text('{"Разработка": 49, "Внедрение": 73, "Некорректный": true}', encoding='utf-8-sig')
-            self.assertEqual(load_kris_project_id(base, 'Разработка'), 49)
-            self.assertEqual(load_kris_project_id(base, 'Внедрение'), 73)
+            self.assertEqual(load_redmine_project_id(base, 'Разработка'), 49)
+            self.assertEqual(load_redmine_project_id(base, 'Внедрение'), 73)
             with self.assertRaisesRegex(ValueError, 'нет проекта'):
-                load_kris_project_id(base, 'разработка')
+                load_redmine_project_id(base, 'разработка')
             with self.assertRaisesRegex(ValueError, 'числовой ID'):
-                load_kris_project_id(base, 'Некорректный')
+                load_redmine_project_id(base, 'Некорректный')
 
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_kris_progress_reads_exact_ti_links_and_direct_children(self):

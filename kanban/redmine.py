@@ -123,7 +123,16 @@ def department_approvals(fields):
     return approvals
 
 
-# Собирает номера СП и багов из двух пользовательских полей Redmine.
+# Регистрационный номер состоит из четырёх и двух цифр после префикса.
+BASIS_NUMBER = re.compile(r'ТИ\(200\)-[0-9]{4}-[0-9]{2}', re.IGNORECASE)
+
+
+def basis_number(value):
+    match = BASIS_NUMBER.match(value)
+    return match.group().upper() if match else None
+
+
+# Собирает основания и номера багов из пользовательских полей Redmine.
 def issue_references(fields):
     names = {'основание для открытия ти': 'basis', '№ bz': 'bugs'}
     references = {}
@@ -136,7 +145,41 @@ def issue_references(fields):
             # Запятые и переносы строк разделяют элементы. Внутренние пробелы сохраняются.
             parts = re.split(r'[,\r\n]+', value)
             references[key] = [part.strip() for part in parts if part.strip()]
+            if key == 'basis':
+                references[key] = [basis_number(part) or part for part in references[key]]
     return references
+
+
+def read_basis_statuses(client, project_id, numbers):
+    from redminelib.exceptions import AuthError
+
+    statuses = dict.fromkeys(numbers)
+    pending = set(statuses)
+    try:
+        for issue in client.issue.filter(project_id=project_id, status_id='*'):
+            fields = issue.raw()
+            for field in fields.get('custom_fields') or []:
+                if status_key(field.get('name') or '') != 'регистрационный номер_лпив':
+                    continue
+                linked = pending.intersection(number.upper() for number in BASIS_NUMBER.findall(str(field.get('value') or '')))
+                if linked:
+                    status = (fields.get('status') or {}).get('name')
+                    if not status:
+                        raise RedmineError('Redmine не вернул статус задачи.')
+                    statuses.update(dict.fromkeys(linked, status))
+                    pending.difference_update(linked)
+            if not pending:
+                break
+    except AuthError:
+        raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+    except Exception:
+        raise RedmineError('Не удалось проверить основания в проекте Redmine #{}.'.format(project_id)) from None
+    return statuses
+
+
+def with_basis_statuses(references, project, statuses):
+    matches = {number: statuses[number] for number in references.get('basis', []) if number in statuses}
+    return dict(references, basis_project=project, basis_statuses=matches) if matches else references
 
 
 # Имя поля, в котором хранится ссылка на исходную ТИ.
