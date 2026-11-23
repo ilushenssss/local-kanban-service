@@ -16,6 +16,7 @@ from . import installation, redmine
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
+from .identification import IdentificationPage
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -1404,9 +1405,10 @@ class MainWindow(QMainWindow, Async):
         board_layout.addWidget(self.project_sections)
         current_work = QWidget()
         self.project_sections.addTab(current_work, 'Текущие работы')
-        self.project_sections.addTab(QWidget(), 'ИД')
+        self.identification_page = IdentificationPage(self.refresh_identification)
+        self.project_sections.addTab(self.identification_page, 'ИД')
         self.project_sections.addTab(QWidget(), 'Будет определена в дальнейшем')
-        self.project_sections.currentChanged.connect(self.update_board_controls)
+        self.project_sections.currentChanged.connect(self.project_section_changed)
         content = QVBoxLayout(current_work)
         content.setContentsMargins(20, 16, 20, 12)
         content.setSpacing(14)
@@ -1519,9 +1521,15 @@ class MainWindow(QMainWindow, Async):
         project_board = self.board_id if board_node is not None and board_node.parent().parent() is not None else None
         if project_board != self.project_sections_board:
             self.project_sections_board = project_board
+            self.identification_page.show_cards(None, '', None)
             self.project_sections.setCurrentIndex(0)
             self.project_sections.tabBar().setVisible(project_board is not None)
         self.update_board_controls()
+
+    def project_section_changed(self):
+        self.update_board_controls()
+        self.generation += 1
+        self.debounce.start(0)
 
     def update_board_controls(self):
         empty_section = self.pages.currentIndex() == 0 and self.project_sections.currentIndex() != 0
@@ -2103,6 +2111,8 @@ class MainWindow(QMainWindow, Async):
         view = ('board', 'list', 'timeline', 'statistics', 'personal')[page]
         generation = self.generation
         bid = self.board_id
+        if page == 0 and self.project_sections.currentWidget() is self.identification_page and self.project_sections_board == bid:
+            view = 'identification'
         self.loading = True
         def read():
             return self.store.board_snapshot(bid, f, view)
@@ -2122,7 +2132,7 @@ class MainWindow(QMainWindow, Async):
             if error:
                 self.status.setText('Обновление не выполнено: ' + error_text(error) + '. Можно повторить. Открытые формы сохранены.')
                 return
-            snapshot = (page, result, dt.date.today().isoformat())
+            snapshot = (view, result, dt.date.today().isoformat())
             if snapshot == self.last_snapshot:
                 self.redmine_refresh_message = ''
                 return
@@ -2186,7 +2196,9 @@ class MainWindow(QMainWindow, Async):
             self.update_board_badges(self.board_counts)
             self.update_navigation()
             self.columns_data = columns
-            if page == 0:
+            if view == 'identification':
+                self.identification_page.show_cards(selected, catalogs.get('identification_project'), tasks)
+            elif page == 0:
                 self.render_board(selected, columns, tasks, totals)
             self.set_access_restricted(False)
             if self.redmine_refresh_message:
@@ -2564,7 +2576,25 @@ class MainWindow(QMainWindow, Async):
         except ValueError as error:
             return project, {}, [str(error)]
 
+    def refresh_identification(self):
+        board_id = self.board_id
+        if not self.store or board_id is None or self.project_sections_board != board_id:
+            return
+
+        def update(client, rid, statuses):
+            project = self.store.redmine_basis_project(board_id)
+            if not project:
+                raise ValueError('Укажите проект поиска оснований в настройках доски.')
+            cards = redmine.read_identification_cards(client, self.redmine_project_id(project))
+            self.store.save_identification_cards(board_id, project, cards, rid)
+            return []
+
+        self.redmine_operation(update, 'Карточки ИД обновлены')
+
     def refresh_workspace(self):
+        if self.pages.currentIndex() == 0 and self.project_sections.currentWidget() is self.identification_page:
+            self.refresh_identification()
+            return
         if not self.store or self.project_sections_board is None or self.project_sections_board != self.board_id:
             self.refresh()
             return

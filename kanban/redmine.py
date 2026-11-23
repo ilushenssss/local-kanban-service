@@ -182,6 +182,32 @@ def with_basis_statuses(references, project, statuses):
     return dict(references, basis_project=project, basis_statuses=matches) if matches else references
 
 
+def read_identification_cards(client, project_id):
+    from redminelib.exceptions import AuthError
+
+    cards = []
+    try:
+        for issue in client.issue.filter(project_id=project_id, status_id='*'):
+            data = issue.raw()
+            fields = {status_key(field['name']): field.get('value')
+                      for field in data.get('custom_fields') or [] if field.get('name')}
+            approval = fields.get('ти согласовано с отд.цз', fields.get('ти согласовано с отд. цз', 'Не требуется'))
+            approval = str(approval or '').strip()
+            if status_key(approval) == 'не требуется':
+                continue
+            registration = fields.get('регистрационный номер_лпив') or ''
+            subject = data.get('subject') or ''
+            number = BASIS_NUMBER.search(str(registration)) or BASIS_NUMBER.search(subject)
+            status = (data.get('status') or {}).get('name') or ''
+            label = number.group().upper() if number else subject or '#{}'.format(data['id'])
+            cards.append({'number': label, 'approval': approval, 'status': status})
+    except AuthError:
+        raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+    except Exception:
+        raise RedmineError('Не удалось загрузить ИД из проекта Redmine #{}.'.format(project_id)) from None
+    return cards
+
+
 # Имя поля, в котором хранится ссылка на исходную ТИ.
 TI_LOCATION_FIELD = 'расположение ти'
 

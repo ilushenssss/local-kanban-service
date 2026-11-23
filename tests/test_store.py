@@ -82,6 +82,28 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(member.redmine_basis_project(board), 'Внедрение')
         self.assertEqual(self.s.redmine_basis_project(other), '')
 
+    def test_identification_links_only_to_visible_active_boards(self):
+        board = self.s.board_action('Проект / ИД')
+        private = self.s.board_action('Проект / Другая доска')
+        member = Store(self.s.folder, 'bob')
+        self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        first, second = 'ТИ(200)-1234-01', 'ТИ(200)-1234-02'
+        for bid, number, ti in ((board, first, 'ТИ-701'), (private, second, 'ТИ-702')):
+            column = self.s.columns(bid)[0]['name']
+            self.s.link_redmine_issue(bid, int(ti[3:]), 'Заголовок', column, column,
+                                     tracker_name=ti, issue_references={'basis': [number + ' описание']})
+        self.s.set_redmine_basis_project(board, 'Проверка')
+        cards = [{'number': number, 'approval': 'Да', 'status': 'ТИ утверждено'} for number in (first, second)]
+        with self.assertRaises(AccessDenied):
+            member.save_identification_cards(private, 'Проверка', cards)
+        self.s.save_identification_cards(board, 'Проверка', cards)
+        self.assertEqual([card['links'] for card in member.board_snapshot(board, {}, 'identification')[3]], [['ТИ-701'], []])
+        self.assertEqual([card['links'] for card in self.s.board_snapshot(board, {}, 'identification')[3]], [['ТИ-701'], ['ТИ-702']])
+        self.s.set_redmine_basis_project(board, 'Другой проект')
+        self.assertIsNone(member.board_snapshot(board, {}, 'identification')[3])
+        with self.assertRaisesRegex(ValueError, 'изменился'):
+            member.save_identification_cards(board, 'Проверка', cards)
+
     def test_board_cards_batch_filters_counts_and_access(self):
         original = self.create()
         bob = Store(self.s.folder, 'bob')

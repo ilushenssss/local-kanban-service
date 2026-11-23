@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 
-from .redmine import issue_label, status_key, validate_url
+from .redmine import basis_number, issue_label, status_key, validate_url
 
 
 SCHEMA_VERSION = 14
@@ -345,7 +345,7 @@ class Store:
             self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
-        elif operation in ('redmine_link', 'redmine_refresh'):
+        elif operation in ('redmine_link', 'redmine_refresh', 'redmine_identification'):
             self.require(c, 'create_task' if operation == 'redmine_link' else 'read', payload[0])
             board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (payload[0],)).fetchone()
             if not board or not self.project_board(board):
@@ -404,11 +404,45 @@ class Store:
             board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (board_id,)).fetchone()
             if not board or not self.project_board(board):
                 raise ValueError('Поиск оснований доступен только на активной проектной доске')
+            if self.redmine_basis_project_in(c, board_id) != project:
+                c.execute('DELETE FROM settings WHERE key=?', ('redmine_identification:{}'.format(board_id),))
             c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
                       ('redmine_basis_project:{}'.format(board_id), project))
             return True
 
         return self.write('redmine_basis_project', [board_id, project], apply, request_id)
+
+    def save_identification_cards(self, board_id, project, cards, request_id=None):
+        def apply(c, uid):
+            if self.redmine_basis_project_in(c, board_id) != project:
+                raise ValueError('Проект поиска оснований изменился. Обновите ИД.')
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                      ('redmine_identification:{}'.format(board_id), json.dumps(cards, ensure_ascii=False)))
+            return True
+
+        return self.write('redmine_identification', [board_id, project, cards], apply, request_id)
+
+    def identification_in(self, c, board_id, actor):
+        row = c.execute('SELECT value FROM settings WHERE key=?', ('redmine_identification:{}'.format(board_id),)).fetchone()
+        if row is None:
+            return None
+        cards = json.loads(row[0])
+        if not cards:
+            return cards
+        links = {card['number']: {} for card in cards}
+        for entry in c.execute('''SELECT issue_id, tracker_name, kris_progress, issue_references FROM redmine_links
+                                  JOIN boards b ON b.id=board_id
+                                  WHERE b.archived=0 AND b.personal=0 AND instr(b.name,' / ')>0 AND ('''
+                               + self.board_visibility() + ') ORDER BY issue_id,board_id',
+                               {'uid': actor['id'], 'role': actor['role']}):
+            references = json.loads(entry['issue_references'])
+            for value in references.get('basis', []):
+                number = basis_number(value)
+                if number in links:
+                    label = issue_label(entry['tracker_name'], entry['issue_id'], json.loads(entry['kris_progress']))
+                    ti = re.search(r'\bТИ-[0-9]+(?:р[0-9]+)?', label + ' ' + entry['tracker_name'], re.IGNORECASE)
+                    links[number][entry['issue_id']] = ti.group() if ti else 'ТИ-{}'.format(entry['issue_id'])
+        return [dict(card, links=list(links[card['number']].values())) for card in cards]
 
     def timezone(self):
         with self.connection() as c:
@@ -1084,6 +1118,11 @@ class Store:
             tasks, totals, personal = [], {}, []
             if view == 'personal':
                 personal = self.cards_in(c, None, {'assignee': self.login}, actor)
+            elif view == 'identification' and selected is not None:
+                board = next(b for b in boards if b['id'] == selected)
+                if self.project_board(board):
+                    catalogs['identification_project'] = self.redmine_basis_project_in(c, selected)
+                    tasks = self.identification_in(c, selected, actor)
             elif selected is not None:
                 board = next(b for b in boards if b['id'] == selected)
                 tasks = self.cards_in(c, selected, {} if view == 'statistics' else filters)

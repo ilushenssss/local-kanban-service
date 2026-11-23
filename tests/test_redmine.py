@@ -6,10 +6,39 @@ from unittest.mock import Mock, call
 
 from kanban.installation import load_redmine_project_id
 from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_deadline, kris_coding_lines,
-                            kris_progress_text, read_basis_statuses, read_kris_progress, status_key)
+                            kris_progress_text, read_basis_statuses, read_identification_cards, read_kris_progress, status_key)
 
 
 class RedmineTest(unittest.TestCase):
+    @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
+    def test_identification_keeps_all_values_except_not_required(self):
+        client = Mock()
+        for_filter = []
+        for suffix, field, approval, status in (
+            ('01', 'ТИ согласовано с отд.ЦЗ', 'Да', 'ТИ утверждено'),
+            ('02', 'ТИ согласовано с отд. ЦЗ', 'Нет', 'В работе'),
+            ('03', 'ТИ согласовано с отд.ЦЗ', 'На согласовании', 'В работе'),
+            ('04', 'ТИ согласовано с отд.ЦЗ', ' Не требуется ', 'ТИ утверждено'),
+            ('05', 'Другое поле', 'Да', 'ТИ утверждено'),
+        ):
+            data = {'status': {'name': status}, 'custom_fields': [
+                {'name': field, 'value': approval},
+                {'name': 'Регистрационный номер_ЛПИВ', 'value': 'ТИ(200)-1234-' + suffix + ' описание'},
+            ]}
+            for_filter.append(Mock(**{'raw.return_value': data}))
+        for_filter.append(Mock(**{'raw.return_value': {'id': 99, 'subject': 'Задача без номера', 'custom_fields': [
+            {'name': 'ТИ согласовано с отд.ЦЗ', 'value': 'Да'},
+        ]}}))
+        client.issue.filter.return_value = for_filter
+        cards = read_identification_cards(client, 88)
+        self.assertEqual(cards, [
+            {'number': 'ТИ(200)-1234-01', 'approval': 'Да', 'status': 'ТИ утверждено'},
+            {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе'},
+            {'number': 'ТИ(200)-1234-03', 'approval': 'На согласовании', 'status': 'В работе'},
+            {'number': 'Задача без номера', 'approval': 'Да', 'status': ''},
+        ])
+        client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
+
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_basis_lookup_uses_fixed_number_and_registration_field(self):
         approved, red, missing = 'ТИ(200)-0123-04', 'ТИ(200)-0123-05', 'ТИ(200)-0123-06'

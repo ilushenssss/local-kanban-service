@@ -694,7 +694,10 @@ class UITest(unittest.TestCase):
         for index in (1, 2):
             QTest.mouseClick(tabs.tabBar(), Qt.LeftButton, pos=tabs.tabBar().tabRect(index).center())
             self.assertEqual(tabs.currentIndex(), index)
-            self.assertIsNone(tabs.currentWidget().layout())
+            if index == 1:
+                self.assertIs(tabs.currentWidget(), w.identification_page)
+            else:
+                self.assertIsNone(tabs.currentWidget().layout())
             self.assertFalse(w.scroll.isVisible())
             self.assertFalse(w.new_task_button.isEnabled())
         tabs.setCurrentIndex(0)
@@ -904,6 +907,41 @@ class UITest(unittest.TestCase):
             QTest.keyClick(cards, Qt.Key_Space)
             self.assertEqual(cards.visualItemRect(item).height(), full_height)
             self.assertIn('Баги', item.toolTip())
+
+    def test_identification_tab_loads_basis_project_and_shows_linked_ti(self):
+        from kanban.installation import save_folder
+        base = Path(self.tmp.name)
+        save_folder(base, self.store.folder)
+        (base / 'all_project.json').write_text('{"Основания": 88}', encoding='utf-8')
+        self.store.set_redmine_settings('https://redmine.example.test', {})
+        board = self.store.board_action('Разработка / ИД')
+        self.grant_all(board)
+        self.store.set_redmine_basis_project(board, 'Основания')
+        number = 'ТИ(200)-1234-01'
+        column = self.store.columns(board)[0]['name']
+        self.store.link_redmine_issue(board, 701, 'ТИ на доске', column, column,
+                                      tracker_name='ТИ-701', issue_references={'basis': [number]})
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
+            window = MainWindow(None, installation_base=base)
+            self.windows.append(window)
+            window.show()
+            wait_for(lambda: not window.loading and board in window.board_items)
+        window.select_tree_board(window.board_items[board], 0)
+        wait_for(lambda: not window.loading and window.project_sections_board == board)
+        window.project_sections.setCurrentIndex(1)
+        page = window.identification_page
+        wait_for(lambda: page.refresh_button.isEnabled())
+        window.redmine_client = object()
+        with patch('kanban.redmine.read_identification_cards', return_value=[
+                {'number': number, 'approval': 'Да', 'status': 'ТИ утверждено'},
+                {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе'},
+        ]) as fetch:
+            page.refresh_button.click()
+            wait_for(lambda: not window.mutating and page.cards.count() == 2)
+            fetch.assert_called_once_with(window.redmine_client, 88)
+        self.assertIn('ТИ-701', page.cards.item(0).toolTip())
+        self.assertIn('Не привязано', page.cards.item(1).toolTip())
+        self.assertFalse(page.cards.grab().isNull())
 
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']
