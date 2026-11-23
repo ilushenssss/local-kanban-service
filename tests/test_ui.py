@@ -847,7 +847,9 @@ class UITest(unittest.TestCase):
 
         projects.write_text('{"Разработка": 73, "Внедрение": 88}', encoding='utf-8')
         with patch('kanban.redmine.connect') as auth, patch(
-                'kanban.redmine.read_kris_progress', return_value=({23018: {'done': 3, 'total': 3}}, [])) as kris, patch(
+                'kanban.redmine.read_kris_progress', return_value=({23018: {
+                    'done': 3, 'total': 3, 'subject': 'ТИ-1157р4 из КРИС',
+                }}, [])) as kris, patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
                                                         'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
                                                         'issue_references': {'bugs': ['61428']}}):
@@ -867,7 +869,7 @@ class UITest(unittest.TestCase):
         self.assertNotIn('48316', item.text())
         self.assertIn('ОСЗ: Да', item.text())
         self.assertNotIn('ОСП', item.text())
-        self.assertTrue(item.text().startswith('Редакция к ТИ-1157р4 #23018'))
+        self.assertTrue(item.text().startswith('ТИ-1157р4 из КРИС #23018'))
         self.assertEqual(item.data(Qt.UserRole)['status'], 'ТИ открыто')
         self.assertFalse(member.card_lists[1].grab().isNull())
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
@@ -1141,7 +1143,8 @@ class UITest(unittest.TestCase):
         item = QListWidgetItem(cards)
         set_card_data(item, {'redmine_id': 42, 'title': 'Задача', 'tracker_name': 'ТИ',
                              'status': 'Проект ТИ', 'approvals': [{'department': 'ОСП', 'status': 'Да'}],
-                             'issue_references': {'basis': values, 'bugs': ['48316']}}, 0)
+                             'issue_references': {'basis': values, 'bugs': ['48316']},
+                             'kris_progress': {'subject': 'ТИ-1157 КРИС', 'done': 0, 'total': 0}}, 0)
         cards.show()
         self.addCleanup(cards.close)
         APP.processEvents()
@@ -1155,6 +1158,8 @@ class UITest(unittest.TestCase):
         finally:
             painter.end()
         labels = {call.args[2]: call.args[:2] for call in traced.drawText.call_args_list}
+        self.assertIn('ТИ-1157 КРИС', labels)
+        self.assertNotIn('ТИ', labels)
         for value in values:
             rect, flags = labels[value]
             self.assertTrue(flags & Qt.TextSingleLine)

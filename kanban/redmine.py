@@ -201,6 +201,9 @@ def read_kris_children(client, parent_id):
     if not coding and status_key((parent.get('status') or {}).get('name') or '') == 'кодирование':
         coding.append(coding_deadline(parent))
     progress = {'done': done, 'total': total}
+    subject = (parent.get('subject') or '').strip()
+    if subject:
+        progress['subject'] = subject
     if coding:
         progress['coding'] = coding
     return progress
@@ -309,10 +312,9 @@ def read_issue(client, issue_id):
             'approvals': approvals, 'issue_references': references}
 
 
-# Формирует подпись карточки, пока для старой записи ещё не загрузилось имя трекера.
-def issue_label(tracker_name, issue_id):
-    # Для записей из предыдущей схемы сохраняем привычный вид «ТИ-<ID>».
-    return tracker_name or 'ТИ-{}'.format(issue_id)
+# Формирует заголовок по названию основной задачи КРИС_ТИ, если оно загружено.
+def issue_label(tracker_name, issue_id, kris_progress=None):
+    return (kris_progress or {}).get('subject') or tracker_name or 'ТИ-{}'.format(issue_id)
 
 
 # Приводит имя статуса к ключу для сравнения с настройками и названиями колонок.

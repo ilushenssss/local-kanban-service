@@ -39,7 +39,7 @@ class RedmineTest(unittest.TestCase):
         client.issue.filter.return_value = [kris(71, '#142'), kris(72, 'https://example.test/issues/42'),
                                             kris(73, 'ТИ #43'), kris(74, '44')]
         issues = {
-            72: resource({'id': 72, 'children': [
+            72: resource({'id': 72, 'subject': '  ТИ-1157 · КРИС  ', 'children': [
                 {'id': 101, 'status': {'name': 'Выполнено (проверено)'}, 'children': [{'id': 999}]},
                 {'id': 102}, {'id': 103, 'status': {'name': 'Кодирование'}, 'subject': 'Сервис'},
                 {'id': 104, 'status': {'name': 'Действие не требуется'}},
@@ -55,7 +55,8 @@ class RedmineTest(unittest.TestCase):
         client.issue.get.side_effect = issue_get
         progress, errors = read_kris_progress(client, iter([42, 43, 44, 45]), 73)
         self.assertEqual(progress, {
-            42: {'done': 2, 'total': 3, 'coding': [{'subject': 'Сервис', 'due_date': '2027-02-03'}]},
+            42: {'done': 2, 'total': 3, 'subject': 'ТИ-1157 · КРИС',
+                 'coding': [{'subject': 'Сервис', 'due_date': '2027-02-03'}]},
             43: {'done': 0, 'total': 0, 'coding': [{'subject': '#73', 'due_date': '2027-02-07'}]},
             45: None,
         })

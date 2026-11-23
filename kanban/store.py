@@ -1075,10 +1075,14 @@ class Store:
                                 or filters.get('priority') or filters.get('overdue') or filters.get('due_from')
                                 or filters.get('due_to')):
                             continue
-                        label = issue_label(entry['tracker_name'], entry['issue_id'])
-                        if query and query not in ('{} #{} {}'.format(label, entry['issue_id'], entry['title'])).casefold():
-                            continue
-                        tasks.append(dict(self.redmine_entry(entry), id=-entry['issue_id'], redmine_id=entry['issue_id'],
+                        card = self.redmine_entry(entry)
+                        if query:
+                            tracker = issue_label(entry['tracker_name'], entry['issue_id'])
+                            label = issue_label(entry['tracker_name'], entry['issue_id'], card['kris_progress'])
+                            suffix = ' #{} {}'.format(entry['issue_id'], entry['title'])
+                            if not any(query in (name + suffix).casefold() for name in (label, tracker)):
+                                continue
+                        tasks.append(dict(card, id=-entry['issue_id'], redmine_id=entry['issue_id'],
                                           number=entry['issue_id'], version=entry['revision'], archived=False,
                                           assignees=[], assignee_names=[], labels=[], due_date=None,
                                           completed_at=None, priority='Обычный', unread_count=0))

@@ -58,13 +58,16 @@ class StoreTest(unittest.TestCase):
             outsider.redmine_tasks(board)
         with self.assertRaises(AccessDenied):
             outsider.update_redmine_tasks(board, [(23, 1, 'ТИ', 'ТИ открыто', 'ТИ открыто', 'Редакция к ТИ-1157р4', [], {}, None)])
-        self.assertEqual(member.update_redmine_tasks(board, [(23, 1, 'Открытая ТИ', 'ТИ открыто', 'ТИ открыто', 'Редакция к ТИ-1157р4', [], {}, None)]), [])
+        progress = {'done': 0, 'total': 0, 'subject': 'Основная задача КРИС'}
+        self.assertEqual(member.update_redmine_tasks(
+            board, [(23, 1, 'Открытая ТИ', 'ТИ открыто', 'ТИ открыто', 'Редакция к ТИ-1157р4', [], {}, progress)]), [])
         self.assertTrue(self.s.update_redmine_tasks(board, [(23, 1, 'Устаревшие данные', 'Старый статус', 'Проект ТИ', '', [], {}, None)]))
         self.assertTrue(self.s.update_redmine_tasks(board, [(23, 2, 'Неизвестная ТИ', 'Неизвестный', 'Неизвестный', '', [], {}, None)]))
         _, _, columns, tasks, totals, _, _ = member.board_snapshot(board, {'query': 'ТИ-1157р4'}, 'board')
         self.assertEqual([(t['redmine_id'], t['title'], t['status'], t['column_id']) for t in tasks],
                          [(23, 'Открытая ТИ', 'ТИ открыто', columns[1]['id'])])
         self.assertEqual(totals, {columns[1]['id']: 1})
+        self.assertEqual(member.board_snapshot(board, {'query': 'Основная задача КРИС'}, 'board')[3], tasks)
 
     def test_board_cards_batch_filters_counts_and_access(self):
         original = self.create()

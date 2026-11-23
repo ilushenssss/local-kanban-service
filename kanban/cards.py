@@ -321,7 +321,9 @@ class CardDelegate(QStyledItemDelegate):
                 return
             painter.drawText(label_rect, Qt.AlignCenter | Qt.TextSingleLine, caption)
 
-        text(issue_label(task['tracker_name'], task['redmine_id']), x, y, width-68, bold=True, color='text')
+        progress = task.get('kris_progress')
+        label = issue_label(task['tracker_name'], task['redmine_id'], progress)
+        text(label, x, y, width-68, bold=True, color='text')
         chip('Redmine', QRect(x+width-60, y, 60, CHIP_HEIGHT))
         painter.setFont(redmine_title_font(option.font))
         painter.setPen(QColor(TOKENS['secondary']))
@@ -342,7 +344,6 @@ class CardDelegate(QStyledItemDelegate):
             row, column = divmod(index, BUG_CHIPS_PER_ROW)
             chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT))
         y += chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
-        progress = task.get('kris_progress')
         text('КРИС ТИ', x, y, width-106)
         text(kris_progress_text(progress), x+width-100, y, 100, align=Qt.AlignRight)
         painter.setPen(Qt.NoPen)
@@ -485,12 +486,12 @@ def set_card_notice(item, count):
 def set_card_data(item, task, count):
     item.setData(Qt.UserRole, task)
     if task.get('redmine_id'):
+        progress = task.get('kris_progress')
         summary = '{} #{} · Redmine\n{}\n{}'.format(
-            issue_label(task['tracker_name'], task['redmine_id']), task['redmine_id'], task['title'], task['status'])
+            issue_label(task['tracker_name'], task['redmine_id'], progress), task['redmine_id'], task['title'], task['status'])
         for label, key in (('СП', 'basis'), ('Баги', 'bugs')):
             values = task['issue_references'].get(key, [])
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
-        progress = task.get('kris_progress')
         summary += '\nКРИС ТИ: {}\n'.format(kris_progress_text(progress))
         summary += '\n'.join([*kris_coding_lines(progress), 'Приложения —'])
         if task['approvals']:

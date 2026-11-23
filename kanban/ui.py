@@ -2408,7 +2408,8 @@ class MainWindow(QMainWindow, Async):
             if current is None:
                 return
             dialog = QDialog(self)
-            label = redmine.issue_label(current['tracker_name'], current['issue_id'])
+            progress = current['kris_progress']
+            label = redmine.issue_label(current['tracker_name'], current['issue_id'], progress)
             dialog.setWindowTitle('{} #{} · Redmine'.format(label, current['issue_id']))
             dialog.setMinimumWidth(430)
             layout = QVBoxLayout(dialog)
@@ -2419,7 +2420,6 @@ class MainWindow(QMainWindow, Async):
             layout.addWidget(heading)
             form = QFormLayout()
             references = current['issue_references']
-            progress = current['kris_progress']
             fields = [('Статус задачи', current['status']),
                       ('СП', ', '.join(references.get('basis', [])) or '—'),
                       ('Баги', ', '.join(references.get('bugs', [])) or '—'),
