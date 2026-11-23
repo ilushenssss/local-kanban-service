@@ -839,7 +839,7 @@ class UITest(unittest.TestCase):
         member.refresh()
         wait_for(lambda: not member.loading and member.card_lists[0].count() == 1)
         self.assertIsNone(member.redmine_client)
-        self.assertIn('СП: СП-23578', member.card_lists[0].item(0).text())
+        self.assertIn('Основание: СП-23578', member.card_lists[0].item(0).toolTip())
         self.assertIn('Баги: 48316, 70245', member.card_lists[0].item(0).text())
         self.assertIn('КРИС ТИ: 67% (2/3)', member.card_lists[0].item(0).toolTip())
         self.assertIn('Кодирование до 03.02', member.card_lists[0].item(0).toolTip())
@@ -865,7 +865,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(member.card_lists[0].count(), 0)
         item = member.card_lists[1].item(0)
         self.assertIn('Открытая ТИ', item.text())
-        self.assertIn('СП —', item.text())
+        self.assertIn('Основание —', item.text())
         self.assertIn('Баги: 61428', item.toolTip())
         self.assertIn('КРИС ТИ: 100% (3/3)', item.toolTip())
         self.assertNotIn('Кодирование до 03.02', item.toolTip())
@@ -1181,6 +1181,7 @@ class UITest(unittest.TestCase):
         finally:
             painter.end()
         labels = {call.args[2]: call.args[:2] for call in traced.drawText.call_args_list}
+        self.assertIn('Основание', labels)
         self.assertIn('ТИ-1157 КРИС', labels)
         self.assertNotIn('ТИ', labels)
         for value in values:

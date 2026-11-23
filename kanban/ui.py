@@ -2424,7 +2424,7 @@ class MainWindow(QMainWindow, Async):
             form = QFormLayout()
             references = current['issue_references']
             fields = [('Статус задачи', current['status']),
-                      ('СП', ', '.join(references.get('basis', [])) or '—'),
+                      ('Основание', ', '.join(references.get('basis', [])) or '—'),
                       ('Баги', ', '.join(references.get('bugs', [])) or '—'),
                       ('КРИС ТИ', '\n'.join([redmine.kris_progress_text(progress), *redmine.kris_coding_lines(progress)]))]
             if current['approvals']:

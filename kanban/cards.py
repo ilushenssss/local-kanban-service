@@ -359,7 +359,7 @@ class CardDelegate(QStyledItemDelegate):
         painter.drawText(title_rect, Qt.AlignTop | Qt.TextWordWrap, ' '.join(task['title'].split()))
         y = title_rect.bottom()+6
         basis_chips, basis_height = self.basis_layout(task, option)
-        text('СП' if basis_chips else 'СП —', x, y, width)
+        text('Основание' if basis_chips else 'Основание —', x, y, width)
         y += REFERENCE_LABEL_HEIGHT
         for value, rect, text_width in basis_chips:
             chip(value, rect.translated(x, y), text_width=text_width)
@@ -553,7 +553,7 @@ def set_card_data(item, task, count):
         progress = task.get('kris_progress')
         summary = '{} #{} · Redmine\n{}\n{}'.format(
             issue_label(task['tracker_name'], task['redmine_id'], progress), task['redmine_id'], task['title'], task['status'])
-        for label, key in (('СП', 'basis'), ('Баги', 'bugs')):
+        for label, key in (('Основание', 'basis'), ('Баги', 'bugs')):
             values = task['issue_references'].get(key, [])
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
         summary += '\nКРИС ТИ: {}\n'.format(kris_progress_text(progress))
