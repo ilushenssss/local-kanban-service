@@ -1,5 +1,8 @@
 # Модуль читает данные Redmine. Учётные данные клиента остаются в памяти сеанса TeamSync.
 """Read-only Redmine access. The client and its credentials live in one TeamSync session."""
+# Проверяет дату срока из Redmine и форматирует её для карточки.
+from datetime import date
+
 # Ищет префикс поля согласования в имени, полученном из Redmine.
 import re
 
@@ -161,16 +164,29 @@ def find_kris_issues(client, issue_ids, project_id):
     return matches
 
 
+def coding_deadline(issue):
+    # В снимке сохраняем полную дату, чтобы отличать одинаковые день и месяц в разные годы.
+    try:
+        due = date.fromisoformat(issue.get('due_date')).isoformat()
+    except (TypeError, ValueError):
+        due = None
+    return {'subject': issue.get('subject') or '#{}'.format(issue['id']), 'due_date': due}
+
+
 def read_kris_children(client, parent_id):
     # Вложенные потомки не учитываются. Статус прямой подзадачи может потребовать отдельного запроса.
     parent = client.issue.get(parent_id, include='children').raw()
     children = parent.get('children') or []
     done = total = 0
+    coding = []
     for child in children:
         status = (child.get('status') or {}).get('name')
-        if not status:
-            issue = client.issue.get(child['id']).raw()
-            status = (issue.get('status') or {}).get('name')
+        # Краткий ответ может содержать статус, но не срок и название подзадачи.
+        missing_coding_details = (status_key(status or '') == 'кодирование'
+                                  and ('due_date' not in child or not child.get('subject')))
+        if not status or missing_coding_details:
+            child = dict(child, **client.issue.get(child['id']).raw())
+            status = (child.get('status') or {}).get('name')
         if not status:
             raise RedmineError('Redmine не вернул статус подзадачи.')
         key = status_key(status)
@@ -179,7 +195,15 @@ def read_kris_children(client, parent_id):
             continue
         total += 1
         done += 'выполнено' in key
-    return {'done': done, 'total': total}
+        if key == 'кодирование':
+            coding.append(coding_deadline(child))
+    # Если кодирование задано на самой задаче КРИС_ТИ, берём её срок при отсутствии таких подзадач.
+    if not coding and status_key((parent.get('status') or {}).get('name') or '') == 'кодирование':
+        coding.append(coding_deadline(parent))
+    progress = {'done': done, 'total': total}
+    if coding:
+        progress['coding'] = coding
+    return progress
 
 
 def read_kris_progress(client, issue_ids, project_id):
@@ -221,6 +245,24 @@ def kris_progress_text(progress):
     if not progress['total']:
         return 'Подзадач нет'
     return '{}% ({}/{})'.format(kris_percent(progress), progress['done'], progress['total'])
+
+
+def kris_coding_lines(progress):
+    coding = (progress or {}).get('coding', [])
+    if not coding:
+        return []
+    dates = {issue['due_date'] for issue in coding}
+    if len(dates) == 1:
+        due = coding[0]['due_date']
+        if due:
+            return ['Кодирование до ' + date.fromisoformat(due).strftime('%d.%m')]
+        return ['Кодирование: срок не указан']
+    lines = []
+    for issue in coding:
+        due = issue['due_date']
+        deadline = date.fromisoformat(due).strftime('%d.%m') if due else 'срок не указан'
+        lines.append('{}: {}'.format(issue['subject'], deadline))
+    return lines
 
 
 # Читает поля задачи по числовому ID из её адреса в Redmine.

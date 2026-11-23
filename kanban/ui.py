@@ -2419,10 +2419,11 @@ class MainWindow(QMainWindow, Async):
             layout.addWidget(heading)
             form = QFormLayout()
             references = current['issue_references']
+            progress = current['kris_progress']
             fields = [('Статус задачи', current['status']),
                       ('СП', ', '.join(references.get('basis', [])) or '—'),
                       ('Баги', ', '.join(references.get('bugs', [])) or '—'),
-                      ('КРИС ТИ', redmine.kris_progress_text(current['kris_progress']))]
+                      ('КРИС ТИ', '\n'.join([redmine.kris_progress_text(progress), *redmine.kris_coding_lines(progress)]))]
             if current['approvals']:
                 fields.append(('Согласование отделов', '\n'.join(
                     '{}: {}'.format(entry['department'], entry['status']) for entry in current['approvals'])))

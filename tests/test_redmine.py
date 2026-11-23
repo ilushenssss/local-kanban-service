@@ -5,8 +5,8 @@ from tempfile import TemporaryDirectory
 from unittest.mock import Mock, call
 
 from kanban.installation import load_kris_project_id
-from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_progress_text,
-                            read_kris_progress, status_key)
+from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_lines,
+                            kris_progress_text, read_kris_progress, status_key)
 
 
 class RedmineTest(unittest.TestCase):
@@ -41,26 +41,42 @@ class RedmineTest(unittest.TestCase):
         issues = {
             72: resource({'id': 72, 'children': [
                 {'id': 101, 'status': {'name': 'Выполнено (проверено)'}, 'children': [{'id': 999}]},
-                {'id': 102}, {'id': 103, 'status': {'name': 'В работе'}},
+                {'id': 102}, {'id': 103, 'status': {'name': 'Кодирование'}, 'subject': 'Сервис'},
                 {'id': 104, 'status': {'name': 'Действие не требуется'}},
             ]}),
             102: resource({'id': 102, 'status': {'name': 'ВЫПОЛНЕНО'}}),
-            73: resource({'id': 73, 'children': [{'id': 105}]}),
+            103: resource({'id': 103, 'due_date': '2027-02-03'}),
+            73: resource({'id': 73, 'status': {'name': 'Кодирование'}, 'due_date': '2027-02-07',
+                          'children': [{'id': 105}]}),
             105: resource({'id': 105, 'status': {'name': ' ДЕЙСТВИЕ  НЕ ТРЕБУЕТСЯ '}}),
         }
         def issue_get(issue_id, **kwargs):
             return issues[issue_id]
         client.issue.get.side_effect = issue_get
         progress, errors = read_kris_progress(client, iter([42, 43, 44, 45]), 73)
-        self.assertEqual(progress, {42: {'done': 2, 'total': 3}, 43: {'done': 0, 'total': 0}, 45: None})
+        self.assertEqual(progress, {
+            42: {'done': 2, 'total': 3, 'coding': [{'subject': 'Сервис', 'due_date': '2027-02-03'}]},
+            43: {'done': 0, 'total': 0, 'coding': [{'subject': '#73', 'due_date': '2027-02-07'}]},
+            45: None,
+        })
         self.assertEqual(errors, ['Не удалось прочитать подзадачи КРИС_ТИ #74.'])
         self.assertEqual(kris_progress_text(progress[42]), '67% (2/3)')
         self.assertEqual(kris_progress_text(progress[43]), 'Подзадач нет')
         self.assertEqual(kris_progress_text(progress[45]), '—')
         client.issue.filter.assert_called_once_with(project_id=73, status_id='open', parent_id='!*')
         self.assertEqual(client.issue.get.call_args_list,
-                         [call(72, include='children'), call(102), call(73, include='children'), call(105),
+                         [call(72, include='children'), call(102), call(103), call(73, include='children'), call(105),
                           call(74, include='children')])
+
+    def test_kris_coding_lines_group_equal_dates_and_list_different_dates(self):
+        coding = [{'subject': 'Сервис', 'due_date': '2027-02-03'},
+                  {'subject': 'Интерфейс', 'due_date': '2027-02-03'}]
+        self.assertEqual(kris_coding_lines({'coding': coding}), ['Кодирование до 03.02'])
+        coding[1]['due_date'] = '2027-02-04'
+        self.assertEqual(kris_coding_lines({'coding': coding}), ['Сервис: 03.02', 'Интерфейс: 04.02'])
+        coding[1]['due_date'] = None
+        self.assertEqual(kris_coding_lines({'coding': coding}), ['Сервис: 03.02', 'Интерфейс: срок не указан'])
+        self.assertEqual(kris_coding_lines({'done': 2, 'total': 3}), [])
 
     def test_issue_references_from_custom_fields(self):
         fields = [

@@ -3,7 +3,7 @@ import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
-from .redmine import APPROVAL_COLORS, issue_label, kris_progress_text, status_key
+from .redmine import APPROVAL_COLORS, issue_label, kris_coding_lines, kris_progress_text, status_key
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
@@ -19,6 +19,7 @@ CHIP_GAP = 4
 CHIP_PITCH = CHIP_HEIGHT + CHIP_GAP
 CHIP_TEXT_INSET = 3
 REFERENCE_LABEL_HEIGHT = 22
+CODING_LINE_HEIGHT = 19
 
 
 def chip_rows(values, per_row):
@@ -104,7 +105,8 @@ class CardDelegate(QStyledItemDelegate):
             bugs = task['issue_references'].get('bugs', [])
             reference_height = 2 * REFERENCE_LABEL_HEIGHT + basis_height + chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
             title_height = 2 * QFontMetrics(redmine_title_font(option.font)).lineSpacing()
-            return QSize(292, 94 + title_height + reference_height + approval_height)
+            coding_height = len(kris_coding_lines(task.get('kris_progress'))) * CODING_LINE_HEIGHT
+            return QSize(292, 94 + title_height + reference_height + approval_height + coding_height)
         height = card_height(task, QFontMetrics(title_font(option.font)))
         if index.data(EXPANDED_ROLE):
             width = max(220, self.parent().viewport().width() - 32)
@@ -288,14 +290,15 @@ class CardDelegate(QStyledItemDelegate):
         painter.setClipRect(card)
         x, y, width = card.left()+12, card.top()+9, card.width()-24
 
-        def text(caption, left, top, span, height=19, bold=False, color='muted', align=Qt.AlignLeft):
+        def text(caption, left, top, span, height=19, bold=False, color='muted', align=Qt.AlignLeft,
+                 elide=Qt.ElideRight):
             font = QFont(option.font)
             font.setPixelSize(12 if not bold else 15)
             font.setBold(bold)
             painter.setFont(font)
             painter.setPen(QColor(TOKENS[color]))
             painter.drawText(QRect(left, top, span, height), align | Qt.AlignVCenter,
-                             painter.fontMetrics().elidedText(caption, Qt.ElideRight, span))
+                             painter.fontMetrics().elidedText(caption, elide, span))
 
         def chip(caption, rect, palette=None, text_width=None):
             foreground, background = palette or (TOKENS['secondary'], TOKENS['hover'])
@@ -350,6 +353,9 @@ class CardDelegate(QStyledItemDelegate):
             fill = width * progress['done'] / progress['total']
             painter.drawRoundedRect(QRectF(x, y+19, fill, 4), 2, 2)
         footer = y+25
+        for line in kris_coding_lines(progress):
+            text(line, x, footer, width, height=CODING_LINE_HEIGHT, elide=Qt.ElideMiddle)
+            footer += CODING_LINE_HEIGHT
         if task['approvals']:
             text('Согласование отделов', x, footer, width)
             footer += 19
@@ -484,7 +490,9 @@ def set_card_data(item, task, count):
         for label, key in (('СП', 'basis'), ('Баги', 'bugs')):
             values = task['issue_references'].get(key, [])
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
-        summary += '\nКРИС ТИ: {}\nПриложения —'.format(kris_progress_text(task.get('kris_progress')))
+        progress = task.get('kris_progress')
+        summary += '\nКРИС ТИ: {}\n'.format(kris_progress_text(progress))
+        summary += '\n'.join([*kris_coding_lines(progress), 'Приложения —'])
         if task['approvals']:
             summary += '\nСогласование отделов: ' + ', '.join(
                 '{}: {}'.format(entry['department'], entry['status']) for entry in task['approvals'])
