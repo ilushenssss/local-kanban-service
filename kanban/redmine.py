@@ -1,5 +1,9 @@
 # Модуль читает данные Redmine. Учётные данные клиента остаются в памяти сеанса TeamSync.
 """Read-only Redmine access. The client and its credentials live in one TeamSync session."""
+# Разбираем HTML-заголовок и отделяем точный суффикс с ID задачи.
+from html.parser import HTMLParser
+import re
+
 # Разбирает URL на схему, адрес, порт и путь без сетевого запроса.
 from urllib.parse import urlsplit
 
@@ -86,8 +90,54 @@ def connect(url, login, password):
     return client
 
 
-# Читает заголовок, статус и имя трекера задачи по числовому ID из её адреса в Redmine.
-def read_issue(client, issue_id):
+# В Redmine подпись задачи находится в h2. Внутри могут быть ссылки и другие теги.
+class IssueHeadingParser(HTMLParser):
+    def __init__(self, issue_id):
+        super().__init__()
+        # Совпадёт только конечный #ID запрошенной задачи.
+        self.suffix = re.compile(r'\s*#\s*' + re.escape(str(issue_id)) + r'$')
+        self.parts = None
+        self.heading = ''
+
+    def handle_starttag(self, tag, attrs):
+        if tag == 'h2' and not self.heading:
+            self.parts = []
+
+    def handle_data(self, data):
+        if self.parts is not None:
+            self.parts.append(data)
+
+    def handle_endtag(self, tag):
+        if tag == 'h2' and self.parts is not None:
+            heading = ' '.join(''.join(self.parts).split())
+            suffix = self.suffix.search(heading)
+            if suffix:
+                self.heading = heading[:suffix.start()]
+            self.parts = None
+
+
+# Используем HTTP-сеанс клиента Redmine. Отдельного входа в браузер нет.
+def read_issue_heading(client, issue_id):
+    from requests.exceptions import RequestException
+
+    try:
+        # Страница задачи может формировать более полную подпись, чем tracker.name из API.
+        response = client.engine.session.get(
+            '{}/issues/{}'.format(client.url, issue_id),
+            headers={'Accept': 'text/html'}, timeout=(5, 10), allow_redirects=False,
+        )
+    except RequestException:
+        return ''
+    # При отказе в доступе или перенаправлении на вход остаются данные API.
+    if response.status_code != 200:
+        return ''
+    parser = IssueHeadingParser(issue_id)
+    parser.feed(response.text)
+    return parser.heading
+
+
+# Читает заголовок, статус и подпись задачи по числовому ID из её адреса в Redmine.
+def read_issue(client, issue_id, *, previous_label=''):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
@@ -99,7 +149,7 @@ def read_issue(client, issue_id):
         title = fields.get('subject')
         # Обычно status выглядит как {"id": 1, "name": "Новая"}. Берём имя для показа и подбора колонки.
         status = (fields.get('status') or {}).get('name')
-        # Redmine формирует подпись «имя трекера #ID». Берём имя целиком, включая редакцию.
+        # Имя трекера из API используется, если полную подпись получить не удалось.
         tracker = fields.get('tracker')
         # Старые или изменённые ответы API могут не содержать объект трекера.
         tracker_name = tracker.get('name') if isinstance(tracker, dict) else None
@@ -121,8 +171,10 @@ def read_issue(client, issue_id):
         raise RedmineError('Redmine не вернул заголовок или статус задачи #{}.'.format(issue_id))
     # Пустое имя трекера допустимо. Для таких карточек есть подпись по ID.
     tracker_name = tracker_name.strip() if isinstance(tracker_name, str) else ''
+    # При недоступной HTML-странице сохраняем ранее загруженную подпись.
+    label = read_issue_heading(client, issue_id) or previous_label or tracker_name
     # ID задачи используется отдельно, для связи с Redmine.
-    return {'title': title.strip(), 'status': status.strip(), 'tracker_name': tracker_name}
+    return {'title': title.strip(), 'status': status.strip(), 'tracker_name': label}
 
 
 # Формирует подпись карточки, пока для старой записи ещё не загрузилось имя трекера.
