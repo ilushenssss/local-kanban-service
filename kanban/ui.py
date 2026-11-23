@@ -1544,7 +1544,8 @@ class MainWindow(QMainWindow, Async):
         permissions = getattr(self, 'permissions', {})
         for action in menu.actions():
             text = action.text()
-            if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…', 'Проект поиска оснований…'):
+            if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…', 'Проект поиска оснований…',
+                        'Проект СППИ…'):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Подключение…':
                 action.setEnabled((self.store is None and self.installation_base is not None)
@@ -1571,6 +1572,7 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Метки доски', lambda: self.open_catalog('labels'))
         if self.board_id is not None and self.project_sections_board == self.board_id:
             menu.addAction('Проект поиска оснований…', self.edit_basis_project)
+            menu.addAction('Проект СППИ…', self.edit_sppi_project)
         menu.addSeparator()
         menu.addAction('Переименовать доску', lambda: self.board_action('rename'))
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
@@ -2452,6 +2454,15 @@ class MainWindow(QMainWindow, Async):
                 form.addRow(label, field)
             style_form(form)
             layout.addLayout(form)
+            if references.get('children'):
+                layout.addWidget(QLabel('Подзадачи Redmine'))
+                children = QTextEdit()
+                children.setReadOnly(True)
+                children.setAccessibleName('Подзадачи Redmine')
+                children.setPlainText('\n'.join('#{} {} · {}'.format(child['id'], child['title'], child['status'] or '—')
+                                                for child in references['children']))
+                children.setMaximumHeight(140)
+                layout.addWidget(children)
             button('Закрыть', dialog.accept, layout)
             dialog.exec_()
             dialog.deleteLater()
@@ -2525,10 +2536,24 @@ class MainWindow(QMainWindow, Async):
         self.mutate(apply, success)
 
     def redmine_project_id(self, project):
-        base = self.installation_base or Path(__file__).resolve().parent.parent
-        return installation.load_redmine_project_id(base, project)
+        return installation.load_redmine_project_id(self.redmine_config_base(), project)
+
+    def redmine_config_base(self):
+        return self.installation_base or Path(__file__).resolve().parent.parent
 
     def edit_basis_project(self):
+        board_id = self.board_id
+        if not self.store:
+            return
+        self.edit_redmine_project('Проект поиска оснований', lambda: self.store.redmine_basis_project(board_id),
+                                  lambda value, rid: self.store.set_redmine_basis_project(board_id, value, rid))
+
+    def edit_sppi_project(self):
+        if not self.store:
+            return
+        self.edit_redmine_project('Проект СППИ', self.store.redmine_sppi_project, self.store.set_redmine_sppi_project)
+
+    def edit_redmine_project(self, title, load, persist):
         board_id = self.board_id
         if not self.store or board_id is None or self.project_sections_board != board_id or not self.permissions.get('admin'):
             return
@@ -2540,7 +2565,7 @@ class MainWindow(QMainWindow, Async):
             if self.board_id != board_id:
                 return
             value, accepted = QInputDialog.getText(
-                self, 'Проект поиска оснований', 'Название проекта из all_project.json (пусто — отключить)', text=project)
+                self, title, 'Название проекта из all_project.json (пусто — отключить)', text=project)
             if not accepted or value.strip() == project:
                 return
             value = value.strip()
@@ -2548,11 +2573,11 @@ class MainWindow(QMainWindow, Async):
             def save(rid):
                 if value:
                     self.redmine_project_id(value)
-                return self.store.set_redmine_basis_project(board_id, value, rid)
+                return persist(value, rid)
 
-            self.mutate(save, 'Проект поиска оснований сохранён')
+            self.mutate(save, 'Настройка сохранена')
 
-        self.work(lambda: self.store.redmine_basis_project(board_id), done)
+        self.work(load, done)
 
     def read_project_kris_progress(self, client, issue_ids, project):
         try:
@@ -2603,11 +2628,25 @@ class MainWindow(QMainWindow, Async):
             self.refresh()
             return
         project = self.board_items[board_id].parent().text(0)
+        board_name = self.board_items[board_id].text(0)
+        scan_sppi = self.pages.currentIndex() == 0 and self.project_sections.currentIndex() == 0 and self.permissions.get('create')
+        snapshot = None
 
-        def update(client, rid, statuses):
+        def prepare(client, statuses):
             issues, errors = [], []
-            for task in self.store.redmine_tasks(board_id):
-                issue_id = task['issue_id']
+            linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
+            sppi_project = self.store.redmine_sppi_project() if scan_sppi else ''
+            issue_ids = list(linked)
+            if sppi_project:
+                try:
+                    employees = installation.load_redmine_employees(self.redmine_config_base())
+                    imported = redmine.read_sppi_issue_ids(client, self.redmine_project_id(sppi_project), board_name, employees)
+                    issue_ids = list(dict.fromkeys([*issue_ids, *imported]))
+                except redmine.RedmineAuthError:
+                    raise
+                except ValueError as error:
+                    errors.append(str(error))
+            for issue_id in issue_ids:
                 try:
                     issue = redmine.read_issue(client, issue_id)
                 except redmine.RedmineAuthError:
@@ -2615,24 +2654,31 @@ class MainWindow(QMainWindow, Async):
                 except redmine.RedmineError as error:
                     errors.append(str(error))
                     continue
-                issues.append((task, issue))
+                issues.append((issue_id, issue))
             updates = []
             if issues:
                 progress, warnings = self.read_project_kris_progress(
-                    client, (task['issue_id'] for task, _ in issues), project)
+                    client, (issue_id for issue_id, _ in issues), project)
                 errors.extend(warnings)
                 basis_project, basis_statuses, warnings = self.read_project_basis_statuses(
                     client, board_id, (issue for _, issue in issues))
                 errors.extend(warnings)
-                for task, issue in issues:
-                    issue_id = task['issue_id']
+                for issue_id, issue in issues:
+                    task = linked.get(issue_id, {})
                     target = redmine.column_name(issue['status'], statuses)
                     references = redmine.with_basis_statuses(issue['issue_references'], basis_project, basis_statuses)
-                    updates.append((issue_id, task['revision'], issue['title'], issue['status'], target,
+                    updates.append((issue_id, task.get('revision'), issue['title'], issue['status'], target,
                                     issue['tracker_name'], issue['approvals'], references,
-                                    progress.get(issue_id, task['kris_progress'])))
+                                    progress.get(issue_id, task.get('kris_progress'))))
+            return updates, errors, sppi_project
+
+        def update(client, rid, statuses):
+            nonlocal snapshot
+            if snapshot is None:
+                snapshot = prepare(client, statuses)
+            updates, errors, sppi_project = snapshot
             if updates:
-                errors.extend(self.store.update_redmine_tasks(board_id, updates))
+                return errors + self.store.update_redmine_tasks(board_id, updates, sppi_project=sppi_project, request_id=rid)
             return errors
 
         self.redmine_operation(update, 'Данные Redmine обновлены')

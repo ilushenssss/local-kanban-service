@@ -908,6 +908,39 @@ class UITest(unittest.TestCase):
             self.assertEqual(cards.visualItemRect(item).height(), full_height)
             self.assertIn('Баги', item.toolTip())
 
+    def test_current_work_refresh_imports_sppi_tasks_with_the_regular_card_fields(self):
+        from kanban.installation import save_folder
+        base = Path(self.tmp.name)
+        save_folder(base, self.store.folder)
+        (base / 'all_project.json').write_text('{"Проект": 49, "СППИ": 88}', encoding='utf-8')
+        (base / 'employees.json').write_text('["Иванова Анна"]', encoding='utf-8')
+        self.store.set_redmine_settings('https://redmine.example.test', {})
+        self.store.set_redmine_sppi_project('СППИ')
+        board = self.store.board_action('Проект / 2.0-218', column_names=['Проект ТИ'])
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
+            window = MainWindow(None, installation_base=base)
+            self.windows.append(window)
+            window.show()
+            wait_for(lambda: not window.loading and board in window.board_items)
+        window.select_tree_board(window.board_items[board], 0)
+        wait_for(lambda: not window.loading and window.project_sections_board == board and bool(window.card_lists))
+        window.redmine_client = object()
+        subtasks = [{'id': 120, 'title': 'Подзадача', 'status': 'В работе'}]
+        issue = {'title': 'ТИ из СППИ', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-119',
+                 'approvals': [{'department': 'ОСП', 'status': 'Да'}],
+                 'issue_references': {'basis': ['СП-12'], 'bugs': ['42'], 'children': subtasks}}
+        with patch('kanban.redmine.read_sppi_issue_ids', return_value=[119]) as discover, \
+             patch('kanban.redmine.read_issue', return_value=issue) as fetch, \
+             patch('kanban.redmine.read_kris_progress', return_value=({119: None}, [])):
+            window.refresh_workspace()
+            wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 1)
+            discover.assert_called_once_with(window.redmine_client, 88, '2.0-218', ['Иванова Анна'])
+            fetch.assert_called_once_with(window.redmine_client, 119)
+        item = window.card_lists[0].item(0)
+        self.assertIn('Основание: СП-12', item.toolTip())
+        self.assertIn('ОСП: Да', item.toolTip())
+        self.assertEqual(self.store.redmine_tasks(board)[0]['issue_references']['children'], subtasks)
+
     def test_identification_tab_loads_basis_project_and_shows_linked_ti(self):
         from kanban.installation import save_folder
         base = Path(self.tmp.name)

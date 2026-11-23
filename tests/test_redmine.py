@@ -7,10 +7,53 @@ from unittest.mock import Mock, call
 
 from kanban.installation import load_redmine_project_id
 from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_deadline, kris_coding_lines,
-                            kris_progress_text, read_basis_statuses, read_identification_cards, read_kris_progress, status_key)
+                            kris_progress_text, read_basis_statuses, read_identification_cards, read_issue,
+                            read_kris_progress, read_sppi_issue_ids, status_key)
 
 
 class RedmineTest(unittest.TestCase):
+    @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
+    def test_sppi_filters_resolved_users_and_versions_and_reads_nested_subtasks(self):
+        client = Mock()
+
+        def candidate(issue_id, responsible, version):
+            issue = Mock()
+            issue.id = issue_id
+            issue.raw.return_value = {'custom_fields': [
+                {'name': 'Ответственный за ТИ', 'value': responsible},
+                {'name': 'Приоритет реализации', 'value': version},
+            ]}
+            return issue
+
+        client.issue.filter.return_value = [
+            candidate(1, ['42'], ['1342']), candidate(2, '43', ['1342']),
+            candidate(3, '42', ['1343']), candidate(4, '42', '1342'),
+        ]
+        client.version.get.side_effect = lambda version: SimpleNamespace(
+            name={1342: '2.0-218 И-01', 1343: '2.0-219 И-01'}[version])
+        client.user.get.side_effect = lambda user_id: Mock(**{'raw.return_value': {
+            'firstname': 'Анна', 'lastname': 'Иванова' if user_id == 42 else 'Смирнова'}})
+        self.assertEqual(read_sppi_issue_ids(client, 88, '2.0-218', ['Иванова Анна']), [1, 4])
+        client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
+        self.assertEqual(client.user.get.call_args_list, [call(42), call(43)])
+        self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343)])
+
+        issues = {
+            1: {'subject': 'Задача', 'status': {'name': 'Проект ТИ'},
+                'custom_fields': [{'name': 'Основание для открытия ТИ', 'value': 'СП-123'}],
+                'children': [{'id': 2, 'subject': 'Подзадача'}]},
+            2: {'status': {'name': 'В работе'},
+                'children': [{'id': 3, 'subject': 'Вложенная', 'status': {'name': 'Готово'}}]},
+        }
+        client.issue.get.side_effect = lambda issue_id, **params: Mock(**{'raw.return_value': issues[issue_id]})
+        self.assertEqual(read_issue(client, 1)['issue_references'], {
+            'basis': ['СП-123'], 'children': [
+                {'id': 2, 'title': 'Подзадача', 'status': 'В работе'},
+                {'id': 3, 'title': 'Вложенная', 'status': 'Готово'},
+            ],
+        })
+        self.assertEqual(client.issue.get.call_args_list, [call(1, include='children'), call(2, include='children')])
+
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_identification_keeps_all_values_except_not_required(self):
         from redminelib.exceptions import ResourceNotFoundError

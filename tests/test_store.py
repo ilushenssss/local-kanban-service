@@ -82,6 +82,22 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(member.redmine_basis_project(board), 'Внедрение')
         self.assertEqual(self.s.redmine_basis_project(other), '')
 
+    def test_sppi_batch_requires_creation_rights_and_does_not_duplicate_cards(self):
+        board = self.s.board_action('Проект / 2.0-218', column_names=['Проект ТИ'])
+        member = Store(self.s.folder, 'bob')
+        self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        with self.assertRaises(AccessDenied):
+            member.set_redmine_sppi_project('СППИ')
+        self.s.set_redmine_sppi_project('СППИ')
+        updates = [(40, None, 'Импорт', 'Проект ТИ', 'Проект ТИ', 'ТИ-40', [], {}, None)]
+        with self.assertRaises(AccessDenied):
+            member.update_redmine_tasks(board, updates, sppi_project='СППИ')
+        with self.assertRaisesRegex(ValueError, 'изменился'):
+            self.s.update_redmine_tasks(board, updates, sppi_project='Другой проект')
+        self.assertEqual(self.s.update_redmine_tasks(board, updates, sppi_project='СППИ'), [])
+        self.assertEqual(self.s.update_redmine_tasks(board, updates, sppi_project='СППИ'), [])
+        self.assertEqual([task['issue_id'] for task in member.redmine_tasks(board)], [40])
+
     def test_identification_links_only_to_visible_active_boards(self):
         board = self.s.board_action('Проект / 2.0-218')
         private = self.s.board_action('Проект / Другая доска')

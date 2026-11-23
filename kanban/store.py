@@ -335,7 +335,8 @@ class Store:
 
     def authorize_write(self, c, operation, payload):
         self.actor(c)
-        if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings', 'redmine_basis_project'):
+        if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings', 'redmine_basis_project',
+                         'redmine_sppi_project'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -389,6 +390,25 @@ class Store:
     def redmine_basis_project_in(c, board_id):
         row = c.execute('SELECT value FROM settings WHERE key=?', ('redmine_basis_project:{}'.format(board_id),)).fetchone()
         return row[0] if row else ''
+
+    @staticmethod
+    def redmine_sppi_project_in(c):
+        row = c.execute("SELECT value FROM settings WHERE key='redmine_sppi_project'").fetchone()
+        return row[0] if row else ''
+
+    def redmine_sppi_project(self):
+        with self.connection() as c:
+            self.actor(c)
+            return self.redmine_sppi_project_in(c)
+
+    def set_redmine_sppi_project(self, project, request_id=None):
+        project = project.strip()
+
+        def apply(c, uid):
+            c.execute("INSERT OR REPLACE INTO settings VALUES('redmine_sppi_project',?)", (project,))
+            return True
+
+        return self.write('redmine_sppi_project', [project], apply, request_id)
 
     def redmine_basis_project(self, board_id):
         with self.connection() as c:
@@ -1065,6 +1085,15 @@ class Store:
             raise ValueError('На доске должна быть ровно одна колонка «{}» для этого статуса Redmine'.format(name))
         return matches[0]
 
+    @staticmethod
+    def insert_redmine_link(c, board_id, issue_id, title, status, column_id, tracker_name, approvals, references, progress):
+        return c.execute('''INSERT OR IGNORE INTO redmine_links
+                            (board_id,issue_id,title,status,column_id,tracker_name,approvals,issue_references,kris_progress)
+                            VALUES(?,?,?,?,?,?,?,?,?)''',
+                         (board_id, issue_id, title, status, column_id, tracker_name,
+                          json.dumps(approvals, ensure_ascii=False),
+                          json.dumps(references, ensure_ascii=False), json.dumps(progress))).rowcount
+
     def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None, *,
                            tracker_name='', approvals=(), issue_references=None, kris_progress=None):
         if type(issue_id) is not int or not 0 < issue_id <= 2**63 - 1:
@@ -1072,12 +1101,8 @@ class Store:
 
         def apply(c, uid):
             column_id = self.redmine_column(c, board_id, target_column)
-            if not c.execute('''INSERT OR IGNORE INTO redmine_links
-                                (board_id,issue_id,title,status,column_id,tracker_name,approvals,issue_references,kris_progress)
-                                VALUES(?,?,?,?,?,?,?,?,?)''',
-                             (board_id, issue_id, title, status, column_id, tracker_name,
-                              json.dumps(approvals, ensure_ascii=False),
-                              json.dumps(issue_references or {}, ensure_ascii=False), json.dumps(kris_progress))).rowcount:
+            if not self.insert_redmine_link(c, board_id, issue_id, title, status, column_id, tracker_name, approvals,
+                                            issue_references or {}, kris_progress):
                 raise ValueError('Задача Redmine #{} уже добавлена на эту доску'.format(issue_id))
             return True
 
@@ -1085,14 +1110,22 @@ class Store:
                           [board_id, issue_id, title, status, target_column, tracker_name, approvals, issue_references, kris_progress],
                           apply, request_id)
 
-    def update_redmine_tasks(self, board_id, updates):
+    def update_redmine_tasks(self, board_id, updates, *, sppi_project=None, request_id=None):
         def apply(c, uid):
+            if any(revision is None for _, revision, *_ in updates):
+                self.require(c, 'create_task', board_id)
+                if not sppi_project or self.redmine_sppi_project_in(c) != sppi_project:
+                    raise ValueError('Проект СППИ изменился. Обновите доску повторно.')
             errors = []
             for issue_id, revision, title, status, target_column, tracker_name, approvals, references, progress in updates:
                 try:
                     column_id = self.redmine_column(c, board_id, target_column)
                 except ValueError as error:
                     errors.append('#{}: {}'.format(issue_id, error))
+                    continue
+                if revision is None:
+                    self.insert_redmine_link(c, board_id, issue_id, title, status, column_id, tracker_name, approvals,
+                                             references, progress)
                     continue
                 if not c.execute('''UPDATE redmine_links SET title=?, status=?, column_id=?, revision=revision+1,
                                      tracker_name=COALESCE(NULLIF(?,''), tracker_name), approvals=?, issue_references=?,
@@ -1104,7 +1137,7 @@ class Store:
                     errors.append('#{}: карточка уже обновлена другим пользователем'.format(issue_id))
             return errors
 
-        return self.write('redmine_refresh', [board_id, updates], apply)
+        return self.write('redmine_refresh', [board_id, updates, sppi_project], apply, request_id)
 
     @staticmethod
     def project_board(board):

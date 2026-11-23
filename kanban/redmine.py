@@ -182,16 +182,76 @@ def with_basis_statuses(references, project, statuses):
     return dict(references, basis_project=project, basis_statuses=matches) if matches else references
 
 
-def read_identification_cards(client, project_id):
+def custom_field_values(data):
+    return {status_key(field['name']): field.get('value')
+            for field in data.get('custom_fields') or [] if field.get('name')}
+
+
+def resource_ids(value):
+    values = value if isinstance(value, list) else [value]
+    for raw in values:
+        key = str(raw).strip()
+        if key.isascii() and key.isdecimal() and int(key) > 0:
+            yield int(key)
+
+
+def version_names_for(client, value, cache):
+    from redminelib.exceptions import ForbiddenError, ResourceNotFoundError
+
+    for version_id in resource_ids(value):
+        if version_id not in cache:
+            try:
+                cache[version_id] = client.version.get(version_id).name
+            except (ForbiddenError, ResourceNotFoundError):
+                cache[version_id] = None
+        if cache[version_id]:
+            yield cache[version_id]
+
+
+def read_sppi_issue_ids(client, project_id, board, employees):
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
+
+    board_key = status_key(board)
+    employee_keys = {status_key(name) for name in employees}
+    issue_ids = []
+    people, versions = {}, {}
+    if not employee_keys or not board_key:
+        return issue_ids
+    try:
+        for issue in client.issue.filter(project_id=project_id, status_id='*'):
+            fields = custom_field_values(issue.raw())
+            responsible = list(resource_ids(fields.get('ответственный за ти')))
+            if not responsible or not any(board_key in status_key(name) for name in
+                                          version_names_for(client, fields.get('приоритет реализации'), versions)):
+                continue
+            for user_id in responsible:
+                if user_id not in people:
+                    try:
+                        person = client.user.get(user_id).raw()
+                    except (ForbiddenError, ResourceNotFoundError):
+                        person = {}
+                    first, last = person.get('firstname', ''), person.get('lastname', '')
+                    names = (person.get('login') or '', person.get('name') or '', f'{first} {last}', f'{last} {first}')
+                    people[user_id] = any(status_key(name) in employee_keys for name in names)
+                if people[user_id]:
+                    issue_ids.append(issue.id)
+                    break
+    except AuthError:
+        raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+    except Exception:
+        raise RedmineError('Не удалось прочитать задачи СППИ в проекте Redmine #{}.'.format(project_id)) from None
+    return issue_ids
+
+
+def read_identification_cards(client, project_id):
+    from redminelib.exceptions import AuthError
 
     cards = []
     version_names = {}
     try:
         for issue in client.issue.filter(project_id=project_id, status_id='*'):
             data = issue.raw()
-            fields = {status_key(field['name']): field.get('value')
-                      for field in data.get('custom_fields') or [] if field.get('name')}
+            fields = custom_field_values(data)
             approval = fields.get('ти согласовано с отд.цз', fields.get('ти согласовано с отд. цз', 'Не требуется'))
             approval = str(approval or '').strip()
             if status_key(approval) == 'не требуется':
@@ -201,24 +261,7 @@ def read_identification_cards(client, project_id):
             number = BASIS_NUMBER.search(str(registration)) or BASIS_NUMBER.search(subject)
             if not number:
                 continue
-            # Redmine отдаёт ID версии строкой или списком для поля с множественным выбором.
-            version_ids = fields.get('приоритет реализации_лпив')
-            if not isinstance(version_ids, list):
-                version_ids = [version_ids]
-            versions = []
-            for value in version_ids:
-                value = str(value).strip()
-                if not value.isascii() or not value.isdecimal() or int(value) == 0:
-                    continue
-                version_id = int(value)
-                if version_id not in version_names:
-                    try:
-                        version_names[version_id] = client.version.get(version_id).name
-                    except (ForbiddenError, ResourceNotFoundError):
-                        version_names[version_id] = None
-                name = version_names[version_id]
-                if name and name not in versions:
-                    versions.append(name)
+            versions = list(dict.fromkeys(version_names_for(client, fields.get('приоритет реализации_лпив'), version_names)))
             status = (data.get('status') or {}).get('name') or ''
             label = number.group().upper()
             cards.append({'number': label, 'subject': subject if subject != label else '',
@@ -371,6 +414,25 @@ def kris_coding_deadline(progress):
     return first + '–' + last
 
 
+# Собирает доступных потомков задачи и дополняет их статусы из Redmine.
+def issue_subtasks(client, fields, issue_id):
+    subtasks = []
+    seen = {issue_id}
+    pending = list(reversed(fields.get('children') or []))
+    while pending:
+        child = pending.pop()
+        child_id = child['id']
+        if child_id in seen:
+            continue
+        seen.add(child_id)
+        if not child.get('subject') or not child.get('status'):
+            child = dict(child, **client.issue.get(child_id, include='children').raw())
+        subtasks.append({'id': child_id, 'title': child.get('subject') or '',
+                         'status': (child.get('status') or {}).get('name') or ''})
+        pending.extend(reversed(child.get('children') or []))
+    return subtasks
+
+
 # Читает поля задачи по числовому ID из её адреса в Redmine.
 def read_issue(client, issue_id):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
@@ -379,7 +441,7 @@ def read_issue(client, issue_id):
     # Запрос, разбор ответа и извлечение полей обрабатываются вместе.
     try:
         # issue.get() выполняет GET /issues/<ID>.json. raw() выдаёт словарь полей задачи внутри ответа.
-        fields = client.issue.get(issue_id).raw()
+        fields = client.issue.get(issue_id, include='children').raw()
         # subject — стандартный заголовок. Если нужен заголовок из пользовательского поля, ищите его в custom_fields по ID.
         title = fields.get('subject')
         # Обычно status выглядит как {"id": 1, "name": "Новая"}. Берём имя для показа и подбора колонки.
@@ -392,6 +454,9 @@ def read_issue(client, issue_id):
         custom_fields = fields.get('custom_fields') or []
         approvals = department_approvals(custom_fields)
         references = issue_references(custom_fields)
+        subtasks = issue_subtasks(client, fields, issue_id)
+        if subtasks:
+            references['children'] = subtasks
     # Если Redmine вернул HTTP 401, TeamSync запросит вход повторно при следующем обращении.
     except AuthError:
         # Отдельный тип ошибки позволяет интерфейсу сбросить сохранённый в памяти клиент.

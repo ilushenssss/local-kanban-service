@@ -34,6 +34,16 @@ def load_redmine_project_id(base, project):
     return project_id
 
 
+def load_redmine_employees(base):
+    try:
+        employees = json.loads((base / 'employees.json').read_text(encoding='utf-8-sig'))
+    except (OSError, ValueError):
+        raise ValueError('Проверьте файл employees.json рядом с main.pyw.') from None
+    if not isinstance(employees, list) or any(not isinstance(name, str) or not name.strip() for name in employees):
+        raise ValueError('В employees.json ожидается список имён или логинов Redmine.')
+    return employees
+
+
 def save_folder(base, folder):
     path = None
     try:
