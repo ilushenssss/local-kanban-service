@@ -11,8 +11,8 @@ class RedmineTest(unittest.TestCase):
             {'name': 'Другое основание', 'value': 'СП-1'},
         ]
         self.assertEqual(issue_references(fields), {
-            'basis': ['СП-23578', 'СП-71042', 'СП-65243', 'СП-49618'],
-            'bugs': ['48316', '70245', '61428', '89537'],
+            'basis': ['СП-23578', 'СП-71042  СП-65243', 'СП-49618'],
+            'bugs': ['48316', '70245', '61428\t89537'],
         })
         self.assertEqual(issue_references([{'name': '№ bz', 'value': ' ,\n '}]), {'bugs': []})
 

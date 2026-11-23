@@ -1113,6 +1113,39 @@ class UITest(unittest.TestCase):
             wait_for(lambda: not w.notifications.loading)
             self.assertEqual(w.notification_button.text(), str(page + 1))
 
+    def test_redmine_basis_chips_are_single_line_at_the_shared_chip_height(self):
+        from unittest.mock import Mock
+        from PyQt5.QtGui import QImage, QPainter
+        from PyQt5.QtWidgets import QListWidgetItem
+        from kanban.cards import Cards, set_card_data
+
+        cards = Cards(1)
+        cards.resize(220, cards.height())
+        values = ['СП-23578', 'СП ' + '1234567890 ' * 6 + '98765']
+        item = QListWidgetItem(cards)
+        set_card_data(item, {'redmine_id': 42, 'title': 'Задача', 'tracker_name': 'ТИ',
+                             'status': 'Проект ТИ', 'approvals': [{'department': 'ОСП', 'status': 'Да'}],
+                             'issue_references': {'basis': values, 'bugs': ['48316']}}, 0)
+        cards.show()
+        self.addCleanup(cards.close)
+        APP.processEvents()
+        option = cards.viewOptions()
+        option.rect = cards.visualItemRect(item)
+        image = QImage(cards.width(), cards.height(), QImage.Format_ARGB32)
+        painter = QPainter(image)
+        try:
+            traced = Mock(wraps=painter, Antialiasing=QPainter.Antialiasing)
+            cards.itemDelegate().paint(traced, option, cards.indexFromItem(item))
+        finally:
+            painter.end()
+        labels = {call.args[2]: call.args[:2] for call in traced.drawText.call_args_list}
+        for value in values:
+            rect, flags = labels[value]
+            self.assertTrue(flags & Qt.TextSingleLine)
+            self.assertEqual(rect.height(), labels['48316'][0].height())
+            self.assertEqual(rect.height(), labels['ОСП'][0].height())
+        traced.scale.assert_called_once()
+
     def test_two_line_card_title_leaves_space_for_badges(self):
         from PyQt5.QtCore import QRect
         from PyQt5.QtGui import QPainter, QPixmap

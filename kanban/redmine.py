@@ -130,8 +130,9 @@ def issue_references(fields):
         name, value = field.get('name'), field.get('value')
         key = names.get(status_key(name)) if isinstance(name, str) else None
         if key and isinstance(value, str):
-            # Пробелы (включая переносы строк) и запятые разделяют элементы.
-            references[key] = re.findall(r'[^\s,]+', value)
+            # Запятые и переносы строк разделяют элементы. Внутренние пробелы сохраняются.
+            parts = re.split(r'[,\r\n]+', value)
+            references[key] = [part.strip() for part in parts if part.strip()]
     return references
 
 
