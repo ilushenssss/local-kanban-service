@@ -933,13 +933,14 @@ class UITest(unittest.TestCase):
         wait_for(lambda: page.refresh_button.isEnabled())
         window.redmine_client = object()
         with patch('kanban.redmine.read_identification_cards', return_value=[
-                {'number': number, 'approval': 'Да', 'status': 'ТИ утверждено'},
+                {'number': number, 'subject': 'Согласовать спецификацию', 'approval': 'Да', 'status': 'ТИ утверждено'},
                 {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе'},
         ]) as fetch:
             page.refresh_button.click()
             wait_for(lambda: not window.mutating and page.cards.count() == 2)
             fetch.assert_called_once_with(window.redmine_client, 88)
         self.assertIn('ТИ-701', page.cards.item(0).toolTip())
+        self.assertIn(number + '\nСогласовать спецификацию', page.cards.item(0).toolTip())
         self.assertIn('Не привязано', page.cards.item(1).toolTip())
         self.assertFalse(page.cards.grab().isNull())
 

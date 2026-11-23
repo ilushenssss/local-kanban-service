@@ -200,7 +200,8 @@ def read_identification_cards(client, project_id):
             number = BASIS_NUMBER.search(str(registration)) or BASIS_NUMBER.search(subject)
             status = (data.get('status') or {}).get('name') or ''
             label = number.group().upper() if number else subject or '#{}'.format(data['id'])
-            cards.append({'number': label, 'approval': approval, 'status': status})
+            cards.append({'number': label, 'subject': subject if subject != label else '',
+                          'approval': approval, 'status': status})
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:

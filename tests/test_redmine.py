@@ -21,7 +21,7 @@ class RedmineTest(unittest.TestCase):
             ('04', 'ТИ согласовано с отд.ЦЗ', ' Не требуется ', 'ТИ утверждено'),
             ('05', 'Другое поле', 'Да', 'ТИ утверждено'),
         ):
-            data = {'status': {'name': status}, 'custom_fields': [
+            data = {'subject': 'Проверка ' + suffix, 'status': {'name': status}, 'custom_fields': [
                 {'name': field, 'value': approval},
                 {'name': 'Регистрационный номер_ЛПИВ', 'value': 'ТИ(200)-1234-' + suffix + ' описание'},
             ]}
@@ -32,10 +32,10 @@ class RedmineTest(unittest.TestCase):
         client.issue.filter.return_value = for_filter
         cards = read_identification_cards(client, 88)
         self.assertEqual(cards, [
-            {'number': 'ТИ(200)-1234-01', 'approval': 'Да', 'status': 'ТИ утверждено'},
-            {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе'},
-            {'number': 'ТИ(200)-1234-03', 'approval': 'На согласовании', 'status': 'В работе'},
-            {'number': 'Задача без номера', 'approval': 'Да', 'status': ''},
+            {'number': 'ТИ(200)-1234-01', 'subject': 'Проверка 01', 'approval': 'Да', 'status': 'ТИ утверждено'},
+            {'number': 'ТИ(200)-1234-02', 'subject': 'Проверка 02', 'approval': 'Нет', 'status': 'В работе'},
+            {'number': 'ТИ(200)-1234-03', 'subject': 'Проверка 03', 'approval': 'На согласовании', 'status': 'В работе'},
+            {'number': 'Задача без номера', 'subject': '', 'approval': 'Да', 'status': ''},
         ])
         client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
 

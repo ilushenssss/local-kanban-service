@@ -11,7 +11,7 @@ from .theme import STICKERS, TOKENS
 class IdentificationCard(QStyledItemDelegate):
     def paint(self, painter, option, index):
         card = index.data(Qt.UserRole)
-        box = option.rect.adjusted(2, 2, -5, -5)
+        box = option.rect.adjusted(2, 2, -13, -13)
         painter.save()
         painter.setRenderHint(painter.Antialiasing)
         focused = option.state & (QStyle.State_Selected | QStyle.State_HasFocus)
@@ -45,6 +45,8 @@ class IdentificationCard(QStyledItemDelegate):
             painter.drawEllipse(QRect(left, top + 7, 8, 8))
             offset = 16
         text(card['number'], left + offset, top, width - offset, TOKENS['text'], bold=True)
+        text(card.get('subject', ''), left, top + 22, width, TOKENS['secondary'])
+        top += 22
         text('Согласовано:', left, top + 29, 90, TOKENS['secondary'])
         approval = card['approval'] or '—'
         key = status_key(approval)
@@ -83,7 +85,7 @@ class IdentificationPage(QWidget):
         self.cards.setViewMode(QListView.IconMode)
         self.cards.setMovement(QListView.Static)
         self.cards.setResizeMode(QListView.Adjust)
-        self.cards.setGridSize(QSize(268, 108))
+        self.cards.setGridSize(QSize(276, 138))
         self.cards.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.cards.setItemDelegate(IdentificationCard(self.cards))
         layout.addWidget(self.cards, 1)
@@ -108,8 +110,11 @@ class IdentificationPage(QWidget):
             item = QListWidgetItem(self.cards)
             item.setSizeHint(self.cards.gridSize())
             item.setData(Qt.UserRole, card)
-            summary = '{}\nСтатус: {}\nСогласовано: {}\n{}'.format(
-                card['number'], card['status'] or '—', card['approval'] or '—',
-                ', '.join(card['links']) or 'Не привязано')
+            lines = [card['number']]
+            if card.get('subject'):
+                lines.append(card['subject'])
+            lines.extend(['Статус: ' + (card['status'] or '—'), 'Согласовано: ' + (card['approval'] or '—'),
+                          ', '.join(card['links']) or 'Не привязано'])
+            summary = '\n'.join(lines)
             item.setData(Qt.AccessibleTextRole, summary)
             item.setToolTip(summary)
