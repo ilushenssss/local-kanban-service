@@ -159,6 +159,13 @@ class StoreTest(unittest.TestCase):
             column = self.s.columns(bid)[0]['name']
             self.s.link_redmine_issue(bid, int(ti[3:]), 'Заголовок', column, column,
                                      tracker_name=ti, issue_references={'basis': [number + ' описание']})
+        column = self.s.columns(board)[0]['name']
+        self.s.link_redmine_issue(board, 703, 'Уточнить сроки поставки', column, column, tracker_name='Редакция к ТИ',
+                                 issue_references={'basis': [first]},
+                                 kris_progress={'done': 0, 'total': 0, 'subject': 'Редакция к ТИ — 1157p4'})
+        column = self.s.columns(private)[0]['name']
+        self.s.link_redmine_issue(private, 703, 'Заголовок', column, column, tracker_name='Редакция к ТИ',
+                                 issue_references={'basis': [first]})
         self.s.set_redmine_basis_project(board, 'Проверка')
         cards = [{'number': number, 'approval': 'Да', 'status': 'ТИ утверждено'} for number in (first, second)]
         with self.assertRaises(AccessDenied):
@@ -168,8 +175,10 @@ class StoreTest(unittest.TestCase):
         updated = [dict(card, versions=['2.0-218 И-01']) for card in cards]
         updated.append(dict(cards[0], number='ТИ(200)-1234-03', versions=['2.0-219']))
         self.s.save_identification_cards(board, 'Проверка', updated)
-        self.assertEqual([card['links'] for card in member.board_snapshot(board, {}, 'identification')[3]], [['ТИ-701'], []])
-        self.assertEqual([card['links'] for card in self.s.board_snapshot(board, {}, 'identification')[3]], [['ТИ-701'], ['ТИ-702']])
+        self.assertEqual([card['links'] for card in member.board_snapshot(board, {}, 'identification')[3]],
+                         [['ТИ-701 · Заголовок', 'Редакция к ТИ — 1157p4 · Уточнить сроки поставки'], []])
+        self.assertEqual([card['links'] for card in self.s.board_snapshot(board, {}, 'identification')[3]],
+                         [['ТИ-701 · Заголовок', 'Редакция к ТИ — 1157p4 · Уточнить сроки поставки'], ['ТИ-702 · Заголовок']])
         self.s.set_redmine_basis_project(board, 'Другой проект')
         self.assertIsNone(member.board_snapshot(board, {}, 'identification')[3])
         with self.assertRaisesRegex(ValueError, 'изменился'):

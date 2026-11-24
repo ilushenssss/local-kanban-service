@@ -468,18 +468,19 @@ class Store:
         if not cards:
             return cards
         links = {card['number']: {} for card in cards}
-        for entry in c.execute('''SELECT issue_id, tracker_name, kris_progress, issue_references FROM redmine_links
+        for entry in c.execute('''SELECT issue_id, title, tracker_name, kris_progress, issue_references FROM redmine_links
                                   JOIN boards b ON b.id=board_id
                                   WHERE b.archived=0 AND b.personal=0 AND instr(b.name,' / ')>0 AND ('''
-                               + self.board_visibility() + ') ORDER BY issue_id,board_id',
-                               {'uid': actor['id'], 'role': actor['role']}):
+                               + self.board_visibility() + ') ORDER BY issue_id, (board_id=:board_id) DESC, board_id',
+                               {'uid': actor['id'], 'role': actor['role'], 'board_id': board['id']}):
             references = json.loads(entry['issue_references'])
+            issue_id = entry['issue_id']
             for value in references.get('basis', []):
                 number = basis_number(value)
-                if number in links:
-                    label = issue_label(entry['tracker_name'], entry['issue_id'], json.loads(entry['kris_progress']))
-                    ti = re.search(r'\bТИ-[0-9]+(?:р[0-9]+)?', label + ' ' + entry['tracker_name'], re.IGNORECASE)
-                    links[number][entry['issue_id']] = ti.group() if ti else 'ТИ-{}'.format(entry['issue_id'])
+                if number in links and issue_id not in links[number]:
+                    label = issue_label(entry['tracker_name'], issue_id, json.loads(entry['kris_progress']))
+                    title = ' '.join(entry['title'].split())
+                    links[number][issue_id] = f'{label} · {title}' if title and title != label else label
         return [dict(card, links=list(links[card['number']].values())) for card in cards]
 
     def timezone(self):

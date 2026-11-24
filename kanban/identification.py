@@ -1,6 +1,9 @@
 """Read-only ИД cards from the board's Redmine basis project."""
+from math import ceil
+
 from PyQt5.QtCore import QRect, QRectF, QSize, Qt
-from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainterPath
+from PyQt5.QtGui import (QAbstractTextDocumentLayout, QColor, QFont, QFontMetrics, QPainterPath,
+                         QPalette, QTextDocument, QTextOption)
 from PyQt5.QtWidgets import (QLabel, QListView, QListWidget, QListWidgetItem, QPushButton, QScrollArea,
                              QHBoxLayout, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
@@ -21,6 +24,37 @@ def is_approved(card):
 
 
 class IdentificationCard(QStyledItemDelegate):
+    minimum_height = 129
+    links_top = 89
+
+    @staticmethod
+    def body_font(option):
+        font = QFont(option.font)
+        font.setPixelSize(12)
+        font.setBold(False)
+        return font
+
+    def links_document(self, option, links, width):
+        document = QTextDocument()
+        document.setDocumentMargin(0)
+        document.setDefaultFont(self.body_font(option))
+        text_option = QTextOption()
+        text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        document.setDefaultTextOption(text_option)
+        document.setPlainText('\n'.join(links))
+        document.setTextWidth(width)
+        return document
+
+    def sizeHint(self, option, index):
+        links = (index.data(Qt.UserRole) or {}).get('links')
+        height = self.minimum_height
+        if links:
+            view = self.parent()
+            width = max(1, view.viewport().width() - 2 * view.spacing() - 28)
+            document = self.links_document(option, links, width)
+            height = max(height, self.links_top + ceil(document.size().height()) + 12)
+        return QSize(0, height)
+
     def paint(self, painter, option, index):
         card = index.data(Qt.UserRole)
         box = option.rect.adjusted(2, 2, -2, -2)
@@ -38,9 +72,7 @@ class IdentificationCard(QStyledItemDelegate):
         painter.fillRect(QRect(box.x(), box.y(), box.width(), 4), stripe)
         painter.restore()
         left, top, width = box.x() + 12, box.y() + 8, box.width() - 24
-        body_font = QFont(option.font)
-        body_font.setPixelSize(12)
-        body_font.setBold(False)
+        body_font = self.body_font(option)
         heading_font = QFont(body_font)
         heading_font.setPixelSize(15)
         heading_font.setBold(True)
@@ -70,7 +102,11 @@ class IdentificationCard(QStyledItemDelegate):
         colors = {'да': green, 'нет': red}.get(key, (TOKENS['secondary'], TOKENS['hover']))
         badge(approval, left + 90, top + 30, width - 90, colors)
         if card['links']:
-            text(', '.join(card['links']), left, top + 59, width, TOKENS['text'])
+            document = self.links_document(option, card['links'], width)
+            context = QAbstractTextDocumentLayout.PaintContext()
+            context.palette.setColor(QPalette.Text, QColor(TOKENS['text']))
+            painter.translate(left, option.rect.y() + self.links_top)
+            document.documentLayout().draw(painter, context)
         else:
             badge('Не привязано', left, top + 60, width, red)
         painter.restore()
@@ -148,13 +184,12 @@ class IdentificationPage(QWidget):
         for card in cards or ():
             column = self.columns[2 * is_approved(card) + bool(card['links'])]
             item = QListWidgetItem(column)
-            item.setSizeHint(QSize(0, 129))
             item.setData(Qt.UserRole, card)
             lines = [card['number']]
             if card.get('subject'):
                 lines.append(card['subject'])
-            lines.extend(['Статус: ' + (card['status'] or '—'), 'Согласовано: ' + (card['approval'] or '—'),
-                          ', '.join(card['links']) or 'Не привязано'])
+            lines.extend(['Статус: ' + (card['status'] or '—'), 'Согласовано: ' + (card['approval'] or '—')])
+            lines.extend(card['links'] or ['Не привязано'])
             summary = '\n'.join(lines)
             item.setData(Qt.AccessibleTextRole, summary)
             item.setToolTip(summary)
