@@ -143,16 +143,16 @@ def issue_references(fields):
         if not isinstance(field, dict):
             continue
         name, value = field.get('name'), field.get('value')
-        if not isinstance(name, str) or not isinstance(value, str):
+        if not isinstance(name, str):
             continue
         name = status_key(name)
         if name == CHECK_SHEET_FIELD.casefold():
-            answer = {'да': 'Да', 'нет': 'Нет'}.get(status_key(value))
+            answer = {'1': 'Да', '0': 'Нет', 'да': 'Да', 'нет': 'Нет'}.get(status_key(str(value)))
             if answer:
                 references['check_sheet'] = answer
             continue
         key = names.get(name)
-        if key:
+        if key and isinstance(value, str):
             # Запятые и переносы строк разделяют элементы. Внутренние пробелы сохраняются.
             parts = re.split(r'[,\r\n]+', value)
             references[key] = [part.strip() for part in parts if part.strip()]
