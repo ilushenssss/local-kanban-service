@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 
-from .redmine import basis_number, issue_label, status_key, ti_sort_key, validate_url
+from .redmine import TI_NUMBER, basis_number, issue_label, status_key, ti_sort_key, validate_url
 
 
 SCHEMA_VERSION = 15
@@ -468,19 +468,28 @@ class Store:
         if not cards:
             return cards
         links = {card['number']: {} for card in cards}
-        for entry in c.execute('''SELECT issue_id, title, tracker_name, kris_progress, issue_references FROM redmine_links
+        for entry in c.execute('''SELECT issue_id, tracker_name, kris_progress, issue_references FROM redmine_links
                                   JOIN boards b ON b.id=board_id
                                   WHERE b.archived=0 AND b.personal=0 AND instr(b.name,' / ')>0 AND ('''
-                               + self.board_visibility() + ') ORDER BY issue_id, (board_id=:board_id) DESC, board_id',
+                               + self.board_visibility() + ') ORDER BY issue_id, board_id=:board_id, board_id',
                                {'uid': actor['id'], 'role': actor['role'], 'board_id': board['id']}):
             references = json.loads(entry['issue_references'])
+            matching_bases = links.keys() & (basis_number(value) for value in references.get('basis', []))
+            if not matching_bases:
+                continue
             issue_id = entry['issue_id']
-            for value in references.get('basis', []):
-                number = basis_number(value)
-                if number in links and issue_id not in links[number]:
-                    label = issue_label(entry['tracker_name'], issue_id, json.loads(entry['kris_progress']))
-                    title = ' '.join(entry['title'].split())
-                    links[number][issue_id] = f'{label} · {title}' if title and title != label else label
+            progress = json.loads(entry['kris_progress']) or {}
+            kris_number = TI_NUMBER.search(progress.get('subject') or '')
+            tracker_number = TI_NUMBER.search(entry['tracker_name'])
+            ti = kris_number or tracker_number
+            if (kris_number and tracker_number and kris_number[1] == tracker_number[1]
+                    and not kris_number[2] and tracker_number[2]):
+                ti = tracker_number
+            for number in matching_bases:
+                if ti:
+                    links[number][issue_id] = ti.group()
+                else:
+                    links[number].setdefault(issue_id, f'ТИ-{issue_id}')
         return [dict(card, links=list(links[card['number']].values())) for card in cards]
 
     def timezone(self):

@@ -1023,9 +1023,10 @@ class UITest(unittest.TestCase):
         self.store.set_redmine_basis_project(board, 'Основания')
         number = 'ТИ(200)-1234-01'
         column = self.store.columns(board)[0]['name']
-        title = 'Согласовать изменения в комплекте документации ' * 5 + 'до передачи в архив'
+        title = 'Согласовать изменения в комплекте документации'
         self.store.link_redmine_issue(board, 701, title, column, column,
-                                      tracker_name='ТИ-701', issue_references={'basis': [number, 'ТИ(200)-1234-04']})
+                                      tracker_name='Редакция к ТИ-701р4',
+                                      issue_references={'basis': [number, 'ТИ(200)-1234-04']})
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
             window = MainWindow(None, installation_base=base)
             self.windows.append(window)
@@ -1052,9 +1053,9 @@ class UITest(unittest.TestCase):
         items = [column.item(0) for column in page.columns]
         self.assertEqual([item.data(Qt.UserRole)['number'] for item in items],
                          ['ТИ(200)-1234-02', 'ТИ(200)-1234-04', 'ТИ(200)-1234-05', number])
-        self.assertIn('ТИ-701 · ' + title, items[3].toolTip())
-        self.assertGreater(page.columns[3].visualItemRect(items[3]).height(),
-                           page.columns[2].visualItemRect(items[2]).height())
+        self.assertEqual(items[3].data(Qt.UserRole)['links'], ['ТИ-701р4'])
+        self.assertIn('ТИ-701р4', items[3].toolTip())
+        self.assertNotIn(title, items[3].toolTip())
         self.assertIn(number + '\nСогласовать спецификацию', items[3].toolTip())
         self.assertIn('Не привязано', items[0].toolTip())
         self.assertFalse(page.grab().isNull())

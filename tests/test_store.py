@@ -163,6 +163,9 @@ class StoreTest(unittest.TestCase):
         self.s.link_redmine_issue(board, 703, 'Уточнить сроки поставки', column, column, tracker_name='Редакция к ТИ',
                                  issue_references={'basis': [first]},
                                  kris_progress={'done': 0, 'total': 0, 'subject': 'Редакция к ТИ — 1157p4'})
+        self.s.link_redmine_issue(board, 704, 'Проверить комплект', column, column,
+                                 tracker_name='Редакция к ТИ-1157р5', issue_references={'basis': [first]},
+                                 kris_progress={'done': 0, 'total': 0, 'subject': 'Работы по ТИ-1157'})
         column = self.s.columns(private)[0]['name']
         self.s.link_redmine_issue(private, 703, 'Заголовок', column, column, tracker_name='Редакция к ТИ',
                                  issue_references={'basis': [first]})
@@ -176,9 +179,9 @@ class StoreTest(unittest.TestCase):
         updated.append(dict(cards[0], number='ТИ(200)-1234-03', versions=['2.0-219']))
         self.s.save_identification_cards(board, 'Проверка', updated)
         self.assertEqual([card['links'] for card in member.board_snapshot(board, {}, 'identification')[3]],
-                         [['ТИ-701 · Заголовок', 'Редакция к ТИ — 1157p4 · Уточнить сроки поставки'], []])
+                         [['ТИ-701', 'ТИ — 1157p4', 'ТИ-1157р5'], []])
         self.assertEqual([card['links'] for card in self.s.board_snapshot(board, {}, 'identification')[3]],
-                         [['ТИ-701 · Заголовок', 'Редакция к ТИ — 1157p4 · Уточнить сроки поставки'], ['ТИ-702 · Заголовок']])
+                         [['ТИ-701', 'ТИ — 1157p4', 'ТИ-1157р5'], ['ТИ-702']])
         self.s.set_redmine_basis_project(board, 'Другой проект')
         self.assertIsNone(member.board_snapshot(board, {}, 'identification')[3])
         with self.assertRaisesRegex(ValueError, 'изменился'):
