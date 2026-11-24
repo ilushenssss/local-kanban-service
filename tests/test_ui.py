@@ -788,7 +788,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
 
     def test_redmine_import_and_shared_refresh(self):
-        from PyQt5.QtWidgets import QInputDialog, QLineEdit
+        from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu
         from kanban.installation import save_folder
         from kanban.cards import CardDelegate
         from kanban.redmine import RedmineAuthError
@@ -909,6 +909,22 @@ class UITest(unittest.TestCase):
             QTest.keyClick(cards, Qt.Key_Space)
             self.assertEqual(cards.visualItemRect(item).height(), full_height)
             self.assertIn('Баги', item.toolTip())
+
+        cards = admin.card_lists[1]
+        point = cards.visualItemRect(cards.item(0)).center()
+
+        def choose_remove(menu, *_):
+            action = next(action for action in menu.actions() if action.text() == 'Убрать с доски')
+            action.trigger()
+
+        with patch.object(QMenu, 'exec_', new=choose_remove), \
+             patch.object(QMessageBox, 'question', side_effect=[QMessageBox.No, QMessageBox.Yes]) as confirm:
+            admin.card_menu(cards, point)
+            self.assertEqual(cards.count(), 1)
+            admin.card_menu(cards, point)
+            wait_for(lambda: not admin.mutating and cards.count() == 0)
+            self.assertIn('#23018', confirm.call_args.args[2])
+        self.assertEqual(self.store.redmine_tasks(board), [])
 
     def test_current_work_refreshes_linked_ti_and_imports_sppi_with_separate_buttons(self):
         from threading import Event

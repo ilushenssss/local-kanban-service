@@ -2497,11 +2497,36 @@ class MainWindow(QMainWindow, Async):
                                                 for child in references['children']))
                 children.setMaximumHeight(140)
                 layout.addWidget(children)
+            if self.can_unlink_redmine_task(current):
+                button('Убрать с доски', lambda: self.unlink_redmine_task(current, dialog), layout)
             button('Закрыть', dialog.accept, layout)
             dialog.exec_()
             dialog.deleteLater()
 
         self.work(lambda: self.store.redmine_tasks(task['board_id']), done)
+
+    def can_unlink_redmine_task(self, task):
+        return (not self.access_restricted and task['board_id'] == self.board_id
+                and self.permissions.get('create', False) and task.get('source') in ('manual', 'legacy'))
+
+    def unlink_redmine_task(self, task, dialog=None):
+        if not self.can_unlink_redmine_task(task):
+            return
+        if self.mutating or self.pending_action:
+            self.status.setText('Дождитесь завершения текущей операции')
+            return
+        board_id, issue_id = task['board_id'], task['issue_id']
+        board = self.board_items[board_id].text(0)
+        confirmation = QMessageBox.question(
+            dialog or self, 'Убрать ТИ с доски?',
+            'Убрать карточку #{} с доски «{}»? Задача останется в Redmine.'.format(issue_id, board),
+            QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        if confirmation != QMessageBox.Yes:
+            return
+        if dialog is not None:
+            dialog.accept()
+        self.mutate(lambda rid: self.store.unlink_redmine_issue(board_id, issue_id, task['revision'], rid),
+                    'Карточка ТИ убрана с доски')
 
     def redmine_operation(self, operation, success, *, busy_message='Сохранение…'):
         if self.access_restricted or self.mutating or self.pending_action:
@@ -2958,8 +2983,11 @@ class MainWindow(QMainWindow, Async):
             return
         cards.setCurrentItem(item)
         menu = QMenu(self)
-        if item.data(Qt.UserRole).get('redmine_id'):
+        task = item.data(Qt.UserRole)
+        if task.get('redmine_id'):
             menu.addAction('Открыть карточку', self.open_selected)
+            if self.can_unlink_redmine_task(task):
+                menu.addAction('Убрать с доски', lambda: self.unlink_redmine_task(task))
             menu.exec_(cards.viewport().mapToGlobal(point))
             return
         menu.addAction('Переместить в…', self.move_selected)

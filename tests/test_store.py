@@ -98,6 +98,28 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.s.update_redmine_tasks(board, updates, sppi_project='СППИ'), [])
         self.assertEqual([task['issue_id'] for task in member.redmine_tasks(board)], [40])
 
+    def test_remove_manual_redmine_card_from_one_board_only(self):
+        board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ'])
+        other = self.s.board_action('Проект / Другая доска', column_names=['Проект ТИ'])
+        member = Store(self.s.folder, 'bob')
+        self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        for target in (board, other):
+            self.s.link_redmine_issue(target, 40, 'Ручная карточка', 'Проект ТИ', 'Проект ТИ')
+        self.s.set_redmine_sppi_project('СППИ')
+        self.s.update_redmine_tasks(board, [(41, None, 'СППИ', 'Проект ТИ', 'Проект ТИ', '', [], {}, None)],
+                                    sppi_project='СППИ')
+        with self.assertRaises(AccessDenied):
+            member.unlink_redmine_issue(board, 40, 1)
+        with self.assertRaisesRegex(ValueError, 'СППИ'):
+            self.s.unlink_redmine_issue(board, 41, 1)
+        with self.assertRaisesRegex(ValueError, 'изменились'):
+            self.s.unlink_redmine_issue(board, 40, 2)
+        self.s.set_role(member.profile()['id'], 'manager')
+        self.assertTrue(member.unlink_redmine_issue(board, 40, 1, 'remove-40'))
+        self.assertTrue(member.unlink_redmine_issue(board, 40, 1, 'remove-40'))
+        self.assertEqual([task['issue_id'] for task in member.redmine_tasks(board)], [41])
+        self.assertEqual([task['issue_id'] for task in self.s.redmine_tasks(other)], [40])
+
     def test_identification_links_only_to_visible_active_boards(self):
         board = self.s.board_action('Проект / 2.0-218')
         private = self.s.board_action('Проект / Другая доска')
@@ -262,7 +284,7 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(upgraded.detail(task['id'])['title'], task['title'])
         upgraded.team_send('После обновления')
         with upgraded.connection() as c:
-            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 14)
+            self.assertEqual(c.execute('PRAGMA user_version').fetchone()[0], 15)
             self.assertFalse(c.execute('PRAGMA foreign_key_check').fetchall())
 
     def test_create_and_history(self):

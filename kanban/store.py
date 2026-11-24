@@ -15,7 +15,7 @@ import uuid
 from .redmine import basis_number, issue_label, status_key, validate_url
 
 
-SCHEMA_VERSION = 14
+SCHEMA_VERSION = 15
 
 
 # Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
@@ -187,6 +187,11 @@ class Store:
                         c.execute("ALTER TABLE redmine_links ADD COLUMN kris_progress TEXT NOT NULL DEFAULT 'null'")
                     c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(14,?)', (now(),))
                     c.execute('PRAGMA user_version=14')
+                if version < 15:
+                    if 'source' not in {row[1] for row in c.execute('PRAGMA table_info(redmine_links)')}:
+                        c.execute("ALTER TABLE redmine_links ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy'")
+                    c.execute('INSERT OR IGNORE INTO schema_migrations VALUES(15,?)', (now(),))
+                    c.execute('PRAGMA user_version=15')
                 uid = self.user(c, self.login)
                 restricted = c.execute('SELECT restricted FROM users WHERE id=?', (uid,)).fetchone()[0]
                 c.commit()
@@ -346,8 +351,9 @@ class Store:
             self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
-        elif operation in ('redmine_link', 'redmine_refresh', 'redmine_identification'):
-            self.require(c, 'create_task' if operation == 'redmine_link' else 'read', payload[0])
+        elif operation in ('redmine_link', 'redmine_unlink', 'redmine_refresh', 'redmine_identification'):
+            permission = {'redmine_link': 'create_task', 'redmine_unlink': 'archive_task'}.get(operation, 'read')
+            self.require(c, permission, payload[0])
             board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (payload[0],)).fetchone()
             if not board or not self.project_board(board):
                 raise ValueError('Задачи Redmine доступны только на активной проектной доске')
@@ -1086,13 +1092,13 @@ class Store:
         return matches[0]
 
     @staticmethod
-    def insert_redmine_link(c, board_id, issue_id, title, status, column_id, tracker_name, approvals, references, progress):
+    def insert_redmine_link(c, board_id, issue_id, title, status, column_id, tracker_name, approvals, references, progress, source):
         return c.execute('''INSERT OR IGNORE INTO redmine_links
-                            (board_id,issue_id,title,status,column_id,tracker_name,approvals,issue_references,kris_progress)
-                            VALUES(?,?,?,?,?,?,?,?,?)''',
+                            (board_id,issue_id,title,status,column_id,tracker_name,approvals,issue_references,kris_progress,source)
+                            VALUES(?,?,?,?,?,?,?,?,?,?)''',
                          (board_id, issue_id, title, status, column_id, tracker_name,
                           json.dumps(approvals, ensure_ascii=False),
-                          json.dumps(references, ensure_ascii=False), json.dumps(progress))).rowcount
+                          json.dumps(references, ensure_ascii=False), json.dumps(progress), source)).rowcount
 
     def link_redmine_issue(self, board_id, issue_id, title, status, target_column, request_id=None, *,
                            tracker_name='', approvals=(), issue_references=None, kris_progress=None):
@@ -1102,13 +1108,28 @@ class Store:
         def apply(c, uid):
             column_id = self.redmine_column(c, board_id, target_column)
             if not self.insert_redmine_link(c, board_id, issue_id, title, status, column_id, tracker_name, approvals,
-                                            issue_references or {}, kris_progress):
+                                            issue_references or {}, kris_progress, 'manual'):
                 raise ValueError('Задача Redmine #{} уже добавлена на эту доску'.format(issue_id))
             return True
 
         return self.write('redmine_link',
                           [board_id, issue_id, title, status, target_column, tracker_name, approvals, issue_references, kris_progress],
                           apply, request_id)
+
+    def unlink_redmine_issue(self, board_id, issue_id, revision, request_id=None):
+        def apply(c, uid):
+            row = c.execute('SELECT source, revision FROM redmine_links WHERE board_id=? AND issue_id=?',
+                            (board_id, issue_id)).fetchone()
+            if not row:
+                return False
+            if row['source'] == 'sppi':
+                raise ValueError('Карточка добавлена выгрузкой из СППИ.')
+            if row['revision'] != revision:
+                raise ValueError('Данные карточки изменились. Обновите доску и повторите действие.')
+            c.execute('DELETE FROM redmine_links WHERE board_id=? AND issue_id=?', (board_id, issue_id))
+            return True
+
+        return self.write('redmine_unlink', [board_id, issue_id, revision], apply, request_id)
 
     def update_redmine_tasks(self, board_id, updates, *, sppi_project=None, request_id=None):
         def apply(c, uid):
@@ -1125,7 +1146,7 @@ class Store:
                     continue
                 if revision is None:
                     self.insert_redmine_link(c, board_id, issue_id, title, status, column_id, tracker_name, approvals,
-                                             references, progress)
+                                             references, progress, 'sppi')
                     continue
                 if not c.execute('''UPDATE redmine_links SET title=?, status=?, column_id=?, revision=revision+1,
                                      tracker_name=COALESCE(NULLIF(?,''), tracker_name), approvals=?, issue_references=?,
