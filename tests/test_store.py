@@ -98,11 +98,22 @@ class StoreTest(unittest.TestCase):
 
     def test_sppi_batch_requires_creation_rights_and_does_not_duplicate_cards(self):
         board = self.s.board_action('Проект / 2.0-218', column_names=['Проект ТИ'])
+        other = self.s.board_action('Проект / 2.0-219', column_names=['Проект ТИ'])
         member = Store(self.s.folder, 'bob')
         self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        with self.s.connection() as c:
+            c.execute("INSERT INTO settings VALUES('redmine_sppi_project','Общий СППИ')")
+            c.commit()
+        self.assertEqual(member.redmine_sppi_project(board), 'Общий СППИ')
         with self.assertRaises(AccessDenied):
-            member.set_redmine_sppi_project('СППИ')
-        self.s.set_redmine_sppi_project('СППИ')
+            member.set_redmine_sppi_project(board, 'СППИ')
+        with self.assertRaises(AccessDenied):
+            member.redmine_sppi_project(other)
+        self.s.set_redmine_sppi_project(board, 'СППИ')
+        self.assertEqual(member.redmine_sppi_project(board), 'СППИ')
+        self.assertEqual(self.s.redmine_sppi_project(other), 'Общий СППИ')
+        self.s.set_redmine_sppi_project(other, '')
+        self.assertEqual(self.s.redmine_sppi_project(other), '')
         updates = [(40, None, 'Импорт', 'Проект ТИ', 'Проект ТИ', 'ТИ-40', [], {}, None)]
         with self.assertRaises(AccessDenied):
             member.update_redmine_tasks(board, updates, sppi_project='СППИ')
@@ -111,6 +122,10 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(self.s.update_redmine_tasks(board, updates, sppi_project='СППИ'), [])
         self.assertEqual(self.s.update_redmine_tasks(board, updates, sppi_project='СППИ'), [])
         self.assertEqual([task['issue_id'] for task in member.redmine_tasks(board)], [40])
+        self.s.set_redmine_sppi_project(board, 'Новый проект')
+        stale = [(40, 1, 'Старое обновление', 'Проект ТИ', 'Проект ТИ', 'ТИ-40', [], {}, None)]
+        with self.assertRaisesRegex(ValueError, 'изменился'):
+            self.s.update_redmine_tasks(board, stale, sppi_project='СППИ')
 
     def test_remove_manual_redmine_card_from_one_board_only(self):
         board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ'])
@@ -119,7 +134,7 @@ class StoreTest(unittest.TestCase):
         self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
         for target in (board, other):
             self.s.link_redmine_issue(target, 40, 'Ручная карточка', 'Проект ТИ', 'Проект ТИ')
-        self.s.set_redmine_sppi_project('СППИ')
+        self.s.set_redmine_sppi_project(board, 'СППИ')
         self.s.update_redmine_tasks(board, [(41, None, 'СППИ', 'Проект ТИ', 'Проект ТИ', '', [], {}, None)],
                                     sppi_project='СППИ')
         with self.assertRaises(AccessDenied):

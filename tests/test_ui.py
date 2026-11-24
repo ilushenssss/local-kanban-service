@@ -928,14 +928,16 @@ class UITest(unittest.TestCase):
 
     def test_current_work_refreshes_linked_ti_and_imports_sppi_with_separate_buttons(self):
         from threading import Event
+        from PyQt5.QtWidgets import QInputDialog
         from kanban.installation import save_folder
         base = Path(self.tmp.name)
         save_folder(base, self.store.folder)
-        (base / 'all_project.json').write_text('{"Проект": 49, "СППИ": 88}', encoding='utf-8')
+        (base / 'all_project.json').write_text('{"Проект": 49, "СППИ": 88, "Другой СППИ": 99}', encoding='utf-8')
         (base / 'employees.json').write_text('["Иванова Анна"]', encoding='utf-8')
         self.store.set_redmine_settings('https://redmine.example.test', {})
-        self.store.set_redmine_sppi_project('СППИ')
         board = self.store.board_action('Проект / 2.0-218', column_names=['Проект ТИ'])
+        other = self.store.board_action('Проект / 2.0-219', column_names=['Проект ТИ'])
+        self.store.set_redmine_sppi_project(other, 'Другой СППИ')
         self.store.link_redmine_issue(board, 118, 'Старые данные', 'Проект ТИ', 'Проект ТИ')
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
             window = MainWindow(None, installation_base=base)
@@ -944,6 +946,11 @@ class UITest(unittest.TestCase):
             wait_for(lambda: not window.loading and board in window.board_items)
         window.select_tree_board(window.board_items[board], 0)
         wait_for(lambda: not window.loading and window.project_sections_board == board and window.card_lists[0].count() == 1)
+        with patch.object(QInputDialog, 'getText', return_value=('СППИ', True)):
+            window.edit_sppi_project()
+            wait_for(lambda: not window.jobs and not window.mutating and not window.loading)
+        self.assertEqual(self.store.redmine_sppi_project(board), 'СППИ')
+        self.assertEqual(self.store.redmine_sppi_project(other), 'Другой СППИ')
         window.redmine_client = object()
         subtasks = [{'id': 120, 'title': 'Подзадача', 'status': 'В работе'}]
         issue = {'title': 'ТИ из СППИ', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-119',

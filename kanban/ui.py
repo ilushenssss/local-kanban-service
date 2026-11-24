@@ -2623,9 +2623,11 @@ class MainWindow(QMainWindow, Async):
                                   lambda value, rid: self.store.set_redmine_basis_project(board_id, value, rid))
 
     def edit_sppi_project(self):
+        board_id = self.board_id
         if not self.store:
             return
-        self.edit_redmine_project('Проект СППИ', self.store.redmine_sppi_project, self.store.set_redmine_sppi_project)
+        self.edit_redmine_project('Проект СППИ', lambda: self.store.redmine_sppi_project(board_id),
+                                  lambda value, rid: self.store.set_redmine_sppi_project(board_id, value, rid))
 
     def edit_redmine_project(self, title, load, persist):
         board_id = self.board_id
@@ -2743,7 +2745,7 @@ class MainWindow(QMainWindow, Async):
                 self.debounce.start(0)
 
     def stream_sppi_tasks(self, client, board_id, board_name, project, statuses):
-        sppi_project = self.store.redmine_sppi_project()
+        sppi_project = self.store.redmine_sppi_project(board_id)
         if not sppi_project:
             raise ValueError('Укажите проект СППИ в настройках.')
         employees = installation.load_redmine_employees(self.redmine_config_base())

@@ -398,23 +398,30 @@ class Store:
         return row[0] if row else ''
 
     @staticmethod
-    def redmine_sppi_project_in(c):
-        row = c.execute("SELECT value FROM settings WHERE key='redmine_sppi_project'").fetchone()
-        return row[0] if row else ''
+    def redmine_sppi_project_in(c, board_id):
+        return c.execute('''SELECT COALESCE((SELECT value FROM settings WHERE key=?),
+                            (SELECT value FROM settings WHERE key='redmine_sppi_project'), '')''',
+                         ('redmine_sppi_project:{}'.format(board_id),)).fetchone()[0]
 
-    def redmine_sppi_project(self):
+    def redmine_sppi_project(self, board_id):
         with self.connection() as c:
-            self.actor(c)
-            return self.redmine_sppi_project_in(c)
+            c.execute('BEGIN')
+            self.require(c, 'read', board_id)
+            self.active_board(c, board_id)
+            return self.redmine_sppi_project_in(c, board_id)
 
-    def set_redmine_sppi_project(self, project, request_id=None):
+    def set_redmine_sppi_project(self, board_id, project, request_id=None):
         project = project.strip()
 
         def apply(c, uid):
-            c.execute("INSERT OR REPLACE INTO settings VALUES('redmine_sppi_project',?)", (project,))
+            board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (board_id,)).fetchone()
+            if not board or not self.project_board(board):
+                raise ValueError('Проект СППИ можно настроить только для активной проектной доски.')
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                      ('redmine_sppi_project:{}'.format(board_id), project))
             return True
 
-        return self.write('redmine_sppi_project', [project], apply, request_id)
+        return self.write('redmine_sppi_project', [board_id, project], apply, request_id)
 
     def redmine_basis_project(self, board_id):
         with self.connection() as c:
@@ -1135,8 +1142,10 @@ class Store:
         def apply(c, uid):
             if any(revision is None for _, revision, *_ in updates):
                 self.require(c, 'create_task', board_id)
-                if not sppi_project or self.redmine_sppi_project_in(c) != sppi_project:
+                if not sppi_project:
                     raise ValueError('Проект СППИ изменился. Обновите доску повторно.')
+            if sppi_project is not None and self.redmine_sppi_project_in(c, board_id) != sppi_project:
+                raise ValueError('Проект СППИ изменился. Обновите доску повторно.')
             errors = []
             for issue_id, revision, title, status, target_column, tracker_name, approvals, references, progress in updates:
                 try:
