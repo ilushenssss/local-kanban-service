@@ -896,8 +896,10 @@ class UITest(unittest.TestCase):
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
 
         dialog_tables = []
+        dialog_sizes = []
 
         def read_dialog(dialog):
+            dialog_sizes.append(dialog.size())
             table = dialog.findChild(QTableWidget)
             dialog_tables.append(table and (
                 [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())],
@@ -912,6 +914,9 @@ class UITest(unittest.TestCase):
         self.assertEqual(dialog_tables, [(['Название', 'Назначена', 'Статус'],
                                           [['Интерфейс', 'Петров Иван', 'Кодирование'], ['Схема', '—', 'Выполнено']],
                                           QTableWidget.NoEditTriggers)])
+        size = dialog_sizes[0]
+        self.assertGreater(size.width(), size.height())
+        self.assertLess(size.width(), member.screen().availableGeometry().width())
 
         cards = member.card_lists[1]
         cards.setCurrentItem(item)
