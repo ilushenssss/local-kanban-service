@@ -863,12 +863,16 @@ class UITest(unittest.TestCase):
         self.assertFalse(member.card_lists[0].redmine_can_collapse(member.card_lists[0].item(0).data(Qt.UserRole)))
 
         projects.write_text('{"Разработка": 73, "Внедрение": 88}', encoding='utf-8')
+        subtasks = [{'title': 'Интерфейс', 'assignee': 'Петров Иван', 'status': 'Кодирование'},
+                    {'title': 'Развёрнутое название подзадачи для проверки переноса строк в узком окне',
+                     'assignee': '', 'status': 'Выполнено'}]
+        subtasks.extend({'title': f'Приложение {i}', 'assignee': 'Петров Иван', 'status': 'Выполнено'}
+                        for i in range(1, 9))
         with patch('kanban.redmine.connect') as auth, patch(
                 'kanban.redmine.read_kris_progress', return_value=({23018: {
                     'done': 3, 'total': 3, 'subject': 'ТИ-1157р4 из КРИС',
                     'coding': [{'subject': 'Интерфейс', 'due_date': '2027-02-04'}],
-                    'subtasks': [{'title': 'Интерфейс', 'assignee': 'Петров Иван', 'status': 'Кодирование'},
-                                 {'title': 'Схема', 'assignee': '', 'status': 'Выполнено'}],
+                    'subtasks': subtasks,
                 }}, [])) as kris, patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
                                                         'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
@@ -897,6 +901,7 @@ class UITest(unittest.TestCase):
 
         dialog_tables = []
         dialog_sizes = []
+        scroll_geometry = []
 
         def read_dialog(dialog):
             dialog_sizes.append(dialog.size())
@@ -906,14 +911,32 @@ class UITest(unittest.TestCase):
                 [[table.item(r, c).text() for c in range(table.columnCount())] for r in range(table.rowCount())],
                 table.editTriggers(),
             ))
+            if table:
+                dialog.resize(430, 330)
+                dialog.show()
+                APP.processEvents()
+                scroll = dialog.findChild(QScrollArea)
+                last = table.visualItemRect(table.item(table.rowCount() - 1, 0))
+                table.setCurrentCell(0, 0)
+                QTest.keyClick(table, Qt.Key_End, Qt.ControlModifier)
+                scroll_geometry.append((table.verticalScrollBarPolicy(), table.verticalScrollBar().maximum(),
+                                        scroll.verticalScrollBar().value(), last.bottom(), table.viewport().height(),
+                                        table.currentRow()))
+                dialog.hide()
             return QDialog.Accepted
 
         with patch.object(QDialog, 'exec_', new=read_dialog):
             member.open_task(item.data(Qt.UserRole))
             wait_for(lambda: bool(dialog_tables))
-        self.assertEqual(dialog_tables, [(['Название', 'Назначена', 'Статус'],
-                                          [['Интерфейс', 'Петров Иван', 'Кодирование'], ['Схема', '—', 'Выполнено']],
+        expected_rows = [[row['title'], row['assignee'] or '—', row['status']] for row in subtasks]
+        self.assertEqual(dialog_tables, [(['Название', 'Назначена', 'Статус'], expected_rows,
                                           QTableWidget.NoEditTriggers)])
+        policy, table_scroll, dialog_scroll, last_row_bottom, viewport_height, current_row = scroll_geometry[0]
+        self.assertEqual(policy, Qt.ScrollBarAlwaysOff)
+        self.assertEqual(table_scroll, 0)
+        self.assertGreater(dialog_scroll, 0)
+        self.assertLess(last_row_bottom, viewport_height)
+        self.assertEqual(current_row, len(subtasks) - 1)
         size = dialog_sizes[0]
         self.assertGreater(size.width(), size.height())
         self.assertLess(size.width(), member.screen().availableGeometry().width())

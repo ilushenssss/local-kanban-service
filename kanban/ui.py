@@ -2481,6 +2481,7 @@ class MainWindow(QMainWindow, Async):
             height = min(width * 3 // 5, available.height() - 64)
             dialog.setMinimumWidth(min(430, width))
             layout = QVBoxLayout(dialog)
+            scroll = QScrollArea()
             content = QWidget()
             details = QVBoxLayout(content)
             details.setContentsMargins(0, 0, 4, 0)
@@ -2517,6 +2518,9 @@ class MainWindow(QMainWindow, Async):
                 table.setAlternatingRowColors(True)
                 table.setWordWrap(True)
                 table.setTextElideMode(Qt.ElideNone)
+                table.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                table.setSizeAdjustPolicy(QTableWidget.AdjustToContents)
+                table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
                 header = table.horizontalHeader()
                 header.setSectionResizeMode(0, QHeaderView.Stretch)
                 table.setColumnWidth(1, 114)
@@ -2524,11 +2528,18 @@ class MainWindow(QMainWindow, Async):
                 vertical = table.verticalHeader()
                 vertical.hide()
                 vertical.setSectionResizeMode(QHeaderView.ResizeToContents)
-                table.setMinimumHeight(header.sizeHint().height() + min(len(subtasks), 4) * vertical.defaultSectionSize() + 4)
-                table.setMaximumHeight(220)
+                vertical.sectionResized.connect(table.updateGeometry)
                 for row, subtask in enumerate(subtasks):
                     for column, key in enumerate(('title', 'assignee', 'status')):
                         table.setItem(row, column, QTableWidgetItem(subtask[key] or '—'))
+
+                def scroll_to_subtask(item, _previous):
+                    if item is not None:
+                        rect = table.visualItemRect(item)
+                        y = table.viewport().mapTo(content, rect.center()).y()
+                        scroll.ensureVisible(scroll.horizontalScrollBar().value(), y, 0, rect.height() // 2)
+
+                table.currentItemChanged.connect(scroll_to_subtask)
                 form.addRow('Согласование приложений', table)
             else:
                 message = 'Обновите ТИ по #ID, чтобы загрузить подзадачи.' if progress and subtasks is None else '—'
@@ -2548,7 +2559,6 @@ class MainWindow(QMainWindow, Async):
                 children.setMaximumHeight(140)
                 details.addWidget(children)
             details.addStretch()
-            scroll = QScrollArea()
             scroll.setWidgetResizable(True)
             scroll.setWidget(content)
             layout.addWidget(scroll, 1)
