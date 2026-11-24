@@ -12,7 +12,7 @@ import sqlite3
 import time
 import uuid
 
-from .redmine import basis_number, issue_label, status_key, validate_url
+from .redmine import basis_number, issue_label, status_key, ti_sort_key, validate_url
 
 
 SCHEMA_VERSION = 15
@@ -1196,6 +1196,7 @@ class Store:
                 if view in ('board', 'list') and self.project_board(board):
                     query = (filters.get('query') or '').casefold()
                     basis_project = self.redmine_basis_project_in(c, selected)
+                    redmine_cards = []
                     for entry in c.execute('SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (selected,)):
                         col = entry['column_id']
                         totals[col] = totals.get(col, 0) + 1
@@ -1210,10 +1211,11 @@ class Store:
                             suffix = ' #{} {}'.format(entry['issue_id'], entry['title'])
                             if not any(query in (name + suffix).casefold() for name in (label, tracker)):
                                 continue
-                        tasks.append(dict(card, id=-entry['issue_id'], redmine_id=entry['issue_id'],
-                                          number=entry['issue_id'], version=entry['revision'], archived=False,
-                                          assignees=[], assignee_names=[], labels=[], due_date=None,
-                                          completed_at=None, priority='Обычный', unread_count=0))
+                        redmine_cards.append(dict(card, id=-entry['issue_id'], redmine_id=entry['issue_id'],
+                                                  number=entry['issue_id'], version=entry['revision'], archived=False,
+                                                  assignees=[], assignee_names=[], labels=[], due_date=None,
+                                                  completed_at=None, priority='Обычный', unread_count=0))
+                    tasks.extend(sorted(redmine_cards, key=ti_sort_key))
             return boards, selected, columns, tasks, totals, catalogs, personal
 
     def card_details(self, task_id):

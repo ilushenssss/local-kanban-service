@@ -495,8 +495,39 @@ def issue_subtasks(client, fields, issue_id):
     return subtasks
 
 
+def ti_responsible(client, issue_id, fields, cache):
+    from redminelib.exceptions import ForbiddenError, ResourceNotFoundError
+
+    parent_id = (fields.get('parent') or {}).get('id')
+    ids_key = ('responsible_ids', issue_id)
+    cache[ids_key] = tuple(resource_ids(custom_field_values(fields).get('ответственный за выпуск ти')))
+    if parent_id:
+        ids_key = ('responsible_ids', parent_id)
+        if ids_key not in cache:
+            try:
+                parent = client.issue.get(parent_id).raw()
+            except (ForbiddenError, ResourceNotFoundError):
+                parent = {}
+            cache[ids_key] = tuple(resource_ids(custom_field_values(parent).get('ответственный за выпуск ти')))
+    result = []
+    for user_id in dict.fromkeys(cache[ids_key]):
+        user_key = ('responsible_user', user_id)
+        if user_key not in cache:
+            try:
+                user = client.user.get(user_id).raw()
+            except (ForbiddenError, ResourceNotFoundError):
+                user = {}
+            parts = [(user.get(field) or '').strip() for field in ('firstname', 'lastname')]
+            name = ' '.join(part for part in parts if part)
+            initials = ''.join(part[0].upper() for part in parts if part)
+            cache[user_key] = {'name': name, 'initials': initials} if initials else None
+        if cache[user_key]:
+            result.append(cache[user_key])
+    return result
+
+
 # Читает поля задачи по числовому ID из её адреса в Redmine.
-def read_issue(client, issue_id, *, skip_closed=False, data=None):
+def read_issue(client, issue_id, *, skip_closed=False, data=None, responsible_cache=None):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
@@ -521,6 +552,9 @@ def read_issue(client, issue_id, *, skip_closed=False, data=None):
         parent_id = (fields.get('parent') or {}).get('id')
         if parent_id:
             references['parent_id'] = parent_id
+        responsible = ti_responsible(client, issue_id, fields, {} if responsible_cache is None else responsible_cache)
+        if responsible:
+            references['ti_responsible'] = responsible
         subtasks = issue_subtasks(client, fields, issue_id)
         if subtasks:
             references['children'] = subtasks
@@ -550,6 +584,23 @@ def read_issue(client, issue_id, *, skip_closed=False, data=None):
 # Формирует заголовок по названию основной задачи КРИС_ТИ, если оно загружено.
 def issue_label(tracker_name, issue_id, kris_progress=None):
     return (kris_progress or {}).get('subject') or tracker_name or 'ТИ-{}'.format(issue_id)
+
+
+TI_NUMBER = re.compile(r'\bти\s*[-‑–—]\s*([0-9]+)(?:\s*[рp]\s*([0-9]+))?', re.IGNORECASE)
+
+
+def ti_sort_key(task):
+    tracker = task['tracker_name']
+    progress = task['kris_progress'] or {}
+    labels = (progress.get('subject') or '', tracker, task['title'])
+    numbers = [(int(match[1]), int(match[2] or 0))
+               for label in labels if (match := TI_NUMBER.search(label))]
+    label = status_key(issue_label(tracker, task['issue_id'], progress))
+    if numbers:
+        number, revision = numbers[0]
+        revision = revision or next((rev for base, rev in numbers if base == number and rev), 0)
+        return 0, number, revision, label, task['issue_id']
+    return 1, 0, 0, label, task['issue_id']
 
 
 # Приводит имя статуса к ключу для сравнения с настройками и названиями колонок.

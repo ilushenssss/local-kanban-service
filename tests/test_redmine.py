@@ -13,6 +13,25 @@ from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_referen
 
 class RedmineTest(unittest.TestCase):
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
+    def test_ti_responsible_uses_initials_from_immediate_parent(self):
+        client = Mock()
+        fields = {'subject': 'Тема', 'status': {'name': 'Проект ТИ'}}
+        responsible = 'Ответственный за выпуск ТИ'
+        client.issue.get.return_value.raw.return_value = dict(
+            fields, custom_fields=[{'name': responsible, 'value': ['42']}])
+        client.user.get.return_value.raw.return_value = {'firstname': 'Иван', 'lastname': 'Петров'}
+        child = dict(fields, parent={'id': 9}, custom_fields=[{'name': responsible, 'value': '43'}])
+        cache = {}
+        expected = [{'name': 'Иван Петров', 'initials': 'ИП'}]
+        self.assertEqual(read_issue(client, 10, data=child, responsible_cache=cache)['issue_references']['ti_responsible'],
+                         expected)
+        self.assertEqual(read_issue(client, 11, data=child, responsible_cache=cache)['issue_references']['ti_responsible'],
+                         expected)
+        client.issue.get.assert_called_once_with(9)
+        client.user.get.assert_called_once_with(42)
+        self.assertEqual(read_issue(client, 9)['issue_references']['ti_responsible'], expected)
+
+    @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_sppi_filters_resolved_users_and_versions_and_reads_nested_subtasks(self):
         client = Mock()
 

@@ -69,6 +69,20 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(totals, {columns[1]['id']: 1})
         self.assertEqual(member.board_snapshot(board, {'query': 'Основная задача КРИС'}, 'board')[3], tasks)
 
+    def test_redmine_cards_sort_by_ti_number_and_numeric_revision_in_each_column(self):
+        board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
+        for issue_id, tracker, subject in (
+            (1, 'ТИ-1156р2', ''), (2, 'Редакция к ТИ-1148р10', ''),
+            (3, 'ТИ-1156', ''), (4, 'ТИ-1148р2', 'ТИ-1148'), (5, 'ТИ-1148', ''),
+        ):
+            for index, column in enumerate(('Проект ТИ', 'ТИ открыто')):
+                self.s.link_redmine_issue(board, issue_id + 10 * index, 'Заголовок', column, column, tracker_name=tracker,
+                                          kris_progress={'subject': subject})
+        _, _, columns, cards, _, _, _ = self.s.board_snapshot(board, {}, 'board')
+        for index, column in enumerate(columns):
+            self.assertEqual([card['redmine_id'] for card in cards if card['column_id'] == column['id']],
+                             [issue_id + 10 * index for issue_id in (5, 4, 2, 3, 1)])
+
     def test_basis_project_is_admin_only_and_scoped_to_the_project_board(self):
         board = self.s.board_action('Проект / ТИ')
         other = self.s.board_action('Проект / Другая доска')

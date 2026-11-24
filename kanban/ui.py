@@ -2489,6 +2489,9 @@ class MainWindow(QMainWindow, Async):
                       ('Основание', ', '.join(references.get('basis', [])) or '—'),
                       ('Баги', ', '.join(references.get('bugs', [])) or '—'),
                       ('КРИС ТИ', '\n'.join([redmine.kris_progress_text(progress), *redmine.kris_coding_lines(progress)]))]
+            if references.get('ti_responsible'):
+                fields.insert(1, ('Ответственный за выпуск ТИ', ', '.join(
+                    person['name'] for person in references['ti_responsible'])))
             if current['approvals']:
                 fields.append(('Согласование отделов', '\n'.join(
                     '{}: {}'.format(entry['department'], entry['status']) for entry in current['approvals'])))
@@ -2750,11 +2753,12 @@ class MainWindow(QMainWindow, Async):
         errors = []
         attempted = set()
         kris_cache, basis_cache = {}, {}
+        responsible_cache = {}
 
         def save(issue_id, parent_status=None, **options):
             attempted.add(issue_id)
             try:
-                issue = redmine.read_issue(client, issue_id, skip_closed=True, **options)
+                issue = redmine.read_issue(client, issue_id, skip_closed=True, responsible_cache=responsible_cache, **options)
             except redmine.RedmineAuthError:
                 raise
             except redmine.RedmineError as error:
@@ -2821,10 +2825,11 @@ class MainWindow(QMainWindow, Async):
         def prepare(client, statuses):
             issues, errors = [], []
             linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
+            responsible_cache = {}
             self.sppi_progress.emit(board_id, '')
             for issue_id in linked:
                 try:
-                    issue = redmine.read_issue(client, issue_id)
+                    issue = redmine.read_issue(client, issue_id, responsible_cache=responsible_cache)
                 except redmine.RedmineAuthError:
                     raise
                 except redmine.RedmineError as error:

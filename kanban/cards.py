@@ -351,8 +351,11 @@ class CardDelegate(QStyledItemDelegate):
                 text(deadline, x+width-control_width-deadline_width, y-2, deadline_width-4, align=Qt.AlignRight)
             painter.restore()
             return
-        text(label, x, y, width-68-control_width, bold=True, color='text')
-        chip('Redmine', QRect(x+width-60-control_width, y, 60, CHIP_HEIGHT))
+        responsible = task['issue_references'].get('ti_responsible', [])
+        initials = ', '.join(person['initials'] for person in responsible) or '—'
+        badge_width = max(26, min(62, 12 + QFontMetrics(chip_font(option.font)).horizontalAdvance(initials)))
+        text(label, x, y, width-badge_width-8-control_width, bold=True, color='text')
+        chip(initials, QRect(x+width-badge_width-control_width, y, badge_width, CHIP_HEIGHT))
         painter.setFont(redmine_title_font(option.font))
         painter.setPen(QColor(TOKENS['secondary']))
         title_rect = QRect(x, y+23, width, 2*painter.fontMetrics().lineSpacing()+2)
@@ -556,6 +559,9 @@ def set_card_data(item, task, count):
         progress = task.get('kris_progress')
         summary = '{} #{} · Redmine\n{}\n{}'.format(
             issue_label(task['tracker_name'], task['redmine_id'], progress), task['redmine_id'], task['title'], task['status'])
+        responsible = task['issue_references'].get('ti_responsible', [])
+        if responsible:
+            summary += '\nОтветственный за выпуск ТИ: ' + ', '.join(person['name'] for person in responsible)
         for label, key in (('Основание', 'basis'), ('Баги', 'bugs')):
             values = task['issue_references'].get(key, [])
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'

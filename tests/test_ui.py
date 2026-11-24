@@ -974,7 +974,8 @@ class UITest(unittest.TestCase):
             window.refresh_ti_button.click()
             wait_for(lambda: not window.mutating and not window.loading)
             discover.assert_not_called()
-            fetch.assert_called_once_with(window.redmine_client, 118)
+            self.assertEqual(fetch.call_args.args, (window.redmine_client, 118))
+            self.assertEqual(fetch.call_count, 1)
             self.assertEqual(window.card_lists[0].count(), 1)
             self.assertIn('ТИ из СППИ', window.card_lists[0].item(0).toolTip())
             fetch.reset_mock()
@@ -1317,7 +1318,8 @@ class UITest(unittest.TestCase):
         item = QListWidgetItem(cards)
         set_card_data(item, {'redmine_id': 42, 'title': 'Задача', 'tracker_name': 'ТИ',
                              'status': 'Проект ТИ', 'approvals': [{'department': 'ОСП', 'status': 'Да'}],
-                             'issue_references': {'basis': values, 'bugs': ['48316']},
+                             'issue_references': {'basis': values, 'bugs': ['48316'],
+                                                  'ti_responsible': [{'name': 'Иван Петров', 'initials': 'ИП'}]},
                              'kris_progress': {'subject': 'ТИ-1157 КРИС', 'done': 0, 'total': 0}}, 0)
         cards.show()
         self.addCleanup(cards.close)
@@ -1334,6 +1336,9 @@ class UITest(unittest.TestCase):
         labels = {call.args[2]: call.args[:2] for call in traced.drawText.call_args_list}
         self.assertIn('Основание', labels)
         self.assertIn('ТИ-1157 КРИС', labels)
+        self.assertIn('ИП', labels)
+        self.assertNotIn('Redmine', labels)
+        self.assertIn('Ответственный за выпуск ТИ: Иван Петров', item.toolTip())
         self.assertNotIn('ТИ', labels)
         for value in values:
             rect, flags = labels[value]
