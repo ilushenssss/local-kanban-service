@@ -1378,7 +1378,7 @@ class UITest(unittest.TestCase):
         self.assertIn('Основание', labels)
         self.assertIn('ТИ-1157 КРИС', labels)
         traced.drawEllipse.assert_called_once()
-        self.assertGreater(traced.drawEllipse.call_args.args[0].left(), labels['ТИ-1157 КРИС'][0].left())
+        self.assertLess(traced.drawEllipse.call_args.args[0].right(), labels['ТИ-1157 КРИС'][0].left())
         self.assertIn('ИП', labels)
         self.assertNotIn('Redmine', labels)
         self.assertIn('Ответственный за выпуск ТИ: Иван Петров', item.toolTip())

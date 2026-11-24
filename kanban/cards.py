@@ -305,9 +305,8 @@ class CardDelegate(QStyledItemDelegate):
             font.setBold(bold)
             painter.setFont(font)
             painter.setPen(QColor(TOKENS[color]))
-            visible = painter.fontMetrics().elidedText(caption, elide, span)
-            painter.drawText(QRect(left, top, span, height), align | Qt.AlignVCenter, visible)
-            return visible
+            painter.drawText(QRect(left, top, span, height), align | Qt.AlignVCenter,
+                             painter.fontMetrics().elidedText(caption, elide, span))
 
         def chip(caption, rect, palette=None, text_width=None):
             foreground, background = palette or (TOKENS['secondary'], TOKENS['hover'])
@@ -337,13 +336,12 @@ class CardDelegate(QStyledItemDelegate):
 
         def heading(top, span):
             diameter, gap = 8, 6
-            label_span = max(0, span - diameter - gap) if dot_color else span
-            visible = text(label, x, top, label_span, bold=True, color='text')
+            offset = diameter + gap if dot_color else 0
             if dot_color:
-                left = x + painter.fontMetrics().horizontalAdvance(visible) + gap
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(QColor(TOKENS[dot_color]))
-                painter.drawEllipse(QRect(left, top + (19 - diameter) // 2, diameter, diameter))
+                painter.drawEllipse(QRect(x, top + (19 - diameter) // 2, diameter, diameter))
+            text(label, x + offset, top, max(0, span - offset), bold=True, color='text')
 
         collapsible = self.parent().redmine_can_collapse(task)
         compact = self.parent().redmine_is_compact(task)
