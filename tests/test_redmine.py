@@ -31,6 +31,9 @@ class RedmineTest(unittest.TestCase):
             candidate(5, '99', '9999', 'ТИ закрыто'),
             candidate(6, None, None),
         ]
+        child = candidate(7, '42', '1342')
+        child.raw.return_value['parent'] = {'id': 1}
+        client.issue.filter.return_value.append(child)
         client.version.get.side_effect = lambda version: SimpleNamespace(
             name={1342: '2.0-218 И-01', 1343: '2.0-219 И-01'}[version])
         client.user.get.side_effect = lambda user_id: Mock(**{'raw.return_value': {
@@ -44,7 +47,7 @@ class RedmineTest(unittest.TestCase):
             '#4 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
             '#6 · Ответственный: — · Версия: —',
         ])
-        client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
+        client.issue.filter.assert_called_once_with(project_id=88, status_id='*', parent_id='!*')
         self.assertEqual(client.user.get.call_args_list, [call(42), call(43)])
         self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343)])
 

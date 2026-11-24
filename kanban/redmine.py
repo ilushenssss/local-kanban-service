@@ -222,9 +222,9 @@ def read_sppi_issue_ids(client, project_id, board, employees, *, on_issue=None):
     if not employee_keys or not board_key:
         return issue_ids
     try:
-        for issue in client.issue.filter(project_id=project_id, status_id='*'):
+        for issue in client.issue.filter(project_id=project_id, status_id='*', parent_id='!*'):
             data = issue.raw()
-            if ti_is_closed((data.get('status') or {}).get('name')):
+            if data.get('parent') or ti_is_closed((data.get('status') or {}).get('name')):
                 continue
             fields = custom_field_values(data)
             responsible = list(resource_ids(fields.get('ответственный за ти')))
