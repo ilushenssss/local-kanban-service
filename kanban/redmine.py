@@ -375,18 +375,34 @@ def coding_deadline(issue):
     return {'subject': issue.get('subject') or '#{}'.format(issue['id']), 'due_date': due}
 
 
-def read_kris_children(client, parent_id):
-    # Вложенные потомки не учитываются. Статус прямой подзадачи может потребовать отдельного запроса.
+def kris_assignee_name(client, assignee, cache):
+    from redminelib.exceptions import ForbiddenError, ResourceNotFoundError
+
+    user_id = assignee.get('id')
+    if user_id and user_id not in cache:
+        try:
+            user = client.user.get(user_id).raw()
+        except (ForbiddenError, ResourceNotFoundError):
+            user = {}
+        cache[user_id] = ' '.join((user.get(key) or '').strip() for key in ('lastname', 'firstname')).strip()
+    return cache.get(user_id) or assignee.get('name') or ''
+
+
+def read_kris_children(client, parent_id, assignee_cache):
+    # Берём прямые подзадачи КРИС_ТИ. Краткий ответ может не содержать всех полей.
     parent = client.issue.get(parent_id, include='children').raw()
+    subject = (parent.get('subject') or '').strip()
+    parent_title = ' '.join(subject.split())
     children = parent.get('children') or []
     done = total = 0
     coding = []
+    subtasks = []
     for child in children:
         status = (child.get('status') or {}).get('name')
-        # Краткий ответ может содержать статус, но не срок и название подзадачи.
-        missing_coding_details = (status_key(status or '') == 'кодирование'
-                                  and ('due_date' not in child or not child.get('subject')))
-        if not status or missing_coding_details:
+        if status_key(status or '') == 'действие не требуется':
+            continue
+        missing_due_date = status_key(status or '') == 'кодирование' and 'due_date' not in child
+        if not status or not child.get('subject') or 'assigned_to' not in child or missing_due_date:
             child = dict(child, **client.issue.get(child['id']).raw())
             status = (child.get('status') or {}).get('name')
         if not status:
@@ -395,6 +411,11 @@ def read_kris_children(client, parent_id):
         # Статус «Действие не требуется» исключает подзадачу из расчёта прогресса.
         if key == 'действие не требуется':
             continue
+        title = ' '.join((child.get('subject') or '').split())
+        if parent_title and parent_title in title:
+            title = title.replace(parent_title, '', 1).strip(' :–—·-')
+        assignee = kris_assignee_name(client, child.get('assigned_to') or {}, assignee_cache)
+        subtasks.append({'title': title, 'assignee': assignee, 'status': status.strip()})
         total += 1
         done += 'выполнено' in key
         if key == 'кодирование':
@@ -402,8 +423,7 @@ def read_kris_children(client, parent_id):
     # Если кодирование задано на самой задаче КРИС_ТИ, берём её срок при отсутствии таких подзадач.
     if not coding and status_key((parent.get('status') or {}).get('name') or '') == 'кодирование':
         coding.append(coding_deadline(parent))
-    progress = {'done': done, 'total': total}
-    subject = (parent.get('subject') or '').strip()
+    progress = {'done': done, 'total': total, 'subtasks': subtasks}
     if subject:
         progress['subject'] = subject
     if coding:
@@ -424,10 +444,11 @@ def read_kris_progress(client, issue_ids, project_id, *, cache=None):
         return {}, ['Не удалось найти задачи КРИС_ТИ в проекте #{}.'.format(project_id)]
     errors = []
     children = {}
+    assignee_cache = cache.setdefault('kris_assignees', {}) if cache is not None else {}
     for issue_id, parent_id in matches.items():
         if parent_id not in children:
             try:
-                children[parent_id] = read_kris_children(client, parent_id)
+                children[parent_id] = read_kris_children(client, parent_id, assignee_cache)
             except AuthError:
                 raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
             except Exception:

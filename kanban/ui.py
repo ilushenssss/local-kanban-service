@@ -2495,12 +2495,41 @@ class MainWindow(QMainWindow, Async):
             if current['approvals']:
                 fields.append(('Согласование отделов', '\n'.join(
                     '{}: {}'.format(entry['department'], entry['status']) for entry in current['approvals'])))
-            fields.extend([('Согласование приложений', '—'), ('Приложения', '—')])
             for label, value in fields:
                 field = QLabel(value)
                 field.setTextFormat(Qt.PlainText)
                 field.setWordWrap(True)
                 form.addRow(label, field)
+            subtasks = (progress or {}).get('subtasks')
+            if subtasks:
+                table = QTableWidget(len(subtasks), 3)
+                table.setAccessibleName('Согласование приложений')
+                table.setHorizontalHeaderLabels(['Название', 'Назначена', 'Статус'])
+                table.setEditTriggers(QTableWidget.NoEditTriggers)
+                table.setSelectionBehavior(QTableWidget.SelectRows)
+                table.setSelectionMode(QTableWidget.SingleSelection)
+                table.setAlternatingRowColors(True)
+                table.setWordWrap(True)
+                table.setTextElideMode(Qt.ElideNone)
+                header = table.horizontalHeader()
+                header.setSectionResizeMode(0, QHeaderView.Stretch)
+                table.setColumnWidth(1, 114)
+                table.setColumnWidth(2, 122)
+                vertical = table.verticalHeader()
+                vertical.hide()
+                vertical.setSectionResizeMode(QHeaderView.ResizeToContents)
+                table.setMinimumHeight(header.sizeHint().height() + min(len(subtasks), 4) * vertical.defaultSectionSize() + 4)
+                table.setMaximumHeight(220)
+                for row, subtask in enumerate(subtasks):
+                    for column, key in enumerate(('title', 'assignee', 'status')):
+                        table.setItem(row, column, QTableWidgetItem(subtask[key] or '—'))
+                form.addRow('Согласование приложений', table)
+            else:
+                message = 'Обновите ТИ по #ID, чтобы загрузить подзадачи.' if progress and subtasks is None else '—'
+                message_label = QLabel(message)
+                message_label.setWordWrap(True)
+                form.addRow('Согласование приложений', message_label)
+            form.addRow('Приложения', QLabel('—'))
             style_form(form)
             layout.addLayout(form)
             if references.get('children'):

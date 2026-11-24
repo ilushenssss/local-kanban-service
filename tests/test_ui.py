@@ -9,7 +9,7 @@ from unittest.mock import patch
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QDate, QPoint, QSettings
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea
+from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea, QTableWidget
 from kanban.store import SCHEMA_VERSION, Store
 from kanban.cards import TASK_NOTICE_ROLE
 from kanban.theme import stylesheet
@@ -867,6 +867,8 @@ class UITest(unittest.TestCase):
                 'kanban.redmine.read_kris_progress', return_value=({23018: {
                     'done': 3, 'total': 3, 'subject': 'ТИ-1157р4 из КРИС',
                     'coding': [{'subject': 'Интерфейс', 'due_date': '2027-02-04'}],
+                    'subtasks': [{'title': 'Интерфейс', 'assignee': 'Петров Иван', 'status': 'Кодирование'},
+                                 {'title': 'Схема', 'assignee': '', 'status': 'Выполнено'}],
                 }}, [])) as kris, patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
                                                         'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
@@ -892,6 +894,24 @@ class UITest(unittest.TestCase):
         self.assertEqual(item.data(Qt.UserRole)['status'], 'ТИ открыто')
         self.assertFalse(member.card_lists[1].grab().isNull())
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
+
+        dialog_tables = []
+
+        def read_dialog(dialog):
+            table = dialog.findChild(QTableWidget)
+            dialog_tables.append(table and (
+                [table.horizontalHeaderItem(i).text() for i in range(table.columnCount())],
+                [[table.item(r, c).text() for c in range(table.columnCount())] for r in range(table.rowCount())],
+                table.editTriggers(),
+            ))
+            return QDialog.Accepted
+
+        with patch.object(QDialog, 'exec_', new=read_dialog):
+            member.open_task(item.data(Qt.UserRole))
+            wait_for(lambda: bool(dialog_tables))
+        self.assertEqual(dialog_tables, [(['Название', 'Назначена', 'Статус'],
+                                          [['Интерфейс', 'Петров Иван', 'Кодирование'], ['Схема', '—', 'Выполнено']],
+                                          QTableWidget.NoEditTriggers)])
 
         cards = member.card_lists[1]
         cards.setCurrentItem(item)

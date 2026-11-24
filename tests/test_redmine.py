@@ -202,12 +202,14 @@ class RedmineTest(unittest.TestCase):
                                             kris(73, 'ТИ #43'), kris(74, '44')]
         issues = {
             72: resource({'id': 72, 'subject': '  ТИ-1157 · КРИС  ', 'children': [
-                {'id': 101, 'status': {'name': 'Выполнено (проверено)'}, 'children': [{'id': 999}]},
+                {'id': 101, 'subject': 'ТИ-1157 · КРИС — Схема', 'status': {'name': 'Выполнено (проверено)'},
+                 'assigned_to': {'id': 9, 'name': 'Иван Петров'}, 'children': [{'id': 999}]},
                 {'id': 102}, {'id': 103, 'status': {'name': 'Кодирование'}, 'subject': 'Сервис'},
                 {'id': 104, 'status': {'name': 'Действие не требуется'}},
             ]}),
-            102: resource({'id': 102, 'status': {'name': 'ВЫПОЛНЕНО'}}),
-            103: resource({'id': 103, 'due_date': '2027-02-03'}),
+            102: resource({'id': 102, 'subject': 'Комплект', 'status': {'name': 'ВЫПОЛНЕНО'},
+                           'assigned_to': {'id': 9, 'name': 'Иван Петров'}}),
+            103: resource({'id': 103, 'due_date': '2027-02-03', 'assigned_to': None}),
             73: resource({'id': 73, 'status': {'name': 'Кодирование'}, 'due_date': '2027-02-07',
                           'children': [{'id': 105}]}),
             105: resource({'id': 105, 'status': {'name': ' ДЕЙСТВИЕ  НЕ ТРЕБУЕТСЯ '}}),
@@ -215,11 +217,15 @@ class RedmineTest(unittest.TestCase):
         def issue_get(issue_id, **kwargs):
             return issues[issue_id]
         client.issue.get.side_effect = issue_get
+        client.user.get.return_value.raw.return_value = {'firstname': 'Иван', 'lastname': 'Петров'}
         progress, errors = read_kris_progress(client, iter([42, 43, 44, 45]), 73)
         self.assertEqual(progress, {
             42: {'done': 2, 'total': 3, 'subject': 'ТИ-1157 · КРИС',
+                 'subtasks': [{'title': 'Схема', 'assignee': 'Петров Иван', 'status': 'Выполнено (проверено)'},
+                              {'title': 'Комплект', 'assignee': 'Петров Иван', 'status': 'ВЫПОЛНЕНО'},
+                              {'title': 'Сервис', 'assignee': '', 'status': 'Кодирование'}],
                  'coding': [{'subject': 'Сервис', 'due_date': '2027-02-03'}]},
-            43: {'done': 0, 'total': 0, 'coding': [{'subject': '#73', 'due_date': '2027-02-07'}]},
+            43: {'done': 0, 'total': 0, 'subtasks': [], 'coding': [{'subject': '#73', 'due_date': '2027-02-07'}]},
             45: None,
         })
         self.assertEqual(errors, ['Не удалось прочитать подзадачи КРИС_ТИ #74.'])
@@ -227,6 +233,7 @@ class RedmineTest(unittest.TestCase):
         self.assertEqual(kris_progress_text(progress[43]), 'Подзадач нет')
         self.assertEqual(kris_progress_text(progress[45]), '—')
         client.issue.filter.assert_called_once_with(project_id=73, status_id='open', parent_id='!*')
+        client.user.get.assert_called_once_with(9)
         self.assertEqual(client.issue.get.call_args_list,
                          [call(72, include='children'), call(102), call(103), call(73, include='children'), call(105),
                           call(74, include='children')])
