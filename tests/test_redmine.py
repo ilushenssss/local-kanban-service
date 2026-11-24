@@ -39,6 +39,9 @@ class RedmineTest(unittest.TestCase):
             {'id': 8, 'tracker': {'name': 'Разработка'}},
         ]
         root_details[7] = revision_data
+        root_details[8] = dict(candidate(8, None, None).raw.return_value, parent={'id': 1},
+                               tracker={'name': 'Разработка'}, children=[{'id': 9}])
+        root_details[9] = dict(candidate(9, None, None).raw.return_value, parent={'id': 8})
         revision.raw.return_value = revision_data
         client.issue.filter.return_value.append(revision)
         client.issue.get.side_effect = lambda issue_id, **params: Mock(**{'raw.return_value': root_details[issue_id]})
@@ -48,10 +51,13 @@ class RedmineTest(unittest.TestCase):
             'firstname': 'Анна', 'lastname': 'Иванова' if user_id == 42 else 'Смирнова'}})
         progress = []
         accepted = iter_sppi_issues(client, 88, '2.0-218', ['Иванова Анна'], on_issue=progress.append)
-        self.assertEqual([issue_id for issue_id, _ in accepted], [1, 7, 4])
+        self.assertEqual([(issue_id, parent_status) for issue_id, _, parent_status in accepted],
+                         [(1, None), (7, 'Проект ТИ'), (8, 'Проект ТИ'), (9, 'Проект ТИ'), (4, None)])
         self.assertEqual(progress, [
             '#1 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
             '#7 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
+            '#8 · Ответственный: — · Версия: —',
+            '#9 · Ответственный: — · Версия: —',
             '#2 · Ответственный: Анна Смирнова · Версия: 2.0-218 И-01',
             '#3 · Ответственный: Анна Иванова · Версия: 2.0-219 И-01',
             '#4 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
@@ -60,7 +66,8 @@ class RedmineTest(unittest.TestCase):
         client.issue.filter.assert_called_once_with(project_id=88, status_id='*', parent_id='!*')
         self.assertEqual(client.user.get.call_args_list, [call(42), call(43)])
         self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343)])
-        self.assertNotIn(call(8, include='children'), client.issue.get.call_args_list)
+        self.assertIn(call(8, include='children'), client.issue.get.call_args_list)
+        self.assertIn(call(9, include='children'), client.issue.get.call_args_list)
         client.issue.get.reset_mock()
 
         issues = {

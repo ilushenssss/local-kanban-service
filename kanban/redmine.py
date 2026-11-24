@@ -222,7 +222,7 @@ def project_issues(client, project_id, cache, **filters):
 
 
 def sppi_family(client, root):
-    """Yield the root and its TI revisions before moving on to the next family."""
+    """Yield full Redmine tasks and their parent IDs, starting at the root."""
     from redminelib.exceptions import ForbiddenError, ResourceNotFoundError
 
     root_id = root.id
@@ -230,26 +230,22 @@ def sppi_family(client, root):
         data = dict(root.raw(), **client.issue.get(root_id, include='children').raw())
     except (ForbiddenError, ResourceNotFoundError):
         return
-    yield root_id, data
+    yield root_id, data, None
     seen = {root_id}
-    pending = list(reversed(data.get('children') or []))
+    pending = [(root_id, child) for child in reversed(data.get('children') or [])]
     while pending:
-        child = pending.pop()
+        parent_id, child = pending.pop()
         child_id = child['id']
         if child_id in seen:
             continue
         seen.add(child_id)
-        tracker = (child.get('tracker') or {}).get('name') or ''
-        if not tracker or status_key(tracker).startswith('редакция к ти'):
-            try:
-                child = dict(child, **client.issue.get(child_id, include='children').raw())
-            except (ForbiddenError, ResourceNotFoundError):
-                pending.extend(reversed(child.get('children') or []))
-                continue
-            tracker = (child.get('tracker') or {}).get('name') or ''
-        if status_key(tracker).startswith('редакция к ти'):
-            yield child_id, child
-        pending.extend(reversed(child.get('children') or []))
+        try:
+            child = dict(child, **client.issue.get(child_id, include='children').raw())
+        except (ForbiddenError, ResourceNotFoundError):
+            pending.extend((parent_id, node) for node in reversed(child.get('children') or []))
+            continue
+        yield child_id, child, parent_id
+        pending.extend((child_id, node) for node in reversed(child.get('children') or []))
 
 
 def iter_sppi_issues(client, project_id, board, employees, *, on_issue=None):
@@ -265,8 +261,13 @@ def iter_sppi_issues(client, project_id, board, employees, *, on_issue=None):
         for issue in client.issue.filter(project_id=project_id, status_id='*', parent_id='!*'):
             if issue.raw().get('parent'):
                 continue
-            for issue_id, data in sppi_family(client, issue):
-                if issue_id in matching or ti_is_closed((data.get('status') or {}).get('name')):
+            family_statuses = {}
+            for issue_id, data, parent_id in sppi_family(client, issue):
+                status = (data.get('status') or {}).get('name') or ''
+                parent_status = family_statuses.get(parent_id)
+                if parent_status is not None:
+                    family_statuses[issue_id] = parent_status
+                if issue_id in matching or ti_is_closed(status):
                     continue
                 fields = custom_field_values(data)
                 responsible = list(resource_ids(fields.get('ответственный за выпуск ти')))
@@ -287,10 +288,12 @@ def iter_sppi_issues(client, project_id, board, employees, *, on_issue=None):
                     owners = ', '.join(dict.fromkeys(people[user_id][0] for user_id in responsible)) or '—'
                     names = ', '.join(version_labels) or '—'
                     on_issue('#{} · Ответственный: {} · Версия: {}'.format(issue_id, owners, names))
-                if any(people[user_id][1] for user_id in responsible) and any(
-                        board_key in status_key(name) for name in version_labels):
+                own_match = any(people[user_id][1] for user_id in responsible) and any(
+                    board_key in status_key(name) for name in version_labels)
+                if parent_status is not None or own_match:
                     matching.add(issue_id)
-                    yield issue_id, data
+                    family_statuses[issue_id] = status if parent_status is None else parent_status
+                    yield issue_id, data, parent_status
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:
@@ -470,6 +473,8 @@ def kris_coding_deadline(progress):
 
 # Собирает доступных потомков задачи и дополняет их статусы из Redmine.
 def issue_subtasks(client, fields, issue_id):
+    from redminelib.exceptions import ForbiddenError, ResourceNotFoundError
+
     subtasks = []
     seen = {issue_id}
     pending = list(reversed(fields.get('children') or []))
@@ -480,7 +485,10 @@ def issue_subtasks(client, fields, issue_id):
             continue
         seen.add(child_id)
         if not child.get('subject') or not child.get('status'):
-            child = dict(child, **client.issue.get(child_id, include='children').raw())
+            try:
+                child = dict(child, **client.issue.get(child_id, include='children').raw())
+            except (ForbiddenError, ResourceNotFoundError):
+                pass
         subtasks.append({'id': child_id, 'title': child.get('subject') or '',
                          'status': (child.get('status') or {}).get('name') or ''})
         pending.extend(reversed(child.get('children') or []))
@@ -510,6 +518,9 @@ def read_issue(client, issue_id, *, skip_closed=False, data=None):
         custom_fields = fields.get('custom_fields') or []
         approvals = department_approvals(custom_fields)
         references = issue_references(custom_fields)
+        parent_id = (fields.get('parent') or {}).get('id')
+        if parent_id:
+            references['parent_id'] = parent_id
         subtasks = issue_subtasks(client, fields, issue_id)
         if subtasks:
             references['children'] = subtasks

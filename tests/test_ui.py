@@ -949,6 +949,9 @@ class UITest(unittest.TestCase):
         issue = {'title': 'ТИ из СППИ', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-119',
                  'approvals': [{'department': 'ОСП', 'status': 'Да'}],
                  'issue_references': {'basis': ['СП-12'], 'bugs': ['42'], 'children': subtasks}}
+        child = {'title': 'Подзадача', 'status': 'В работе', 'tracker_name': 'Подзадача',
+                 'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
+                 'issue_references': {'basis': ['СП-120'], 'bugs': ['120'], 'parent_id': 119}}
         release_scan = Event()
         scan_lines = ['#{} · Ответственный: Анна Иванова · Версия: 2.0-218 И-01'.format(issue_id)
                       for issue_id in range(115, 120)]
@@ -956,12 +959,16 @@ class UITest(unittest.TestCase):
         def scan(client, project_id, board_name, employees, *, on_issue):
             for line in scan_lines:
                 on_issue(line)
-            yield 119, {'subject': 'Редакция'}
+            yield 119, {'subject': 'ТИ из СППИ'}, None
             release_scan.wait(8)
+            yield 120, {'subject': 'Подзадача'}, 'Проект ТИ'
 
         with patch('kanban.redmine.iter_sppi_issues', side_effect=scan) as discover, \
-             patch('kanban.redmine.read_issue', return_value=issue) as fetch, \
-             patch('kanban.redmine.read_kris_progress', return_value=({119: None}, [])):
+             patch('kanban.redmine.read_issue', side_effect=lambda client, issue_id, **opts:
+                   child if issue_id == 120 else issue) as fetch, \
+             patch('kanban.redmine.read_kris_progress', return_value=({
+                 119: None, 120: {'done': 1, 'total': 2, 'subject': 'КРИС подзадачи'},
+             }, [])):
             self.assertTrue(window.refresh_ti_button.isVisible())
             self.assertTrue(window.import_sppi_button.isVisible())
             window.refresh_ti_button.click()
@@ -983,16 +990,19 @@ class UITest(unittest.TestCase):
                 self.assertIn('Ответственный', window.sppi_log_lines[-1].text())
             finally:
                 release_scan.set()
-            wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 2)
+            wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 3)
             self.assertEqual(discover.call_args.args, (window.redmine_client, 88, '2.0-218', ['Иванова Анна']))
             self.assertEqual([(args[1], kwargs['skip_closed']) for args, kwargs in fetch.call_args_list],
-                             [(119, True), (118, True)])
+                             [(119, True), (120, True), (118, True)])
         self.assertFalse(window.sppi_log.isVisible())
         self.assertTrue(all(not line.full_text for line in window.sppi_log_lines))
         item = window.card_lists[0].item(1)
         self.assertIn('Основание: СП-12', item.toolTip())
         self.assertIn('ОСП: Да', item.toolTip())
         self.assertEqual(self.store.redmine_tasks(board)[1]['issue_references']['children'], subtasks)
+        child_card = window.card_lists[0].item(2).toolTip()
+        for entry in ('КРИС подзадачи #120', 'КРИС ТИ: 50% (1/2)', 'Основание: СП-120', 'Баги: 120', 'ОСЗ: Да'):
+            self.assertIn(entry, child_card)
 
     def test_identification_tab_loads_basis_project_and_shows_linked_ti(self):
         from kanban.installation import save_folder

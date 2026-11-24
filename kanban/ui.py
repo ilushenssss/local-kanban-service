@@ -2746,11 +2746,12 @@ class MainWindow(QMainWindow, Async):
         employees = installation.load_redmine_employees(self.redmine_config_base())
         source_id = self.redmine_project_id(sppi_project)
         linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
+        columns = {column['id']: column['name'] for column in self.store.columns(board_id)}
         errors = []
         attempted = set()
         kris_cache, basis_cache = {}, {}
 
-        def save(issue_id, **options):
+        def save(issue_id, parent_status=None, **options):
             attempted.add(issue_id)
             try:
                 issue = redmine.read_issue(client, issue_id, skip_closed=True, **options)
@@ -2763,7 +2764,8 @@ class MainWindow(QMainWindow, Async):
                 return
             updates, warnings = self.prepare_ti_updates(
                 client, board_id, project, statuses, linked, [(issue_id, issue)],
-                kris_options={'cache': kris_cache}, basis_options={'cache': basis_cache})
+                columns=columns, parent_status=parent_status, kris_options={'cache': kris_cache},
+                basis_options={'cache': basis_cache})
             errors.extend(warnings)
             failures = self.store.update_redmine_tasks(board_id, updates, sppi_project=sppi_project)
             errors.extend(failures)
@@ -2774,8 +2776,8 @@ class MainWindow(QMainWindow, Async):
             client, source_id, board_name, employees,
             on_issue=lambda message: self.sppi_progress.emit(board_id, message))
         try:
-            for issue_id, data in candidates:
-                save(issue_id, data=data)
+            for issue_id, data, parent_status in candidates:
+                save(issue_id, parent_status, data=data)
         except redmine.RedmineAuthError:
             raise
         except redmine.RedmineError as error:
@@ -2785,17 +2787,24 @@ class MainWindow(QMainWindow, Async):
                 save(issue_id)
         return list(dict.fromkeys(errors))
 
-    def prepare_ti_updates(self, client, board_id, project, statuses, linked, issues, *, kris_options=None,
-                           basis_options=None):
+    def prepare_ti_updates(self, client, board_id, project, statuses, linked, issues, *, columns,
+                           parent_status=None, kris_options=None, basis_options=None):
         progress, warnings = self.read_project_kris_progress(
             client, (issue_id for issue_id, _ in issues), project, **(kris_options or {}))
         basis_project, basis_statuses, basis_warnings = self.read_project_basis_statuses(
             client, board_id, (issue for _, issue in issues), **(basis_options or {}))
         updates = []
+        column_names = {redmine.status_key(name) for name in columns.values()}
         for issue_id, issue in issues:
             task = linked.get(issue_id, {})
             target = redmine.column_name(issue['status'], statuses)
             references = redmine.with_basis_statuses(issue['issue_references'], basis_project, basis_statuses)
+            if redmine.status_key(target) not in column_names:
+                fallback = redmine.column_name(parent_status, statuses) if parent_status else ''
+                if fallback and redmine.status_key(fallback) in column_names:
+                    target = fallback
+                elif task.get('source') == 'sppi' and references.get('parent_id'):
+                    target = columns.get(task['column_id'], target)
             updates.append((issue_id, task.get('revision'), issue['title'], issue['status'], target,
                             issue['tracker_name'], issue['approvals'], references,
                             progress.get(issue_id, task.get('kris_progress'))))
@@ -2824,7 +2833,8 @@ class MainWindow(QMainWindow, Async):
                 issues.append((issue_id, issue))
             if not issues:
                 return [], errors
-            updates, warnings = self.prepare_ti_updates(client, board_id, project, statuses, linked, issues)
+            columns = {column['id']: column['name'] for column in self.store.columns(board_id)}
+            updates, warnings = self.prepare_ti_updates(client, board_id, project, statuses, linked, issues, columns=columns)
             return updates, errors + warnings
 
         def update(client, rid, statuses):
