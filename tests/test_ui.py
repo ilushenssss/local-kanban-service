@@ -956,10 +956,10 @@ class UITest(unittest.TestCase):
         def scan(client, project_id, board_name, employees, *, on_issue):
             for line in scan_lines:
                 on_issue(line)
+            yield 119, {'subject': 'Редакция'}
             release_scan.wait(8)
-            return [119]
 
-        with patch('kanban.redmine.read_sppi_issue_ids', side_effect=scan) as discover, \
+        with patch('kanban.redmine.iter_sppi_issues', side_effect=scan) as discover, \
              patch('kanban.redmine.read_issue', return_value=issue) as fetch, \
              patch('kanban.redmine.read_kris_progress', return_value=({119: None}, [])):
             self.assertTrue(window.refresh_ti_button.isVisible())
@@ -976,6 +976,8 @@ class UITest(unittest.TestCase):
             try:
                 self.assertEqual(window.status.text(), 'Выгрузка задач из Redmine…')
                 wait_for(lambda: getattr(window.sppi_log_lines[-1], 'full_text', '') == scan_lines[-1])
+                wait_for(lambda: window.card_lists[0].count() == 2)
+                self.assertTrue(window.mutating)
                 self.assertTrue(window.sppi_log.isVisible())
                 self.assertEqual([line.full_text for line in window.sppi_log_lines], scan_lines[-4:])
                 self.assertIn('Ответственный', window.sppi_log_lines[-1].text())
@@ -984,7 +986,7 @@ class UITest(unittest.TestCase):
             wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 2)
             self.assertEqual(discover.call_args.args, (window.redmine_client, 88, '2.0-218', ['Иванова Анна']))
             self.assertEqual([(args[1], kwargs['skip_closed']) for args, kwargs in fetch.call_args_list],
-                             [(118, True), (119, True)])
+                             [(119, True), (118, True)])
         self.assertFalse(window.sppi_log.isVisible())
         self.assertTrue(all(not line.full_text for line in window.sppi_log_lines))
         item = window.card_lists[0].item(1)

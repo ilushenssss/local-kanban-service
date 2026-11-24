@@ -150,13 +150,14 @@ def issue_references(fields):
     return references
 
 
-def read_basis_statuses(client, project_id, numbers):
+def read_basis_statuses(client, project_id, numbers, *, cache=None):
     from redminelib.exceptions import AuthError
 
     statuses = dict.fromkeys(numbers)
     pending = set(statuses)
     try:
-        for issue in client.issue.filter(project_id=project_id, status_id='*'):
+        candidates = project_issues(client, project_id, cache, status_id='*')
+        for issue in candidates:
             fields = issue.raw()
             for field in fields.get('custom_fields') or []:
                 if status_key(field.get('name') or '') != 'регистрационный номер_лпив':
@@ -212,27 +213,68 @@ def ti_is_closed(status):
     return status_key(status or '') == 'ти закрыто'
 
 
-def read_sppi_issue_ids(client, project_id, board, employees, *, on_issue=None):
+def project_issues(client, project_id, cache, **filters):
+    if cache is None:
+        return client.issue.filter(project_id=project_id, **filters)
+    if project_id not in cache:
+        cache[project_id] = list(client.issue.filter(project_id=project_id, **filters))
+    return cache[project_id]
+
+
+def sppi_family(client, root):
+    """Yield the root and its TI revisions before moving on to the next family."""
+    from redminelib.exceptions import ForbiddenError, ResourceNotFoundError
+
+    root_id = root.id
+    try:
+        data = dict(root.raw(), **client.issue.get(root_id, include='children').raw())
+    except (ForbiddenError, ResourceNotFoundError):
+        return
+    yield root_id, data
+    seen = {root_id}
+    pending = list(reversed(data.get('children') or []))
+    while pending:
+        child = pending.pop()
+        child_id = child['id']
+        if child_id in seen:
+            continue
+        seen.add(child_id)
+        tracker = (child.get('tracker') or {}).get('name') or ''
+        if not tracker or status_key(tracker).startswith('редакция к ти'):
+            try:
+                child = dict(child, **client.issue.get(child_id, include='children').raw())
+            except (ForbiddenError, ResourceNotFoundError):
+                pending.extend(reversed(child.get('children') or []))
+                continue
+            tracker = (child.get('tracker') or {}).get('name') or ''
+        if status_key(tracker).startswith('редакция к ти'):
+            yield child_id, child
+        pending.extend(reversed(child.get('children') or []))
+
+
+def iter_sppi_issues(client, project_id, board, employees, *, on_issue=None):
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
     board_key = status_key(board)
     employee_keys = {status_key(name) for name in employees}
-    issue_ids = []
     people, versions = {}, {}
     if not employee_keys or not board_key:
-        return issue_ids
+        return
     try:
+        matching = set()
         for issue in client.issue.filter(project_id=project_id, status_id='*', parent_id='!*'):
-            data = issue.raw()
-            if data.get('parent') or ti_is_closed((data.get('status') or {}).get('name')):
+            if issue.raw().get('parent'):
                 continue
-            fields = custom_field_values(data)
-            responsible = list(resource_ids(fields.get('ответственный за ти')))
-            version_labels = list(dict.fromkeys(
-                version_names_for(client, fields.get('приоритет реализации'), versions)))
-            matches_employee = False
-            for user_id in responsible:
-                if user_id not in people:
+            for issue_id, data in sppi_family(client, issue):
+                if issue_id in matching or ti_is_closed((data.get('status') or {}).get('name')):
+                    continue
+                fields = custom_field_values(data)
+                responsible = list(resource_ids(fields.get('ответственный за выпуск ти')))
+                version_labels = list(dict.fromkeys(
+                    version_names_for(client, fields.get('приоритет реализации'), versions)))
+                for user_id in responsible:
+                    if user_id in people:
+                        continue
                     try:
                         person = client.user.get(user_id).raw()
                     except (ForbiddenError, ResourceNotFoundError):
@@ -241,18 +283,18 @@ def read_sppi_issue_ids(client, project_id, board, employees, *, on_issue=None):
                     names = (person.get('login') or '', person.get('name') or '', f'{first} {last}', f'{last} {first}')
                     label = names[2].strip() or names[1] or names[0] or '#{} (имя недоступно)'.format(user_id)
                     people[user_id] = label, any(status_key(name) in employee_keys for name in names)
-                matches_employee |= people[user_id][1]
-            if on_issue is not None:
-                owners = ', '.join(dict.fromkeys(people[user_id][0] for user_id in responsible)) or '—'
-                names = ', '.join(version_labels) or '—'
-                on_issue('#{} · Ответственный: {} · Версия: {}'.format(issue.id, owners, names))
-            if matches_employee and any(board_key in status_key(name) for name in version_labels):
-                issue_ids.append(issue.id)
+                if on_issue is not None:
+                    owners = ', '.join(dict.fromkeys(people[user_id][0] for user_id in responsible)) or '—'
+                    names = ', '.join(version_labels) or '—'
+                    on_issue('#{} · Ответственный: {} · Версия: {}'.format(issue_id, owners, names))
+                if any(people[user_id][1] for user_id in responsible) and any(
+                        board_key in status_key(name) for name in version_labels):
+                    matching.add(issue_id)
+                    yield issue_id, data
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:
         raise RedmineError('Не удалось прочитать задачи СППИ в проекте Redmine #{}.'.format(project_id)) from None
-    return issue_ids
 
 
 def read_identification_cards(client, project_id):
@@ -289,13 +331,13 @@ def read_identification_cards(client, project_id):
 TI_LOCATION_FIELD = 'расположение ти'
 
 
-def find_kris_issues(client, issue_ids, project_id):
+def find_kris_issues(client, issue_ids, project_id, *, cache=None):
     # Один проход по открытым верхнеуровневым задачам для всех ТИ на доске.
     pending = {str(issue_id) for issue_id in issue_ids}
     matches = {}
     if not pending:
         return matches
-    candidates = client.issue.filter(project_id=project_id, status_id='open', parent_id='!*')
+    candidates = project_issues(client, project_id, cache, status_id='open', parent_id='!*')
     for candidate in candidates:
         for field in candidate.raw().get('custom_fields') or []:
             if status_key(field.get('name') or '') != TI_LOCATION_FIELD:
@@ -355,13 +397,13 @@ def read_kris_children(client, parent_id):
     return progress
 
 
-def read_kris_progress(client, issue_ids, project_id):
+def read_kris_progress(client, issue_ids, project_id, *, cache=None):
     from redminelib.exceptions import AuthError
 
     # None означает, что задача КРИС_ТИ не найдена. При сбое оставляем прежний снимок.
     progress = dict.fromkeys(issue_ids)
     try:
-        matches = find_kris_issues(client, progress, project_id)
+        matches = find_kris_issues(client, progress, project_id, cache=cache)
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:
@@ -446,14 +488,14 @@ def issue_subtasks(client, fields, issue_id):
 
 
 # Читает поля задачи по числовому ID из её адреса в Redmine.
-def read_issue(client, issue_id, *, skip_closed=False):
+def read_issue(client, issue_id, *, skip_closed=False, data=None):
     # Импортируем типы ошибок здесь. К этому моменту клиент уже создан.
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
     # Запрос, разбор ответа и извлечение полей обрабатываются вместе.
     try:
         # issue.get() выполняет GET /issues/<ID>.json. raw() выдаёт словарь полей задачи внутри ответа.
-        fields = client.issue.get(issue_id, include='children').raw()
+        fields = client.issue.get(issue_id, include='children').raw() if data is None else data
         # subject — стандартный заголовок. Если нужен заголовок из пользовательского поля, ищите его в custom_fields по ID.
         title = fields.get('subject')
         # Обычно status выглядит как {"id": 1, "name": "Новая"}. Берём имя для показа и подбора колонки.

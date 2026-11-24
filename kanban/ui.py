@@ -1203,6 +1203,7 @@ class ColumnsDialog(QDialog):
 
 class MainWindow(QMainWindow, Async):
     sppi_progress = pyqtSignal(int, str)
+    sppi_card_saved = pyqtSignal(int)
 
     def __init__(self, folder, redmine_url='', redmine_statuses=None, installation_base=None):
         super().__init__()
@@ -1219,6 +1220,8 @@ class MainWindow(QMainWindow, Async):
         self.redmine_statuses = {redmine.status_key(k): v.strip() for k, v in (redmine_statuses or {}).items()}
         self.redmine_client = None
         self.redmine_refresh_message = ''
+        self.sppi_view_board = None
+        self.sppi_view_dirty = False
         self.store = None
         self.access_restricted = False
         self.hidden_task_dialogs = set()
@@ -1487,6 +1490,7 @@ class MainWindow(QMainWindow, Async):
         self.sppi_log.hide()
         content.addWidget(self.sppi_log)
         self.sppi_progress.connect(self.show_sppi_progress, Qt.QueuedConnection)
+        self.sppi_card_saved.connect(self.refresh_sppi_board, Qt.QueuedConnection)
         self.status = QuietStatus('Подключение…')
         self.status.setObjectName('Status')
         self.status.setTextFormat(Qt.PlainText)
@@ -2137,7 +2141,8 @@ class MainWindow(QMainWindow, Async):
         if self.drag_active:
             self.refresh_deferred = True
             return
-        if self.loading or self.mutating or (self.pending_action and not self.access_restricted):
+        live_sppi = self.mutating and self.sppi_view_board is not None and self.sppi_view_board == self.board_id
+        if self.loading or (not live_sppi and (self.mutating or (self.pending_action and not self.access_restricted))):
             return
         if not self.store:
             self.connect_store()
@@ -2150,14 +2155,19 @@ class MainWindow(QMainWindow, Async):
         if page == 0 and self.project_sections.currentWidget() is self.identification_page and self.project_sections_board == bid:
             view = 'identification'
         self.loading = True
+        if live_sppi:
+            self.sppi_view_dirty = False
         def read():
             return self.store.board_snapshot(bid, f, view)
         def done(result, error):
             self.loading = False
+            if live_sppi and (self.sppi_view_dirty or not self.mutating):
+                self.debounce.start(0)
             if self.drag_active:
                 self.refresh_deferred = True
                 return
-            if self.mutating or (self.pending_action and not self.access_restricted):
+            if (live_sppi and not self.mutating) or (not live_sppi and (
+                    self.mutating or (self.pending_action and not self.access_restricted))):
                 return
             if generation != self.generation:
                 self.debounce.start(1)
@@ -2237,6 +2247,8 @@ class MainWindow(QMainWindow, Async):
             elif page == 0:
                 self.render_board(selected, columns, tasks, totals)
             self.set_access_restricted(False)
+            if self.mutating:
+                return
             if self.redmine_refresh_message:
                 self.status.setText(self.redmine_refresh_message)
                 self.redmine_refresh_message = ''
@@ -2638,14 +2650,14 @@ class MainWindow(QMainWindow, Async):
 
         self.work(load, done)
 
-    def read_project_kris_progress(self, client, issue_ids, project):
+    def read_project_kris_progress(self, client, issue_ids, project, **options):
         try:
             project_id = self.redmine_project_id(project)
         except ValueError as error:
             return {}, [str(error)]
-        return redmine.read_kris_progress(client, issue_ids, project_id)
+        return redmine.read_kris_progress(client, issue_ids, project_id, **options)
 
-    def read_project_basis_statuses(self, client, board_id, issues):
+    def read_project_basis_statuses(self, client, board_id, issues, **options):
         numbers = {number for issue in issues for number in issue['issue_references'].get('basis', [])
                    if redmine.basis_number(number)}
         if not numbers:
@@ -2654,7 +2666,7 @@ class MainWindow(QMainWindow, Async):
         if not project:
             return '', {}, []
         try:
-            return project, redmine.read_basis_statuses(client, self.redmine_project_id(project), numbers), []
+            return project, redmine.read_basis_statuses(client, self.redmine_project_id(project), numbers, **options), []
         except redmine.RedmineAuthError:
             raise
         except ValueError as error:
@@ -2700,7 +2712,7 @@ class MainWindow(QMainWindow, Async):
         if not self.store or self.project_sections_board is None or self.project_sections_board != self.board_id:
             self.refresh()
             return
-        self.sync_project_ti(scan_sppi=False)
+        self.sync_project_ti()
 
     def import_sppi_ti(self):
         if not self.store or self.board_id is None or self.project_sections_board != self.board_id:
@@ -2708,81 +2720,123 @@ class MainWindow(QMainWindow, Async):
         if not self.permissions.get('create'):
             self.status.setText('Выгружать ТИ из СППИ могут менеджер и администратор')
             return
-        self.sync_project_ti(scan_sppi=True)
-
-    def sync_project_ti(self, *, scan_sppi):
         board_id = self.board_id
-        if not self.redmine_url and not scan_sppi:
+        project = self.board_items[board_id].parent().text(0)
+        board_name = self.board_items[board_id].text(0)
+
+        def update(client, rid, statuses):
+            try:
+                return self.stream_sppi_tasks(client, board_id, board_name, project, statuses)
+            finally:
+                self.sppi_progress.emit(board_id, '')
+
+        self.redmine_operation(update, 'Выгрузка из Redmine завершена', busy_message='Выгрузка задач из Redmine…')
+
+    def refresh_sppi_board(self, board_id):
+        if self.mutating and not self.access_restricted:
+            self.sppi_view_board = board_id
+            self.sppi_view_dirty = True
+            if self.board_id == board_id:
+                self.debounce.start(0)
+
+    def stream_sppi_tasks(self, client, board_id, board_name, project, statuses):
+        sppi_project = self.store.redmine_sppi_project()
+        if not sppi_project:
+            raise ValueError('Укажите проект СППИ в настройках.')
+        employees = installation.load_redmine_employees(self.redmine_config_base())
+        source_id = self.redmine_project_id(sppi_project)
+        linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
+        errors = []
+        attempted = set()
+        kris_cache, basis_cache = {}, {}
+
+        def save(issue_id, **options):
+            attempted.add(issue_id)
+            try:
+                issue = redmine.read_issue(client, issue_id, skip_closed=True, **options)
+            except redmine.RedmineAuthError:
+                raise
+            except redmine.RedmineError as error:
+                errors.append(str(error))
+                return
+            if issue is None:
+                return
+            updates, warnings = self.prepare_ti_updates(
+                client, board_id, project, statuses, linked, [(issue_id, issue)],
+                kris_options={'cache': kris_cache}, basis_options={'cache': basis_cache})
+            errors.extend(warnings)
+            failures = self.store.update_redmine_tasks(board_id, updates, sppi_project=sppi_project)
+            errors.extend(failures)
+            if not failures:
+                self.sppi_card_saved.emit(board_id)
+
+        candidates = redmine.iter_sppi_issues(
+            client, source_id, board_name, employees,
+            on_issue=lambda message: self.sppi_progress.emit(board_id, message))
+        try:
+            for issue_id, data in candidates:
+                save(issue_id, data=data)
+        except redmine.RedmineAuthError:
+            raise
+        except redmine.RedmineError as error:
+            errors.append(str(error))
+        for issue_id, task in linked.items():
+            if issue_id not in attempted and not redmine.ti_is_closed(task['status']):
+                save(issue_id)
+        return list(dict.fromkeys(errors))
+
+    def prepare_ti_updates(self, client, board_id, project, statuses, linked, issues, *, kris_options=None,
+                           basis_options=None):
+        progress, warnings = self.read_project_kris_progress(
+            client, (issue_id for issue_id, _ in issues), project, **(kris_options or {}))
+        basis_project, basis_statuses, basis_warnings = self.read_project_basis_statuses(
+            client, board_id, (issue for _, issue in issues), **(basis_options or {}))
+        updates = []
+        for issue_id, issue in issues:
+            task = linked.get(issue_id, {})
+            target = redmine.column_name(issue['status'], statuses)
+            references = redmine.with_basis_statuses(issue['issue_references'], basis_project, basis_statuses)
+            updates.append((issue_id, task.get('revision'), issue['title'], issue['status'], target,
+                            issue['tracker_name'], issue['approvals'], references,
+                            progress.get(issue_id, task.get('kris_progress'))))
+        return updates, warnings + basis_warnings
+
+    def sync_project_ti(self):
+        board_id = self.board_id
+        if not self.redmine_url:
             self.refresh()
             return
         project = self.board_items[board_id].parent().text(0)
-        board_name = self.board_items[board_id].text(0)
         snapshot = None
 
         def prepare(client, statuses):
             issues, errors = [], []
             linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
-            sppi_project = self.store.redmine_sppi_project() if scan_sppi else ''
-            if scan_sppi and not sppi_project:
-                raise ValueError('Укажите проект СППИ в настройках.')
             self.sppi_progress.emit(board_id, '')
-            issue_ids = list(linked)
-            if sppi_project:
-                issue_ids = [issue_id for issue_id, task in linked.items() if not redmine.ti_is_closed(task['status'])]
+            for issue_id in linked:
                 try:
-                    employees = installation.load_redmine_employees(self.redmine_config_base())
-                    imported = redmine.read_sppi_issue_ids(
-                        client, self.redmine_project_id(sppi_project), board_name, employees,
-                        on_issue=lambda message: self.sppi_progress.emit(board_id, message))
-                    issue_ids = list(dict.fromkeys([*issue_ids, *imported]))
-                except redmine.RedmineAuthError:
-                    raise
-                except ValueError as error:
-                    errors.append(str(error))
-            for issue_id in issue_ids:
-                try:
-                    issue = (redmine.read_issue(client, issue_id, skip_closed=True) if sppi_project
-                             else redmine.read_issue(client, issue_id))
+                    issue = redmine.read_issue(client, issue_id)
                 except redmine.RedmineAuthError:
                     raise
                 except redmine.RedmineError as error:
                     errors.append(str(error))
                     continue
-                if issue is not None:
-                    issues.append((issue_id, issue))
-            updates = []
-            if issues:
-                progress, warnings = self.read_project_kris_progress(
-                    client, (issue_id for issue_id, _ in issues), project)
-                errors.extend(warnings)
-                basis_project, basis_statuses, warnings = self.read_project_basis_statuses(
-                    client, board_id, (issue for _, issue in issues))
-                errors.extend(warnings)
-                for issue_id, issue in issues:
-                    task = linked.get(issue_id, {})
-                    target = redmine.column_name(issue['status'], statuses)
-                    references = redmine.with_basis_statuses(issue['issue_references'], basis_project, basis_statuses)
-                    updates.append((issue_id, task.get('revision'), issue['title'], issue['status'], target,
-                                    issue['tracker_name'], issue['approvals'], references,
-                                    progress.get(issue_id, task.get('kris_progress'))))
-            return updates, errors, sppi_project
+                issues.append((issue_id, issue))
+            if not issues:
+                return [], errors
+            updates, warnings = self.prepare_ti_updates(client, board_id, project, statuses, linked, issues)
+            return updates, errors + warnings
 
         def update(client, rid, statuses):
             nonlocal snapshot
-            try:
-                if snapshot is None:
-                    snapshot = prepare(client, statuses)
-                updates, errors, sppi_project = snapshot
-                if updates:
-                    return errors + self.store.update_redmine_tasks(board_id, updates, sppi_project=sppi_project, request_id=rid)
-                return errors
-            finally:
-                if scan_sppi:
-                    self.sppi_progress.emit(board_id, '')
+            if snapshot is None:
+                snapshot = prepare(client, statuses)
+            updates, errors = snapshot
+            if updates:
+                return errors + self.store.update_redmine_tasks(board_id, updates, request_id=rid)
+            return errors
 
-        message = 'Выгрузка из Redmine завершена' if scan_sppi else 'Добавленные ТИ обновлены'
-        busy = 'Выгрузка задач из Redmine…' if scan_sppi else 'Обновление ТИ по #ID…'
-        self.redmine_operation(update, message, busy_message=busy)
+        self.redmine_operation(update, 'Добавленные ТИ обновлены', busy_message='Обновление ТИ по #ID…')
 
     def add_redmine_task(self):
         if not self.redmine_url:
@@ -2847,6 +2901,9 @@ class MainWindow(QMainWindow, Async):
         self.status.setText(busy_message)
         def done(result, error):
             self.mutating = False
+            live_sppi = self.sppi_view_board is not None
+            self.sppi_view_board = None
+            self.sppi_view_dirty = False
             self.retry_button.setVisible(bool(error) and not isinstance(error, (Conflict, ValueError)))
             if error:
                 if isinstance(error, redmine.RedmineAuthError):
@@ -2857,6 +2914,8 @@ class MainWindow(QMainWindow, Async):
                     self.pending_action = None
                 if isinstance(error, Conflict):
                     self.open_task(error.current)
+                if live_sppi and not self.pending_action:
+                    self.refresh()
             else:
                 self.pending_action = None
                 if isinstance(result, dict) and 'select_board' in result:

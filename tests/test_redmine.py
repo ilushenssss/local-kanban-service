@@ -8,7 +8,7 @@ from unittest.mock import Mock, call
 from kanban.installation import load_redmine_project_id
 from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_deadline, kris_coding_lines,
                             kris_progress_text, read_basis_statuses, read_identification_cards, read_issue,
-                            read_kris_progress, read_sppi_issue_ids, status_key)
+                            iter_sppi_issues, read_kris_progress, status_key)
 
 
 class RedmineTest(unittest.TestCase):
@@ -20,7 +20,7 @@ class RedmineTest(unittest.TestCase):
             issue = Mock()
             issue.id = issue_id
             issue.raw.return_value = {'subject': 'Задача {}'.format(issue_id), 'status': {'name': status}, 'custom_fields': [
-                {'name': 'Ответственный за ТИ', 'value': responsible},
+                {'name': 'Ответственный за выпуск ТИ', 'value': responsible},
                 {'name': 'Приоритет реализации', 'value': version},
             ]}
             return issue
@@ -31,17 +31,27 @@ class RedmineTest(unittest.TestCase):
             candidate(5, '99', '9999', 'ТИ закрыто'),
             candidate(6, None, None),
         ]
-        child = candidate(7, '42', '1342')
-        child.raw.return_value['parent'] = {'id': 1}
-        client.issue.filter.return_value.append(child)
+        root_details = {task.id: task.raw.return_value for task in client.issue.filter.return_value}
+        revision = candidate(7, '42', '1342')
+        revision_data = dict(revision.raw.return_value, parent={'id': 1}, tracker={'name': 'Редакция к ТИ'})
+        root_details[1]['children'] = [
+            {'id': 7, 'tracker': {'name': 'Редакция к ТИ'}},
+            {'id': 8, 'tracker': {'name': 'Разработка'}},
+        ]
+        root_details[7] = revision_data
+        revision.raw.return_value = revision_data
+        client.issue.filter.return_value.append(revision)
+        client.issue.get.side_effect = lambda issue_id, **params: Mock(**{'raw.return_value': root_details[issue_id]})
         client.version.get.side_effect = lambda version: SimpleNamespace(
             name={1342: '2.0-218 И-01', 1343: '2.0-219 И-01'}[version])
         client.user.get.side_effect = lambda user_id: Mock(**{'raw.return_value': {
             'firstname': 'Анна', 'lastname': 'Иванова' if user_id == 42 else 'Смирнова'}})
         progress = []
-        self.assertEqual(read_sppi_issue_ids(client, 88, '2.0-218', ['Иванова Анна'], on_issue=progress.append), [1, 4])
+        accepted = iter_sppi_issues(client, 88, '2.0-218', ['Иванова Анна'], on_issue=progress.append)
+        self.assertEqual([issue_id for issue_id, _ in accepted], [1, 7, 4])
         self.assertEqual(progress, [
             '#1 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
+            '#7 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
             '#2 · Ответственный: Анна Смирнова · Версия: 2.0-218 И-01',
             '#3 · Ответственный: Анна Иванова · Версия: 2.0-219 И-01',
             '#4 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
@@ -50,6 +60,8 @@ class RedmineTest(unittest.TestCase):
         client.issue.filter.assert_called_once_with(project_id=88, status_id='*', parent_id='!*')
         self.assertEqual(client.user.get.call_args_list, [call(42), call(43)])
         self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343)])
+        self.assertNotIn(call(8, include='children'), client.issue.get.call_args_list)
+        client.issue.get.reset_mock()
 
         issues = {
             1: {'subject': 'Задача', 'status': {'name': 'Проект ТИ'},
