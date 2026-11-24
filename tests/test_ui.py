@@ -938,8 +938,10 @@ class UITest(unittest.TestCase):
         self.assertLess(last_row_bottom, viewport_height)
         self.assertEqual(current_row, len(subtasks) - 1)
         size = dialog_sizes[0]
+        available = member.screen().availableGeometry()
+        self.assertEqual(size.width(), min(1200, available.width() - 24))
         self.assertGreater(size.width(), size.height())
-        self.assertLess(size.width(), member.screen().availableGeometry().width())
+        self.assertLess(size.height(), available.height())
 
         cards = member.card_lists[1]
         cards.setCurrentItem(item)
