@@ -3,7 +3,8 @@ import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
-from .redmine import APPROVAL_COLORS, issue_label, kris_coding_deadline, kris_coding_lines, kris_progress_text, status_key
+from .redmine import (APPROVAL_COLORS, CHECK_SHEET_FIELD, issue_label, kris_coding_deadline,
+                      kris_coding_lines, kris_progress_text, status_key)
 from .theme import TOKENS, STICKERS, avatar_color
 
 EXPANDED_ROLE = Qt.UserRole + 1
@@ -304,8 +305,9 @@ class CardDelegate(QStyledItemDelegate):
             font.setBold(bold)
             painter.setFont(font)
             painter.setPen(QColor(TOKENS[color]))
-            painter.drawText(QRect(left, top, span, height), align | Qt.AlignVCenter,
-                             painter.fontMetrics().elidedText(caption, elide, span))
+            visible = painter.fontMetrics().elidedText(caption, elide, span)
+            painter.drawText(QRect(left, top, span, height), align | Qt.AlignVCenter, visible)
+            return visible
 
         def chip(caption, rect, palette=None, text_width=None):
             foreground, background = palette or (TOKENS['secondary'], TOKENS['hover'])
@@ -330,6 +332,19 @@ class CardDelegate(QStyledItemDelegate):
 
         progress = task.get('kris_progress')
         label = issue_label(task['tracker_name'], task['redmine_id'], progress)
+        answer = task['issue_references'].get('check_sheet')
+        dot_color = {'Да': 'success', 'Нет': 'danger'}.get(answer)
+
+        def heading(top, span):
+            diameter, gap = 8, 6
+            label_span = max(0, span - diameter - gap) if dot_color else span
+            visible = text(label, x, top, label_span, bold=True, color='text')
+            if dot_color:
+                left = x + painter.fontMetrics().horizontalAdvance(visible) + gap
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(QColor(TOKENS[dot_color]))
+                painter.drawEllipse(QRect(left, top + (19 - diameter) // 2, diameter, diameter))
+
         collapsible = self.parent().redmine_can_collapse(task)
         compact = self.parent().redmine_is_compact(task)
         control_width = 28 if collapsible else 0
@@ -346,7 +361,7 @@ class CardDelegate(QStyledItemDelegate):
         if compact:
             deadline = kris_coding_deadline(progress)
             deadline_width = 99 if deadline else 0
-            text(label, x, y-2, width-control_width-deadline_width, bold=True, color='text')
+            heading(y-2, width-control_width-deadline_width)
             if deadline:
                 text(deadline, x+width-control_width-deadline_width, y-2, deadline_width-4, align=Qt.AlignRight)
             painter.restore()
@@ -354,7 +369,7 @@ class CardDelegate(QStyledItemDelegate):
         responsible = task['issue_references'].get('ti_responsible', [])
         initials = ', '.join(person['initials'] for person in responsible) or '—'
         badge_width = max(26, min(62, 12 + QFontMetrics(chip_font(option.font)).horizontalAdvance(initials)))
-        text(label, x, y, width-badge_width-8-control_width, bold=True, color='text')
+        heading(y, width-badge_width-8-control_width)
         chip(initials, QRect(x+width-badge_width-control_width, y, badge_width, CHIP_HEIGHT))
         painter.setFont(redmine_title_font(option.font))
         painter.setPen(QColor(TOKENS['secondary']))
@@ -549,6 +564,10 @@ def set_card_notice(item, count):
         elif cards.redmine_can_collapse(task):
             hint = 'Пробел — свернуть карточку, Enter — открыть задачу'
         item.setData(Qt.AccessibleDescriptionRole, hint)
+    if task.get('redmine_id'):
+        answer = task['issue_references'].get('check_sheet')
+        if answer:
+            summary += f'\n{CHECK_SHEET_FIELD} {answer}'
     item.setData(Qt.AccessibleTextRole, summary)
     item.setToolTip(summary + '\n' + hint)
 

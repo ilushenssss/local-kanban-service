@@ -255,6 +255,9 @@ class RedmineTest(unittest.TestCase):
             'bugs': ['48316', '70245', '61428\t89537'],
         })
         self.assertEqual(issue_references([{'name': '№ bz', 'value': ' ,\n '}]), {'bugs': []})
+        for value, expected in [(' Да ', {'check_sheet': 'Да'}), ('НЕТ', {'check_sheet': 'Нет'}), ('', {})]:
+            with self.subTest(value=value):
+                self.assertEqual(issue_references([{'name': 'Лист проверки оформлен?', 'value': value}]), expected)
 
     def test_department_approvals_from_custom_fields(self):
         fields = [

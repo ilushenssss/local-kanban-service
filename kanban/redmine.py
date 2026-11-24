@@ -132,7 +132,10 @@ def basis_number(value):
     return match.group().upper() if match else None
 
 
-# Собирает основания и номера багов из пользовательских полей Redmine.
+CHECK_SHEET_FIELD = 'Лист проверки оформлен?'
+
+
+# Собирает данные карточки из пользовательских полей Redmine.
 def issue_references(fields):
     names = {'основание для открытия ти': 'basis', '№ bz': 'bugs'}
     references = {}
@@ -140,8 +143,16 @@ def issue_references(fields):
         if not isinstance(field, dict):
             continue
         name, value = field.get('name'), field.get('value')
-        key = names.get(status_key(name)) if isinstance(name, str) else None
-        if key and isinstance(value, str):
+        if not isinstance(name, str) or not isinstance(value, str):
+            continue
+        name = status_key(name)
+        if name == CHECK_SHEET_FIELD.casefold():
+            answer = {'да': 'Да', 'нет': 'Нет'}.get(status_key(value))
+            if answer:
+                references['check_sheet'] = answer
+            continue
+        key = names.get(name)
+        if key:
             # Запятые и переносы строк разделяют элементы. Внутренние пробелы сохраняются.
             parts = re.split(r'[,\r\n]+', value)
             references[key] = [part.strip() for part in parts if part.strip()]

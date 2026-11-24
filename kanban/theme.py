@@ -8,14 +8,14 @@ LIGHT = dict(background='#FFFFFF', canvas='#F4F5F8', sidebar='#FFFFFF',
              text='#1B1F2A', secondary='#4A5264', muted='#5E6678',
              border='#E3E6EC', field_border='#D5D9E2', accent='#122C34',
              hover='#F0F2F6', selection='#E7EFF0', selected_text='#122C34',
-             danger='#9B1C1C', danger_border='#F3C6C6',
+             danger='#9B1C1C', danger_border='#F3C6C6', success='#146C3A',
              scroll='#9AA2B4', accent_hover='#1C414B', accent_pressed='#0C2026',
              column='#E8EAF0', properties='#F7F8FA', on_accent='#FFFFFF')
 DARK = dict(background='#202b3c', canvas='#151d2b', sidebar='#111827',
             text='#edf2fa', secondary='#c3cddd', muted='#b1bfd3',
             border='#50617a', field_border='#65758c', accent='#9DC5CB',
             hover='#2c3b52', selection='#24434B', selected_text='#DCEFF1',
-            danger='#ffaba5', danger_border='#95616a',
+            danger='#ffaba5', danger_border='#95616a', success='#59a479',
             scroll='#7387a4', accent_hover='#BCDADE', accent_pressed='#DCEFF1',
             column='#263346', properties='#1b2636', on_accent='#151d2b')
 STICKERS = (

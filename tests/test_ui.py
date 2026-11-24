@@ -838,7 +838,8 @@ class UITest(unittest.TestCase):
              patch('kanban.redmine.read_issue', return_value={'title': 'Заголовок из Redmine', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-1157',
                                                            'approvals': [{'department': 'ОСП', 'status': 'Нет'}],
                                                            'issue_references': {'basis': ['СП-23578', 'ТИ(200)-0123-04'],
-                                                                                'bugs': ['48316', '70245']}}):
+                                                                                'bugs': ['48316', '70245'],
+                                                                                'check_sheet': 'Нет'}}):
             admin.new_task_button.click()
             wait_for(lambda: not admin.mutating)
             self.assertIsNone(admin.redmine_client)
@@ -854,6 +855,7 @@ class UITest(unittest.TestCase):
         self.assertIn('Основание: СП-23578', member.card_lists[0].item(0).toolTip())
         self.assertIn('ТИ(200)-0123-04: ТИ утверждено', member.card_lists[0].item(0).toolTip())
         self.assertIn('Баги: 48316, 70245', member.card_lists[0].item(0).text())
+        self.assertIn('Лист проверки оформлен? Нет', member.card_lists[0].item(0).toolTip())
         self.assertIn('КРИС ТИ: 67% (2/3)', member.card_lists[0].item(0).toolTip())
         self.assertIn('Кодирование до 03.02', member.card_lists[0].item(0).toolTip())
         self.assertTrue(member.card_lists[0].item(0).text().startswith('ТИ-1157 #23018'))
@@ -868,7 +870,7 @@ class UITest(unittest.TestCase):
                 }}, [])) as kris, patch(
                 'kanban.redmine.read_issue', return_value={'title': 'Открытая ТИ', 'status': 'ТИ открыто', 'tracker_name': 'Редакция к ТИ-1157р4',
                                                         'approvals': [{'department': 'ОСЗ', 'status': 'Да'}],
-                                                        'issue_references': {'bugs': ['61428']}}):
+                                                        'issue_references': {'bugs': ['61428'], 'check_sheet': 'Да'}}):
             admin.refresh_workspace()
             wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[1].count() == 1)
             auth.assert_not_called()
@@ -880,6 +882,7 @@ class UITest(unittest.TestCase):
         self.assertIn('Открытая ТИ', item.text())
         self.assertIn('Основание —', item.text())
         self.assertIn('Баги: 61428', item.toolTip())
+        self.assertIn('Лист проверки оформлен? Да', item.data(Qt.AccessibleTextRole))
         self.assertIn('КРИС ТИ: 100% (3/3)', item.toolTip())
         self.assertNotIn('Кодирование до 03.02', item.toolTip())
         self.assertNotIn('48316', item.text())
@@ -899,6 +902,7 @@ class UITest(unittest.TestCase):
             open_task.assert_not_called()
             self.assertLess(cards.visualItemRect(item).height(), full_height)
             self.assertIn('Кодирование до 04.02', item.toolTip())
+            self.assertIn('Лист проверки оформлен? Да', item.toolTip())
             self.assertNotIn('Баги', item.toolTip())
             member.refresh()
             wait_for(lambda: not member.loading)
@@ -1330,6 +1334,7 @@ class UITest(unittest.TestCase):
         set_card_data(item, {'redmine_id': 42, 'title': 'Задача', 'tracker_name': 'ТИ',
                              'status': 'Проект ТИ', 'approvals': [{'department': 'ОСП', 'status': 'Да'}],
                              'issue_references': {'basis': values, 'bugs': ['48316'],
+                                                  'check_sheet': 'Да',
                                                   'ti_responsible': [{'name': 'Иван Петров', 'initials': 'ИП'}]},
                              'kris_progress': {'subject': 'ТИ-1157 КРИС', 'done': 0, 'total': 0}}, 0)
         cards.show()
@@ -1347,6 +1352,8 @@ class UITest(unittest.TestCase):
         labels = {call.args[2]: call.args[:2] for call in traced.drawText.call_args_list}
         self.assertIn('Основание', labels)
         self.assertIn('ТИ-1157 КРИС', labels)
+        traced.drawEllipse.assert_called_once()
+        self.assertGreater(traced.drawEllipse.call_args.args[0].left(), labels['ТИ-1157 КРИС'][0].left())
         self.assertIn('ИП', labels)
         self.assertNotIn('Redmine', labels)
         self.assertIn('Ответственный за выпуск ТИ: Иван Петров', item.toolTip())
