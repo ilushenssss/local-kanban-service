@@ -1651,13 +1651,47 @@ class MainWindow(QMainWindow, Async):
         store = self.store
         if store is None or self.access_restricted or self.bugzilla_loading:
             return
-        value, accepted = QInputDialog.getText(self, 'Выгрузить баг из Bugzilla', 'ID бага')
-        if not accepted:
-            return
-        try:
-            number = bugzilla.bug_number(value)
-        except bugzilla.BugzillaError as error:
-            self.status.setText(error_text(error))
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Выгрузить баг из Bugzilla')
+        dialog.setMinimumWidth(370)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        bug_id, login_input, password_input = QLineEdit(), QLineEdit(), QLineEdit()
+        password_input.setEchoMode(QLineEdit.Password)
+        for label, field in (('ID бага', bug_id), ('Логин Bugzilla', login_input), ('Пароль Bugzilla', password_input)):
+            form.addRow(label, field)
+        style_form(form)
+        layout.addLayout(form)
+        error_label = QLabel()
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+
+        def validate():
+            try:
+                bugzilla.bug_number(bug_id.text())
+            except bugzilla.BugzillaError as error:
+                error_label.setText(error_text(error))
+                bug_id.setFocus()
+                return
+            if not login_input.text().strip() or not password_input.text():
+                error_label.setText('Введите логин и пароль Bugzilla.')
+                (password_input if login_input.text().strip() else login_input).setFocus()
+                return
+            dialog.accept()
+
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.button(QDialogButtonBox.Ok).setText('Выгрузить')
+        actions.button(QDialogButtonBox.Cancel).setText('Отмена')
+        actions.accepted.connect(validate)
+        actions.rejected.connect(dialog.reject)
+        layout.addWidget(actions)
+        accepted = dialog.exec_() == QDialog.Accepted
+        if accepted:
+            number = bugzilla.bug_number(bug_id.text())
+            login, password = login_input.text().strip(), password_input.text()
+        password_input.clear()
+        dialog.deleteLater()
+        if not accepted or self.access_restricted or self.store is not store:
             return
 
         def done(raw, error):
@@ -1670,9 +1704,16 @@ class MainWindow(QMainWindow, Async):
             self.status.setText(f'Баг #{number} загружен из Bugzilla')
             self.show_bugzilla_json(number, raw)
 
+        def load():
+            nonlocal password
+            try:
+                return bugzilla.read_bug(store.bugzilla_url(), number, login=login, password=password)
+            finally:
+                password = None
+
         self.bugzilla_loading = True
         self.status.setText(f'Загрузка бага #{number} из Bugzilla…')
-        self.work(lambda: bugzilla.read_bug(store.bugzilla_url(), number), done)
+        self.work(load, done)
 
     def show_bugzilla_json(self, number, raw):
         dialog = QDialog(self)

@@ -9,7 +9,8 @@ from unittest.mock import patch
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QDate, QPoint, QSettings
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QDialog, QFileDialog, QInputDialog, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QTableWidget
+from PyQt5.QtWidgets import (QApplication, QDialog, QDialogButtonBox, QFileDialog, QInputDialog, QLineEdit, QMessageBox,
+                             QPlainTextEdit, QPushButton, QScrollArea, QTableWidget)
 from kanban.store import SCHEMA_VERSION, Store
 from kanban.cards import TASK_NOTICE_ROLE
 from kanban.theme import stylesheet
@@ -798,23 +799,32 @@ class UITest(unittest.TestCase):
             window.edit_bugzilla_url()
             wait_for(lambda: self.store.bugzilla_url() == url and not window.mutating and not window.loading)
 
-        raw = '{ "bugs": [{"id": 42, "summary": "Задача"}] }\n'
+        raw = '{ "result": {"bugs": [{"id": 42, "summary": "Задача"}]}, "id": 1 }\n'
         target = Path(self.tmp.name) / 'bugzilla-42.json'
         previews = []
+        password_modes = []
 
-        def preview_dialog(dialog):
+        def run_dialog(dialog):
             preview = dialog.findChild(QPlainTextEdit)
+            if preview is None:
+                bug_id, login, password = dialog.findChildren(QLineEdit)
+                password_modes.append(password.echoMode())
+                bug_id.setText('42')
+                login.setText('tester@example.test')
+                password.setText('пример-пароля')
+                dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok).click()
+                return dialog.result()
             previews.append((preview.isReadOnly(), preview.toPlainText()))
             next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Сохранить JSON…').click()
             return QDialog.Accepted
 
-        with patch.object(QInputDialog, 'getText', return_value=('42', True)), \
-             patch.object(QFileDialog, 'getSaveFileName', return_value=(str(target), 'JSON (*.json)')), \
-             patch.object(QDialog, 'exec_', new=preview_dialog), \
+        with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(target), 'JSON (*.json)')), \
+             patch.object(QDialog, 'exec_', new=run_dialog), \
              patch('kanban.bugzilla.read_bug', return_value=raw) as fetch:
             window.export_bugzilla_bug()
             wait_for(lambda: bool(previews))
-        fetch.assert_called_once_with(url, '42')
+        fetch.assert_called_once_with(url, '42', login='tester@example.test', password='пример-пароля')
+        self.assertEqual(password_modes, [QLineEdit.Password])
         self.assertEqual(previews, [(True, raw)])
         self.assertEqual(target.read_bytes(), raw.encode('utf-8'))
 
