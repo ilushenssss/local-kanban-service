@@ -2503,7 +2503,7 @@ class MainWindow(QMainWindow, Async):
 
         self.work(lambda: self.store.redmine_tasks(task['board_id']), done)
 
-    def redmine_operation(self, operation, success):
+    def redmine_operation(self, operation, success, *, busy_message='Сохранение…'):
         if self.access_restricted or self.mutating or self.pending_action:
             self.status.setText('Дождитесь завершения текущей операции')
             return
@@ -2567,7 +2567,7 @@ class MainWindow(QMainWindow, Async):
                 # Successful authentication is reusable even when the issue cannot be imported.
                 return {'redmine_client': client, 'redmine_errors': [str(error)]}
 
-        self.mutate(apply, success)
+        self.mutate(apply, success, busy_message=busy_message)
 
     def redmine_project_id(self, project):
         return installation.load_redmine_project_id(self.redmine_config_base(), project)
@@ -2651,13 +2651,18 @@ class MainWindow(QMainWindow, Async):
         self.redmine_operation(update, 'Карточки ИД обновлены')
 
     def show_sppi_progress(self, board_id, message):
-        if self.access_restricted or board_id != self.board_id:
-            return
-        lines = []
-        if message and self.sppi_log_board == board_id:
-            lines = [line.full_text for line in self.sppi_log_lines if getattr(line, 'full_text', '')]
-        self.sppi_log_board = board_id
-        lines = [*lines, message][-4:] if message else []
+        if message:
+            if self.access_restricted or board_id != self.board_id:
+                return
+            lines = [line.full_text for line in self.sppi_log_lines
+                     if self.sppi_log_board == board_id and getattr(line, 'full_text', '')]
+            self.sppi_log_board = board_id
+            lines = [*lines, message][-len(self.sppi_log_lines):]
+        else:
+            if self.sppi_log_board != board_id:
+                return
+            self.sppi_log_board = None
+            lines = []
         for index, line in enumerate(self.sppi_log_lines):
             line.setText(lines[index] if index < len(lines) else '')
             line.setVisible(index < len(lines))
@@ -2739,15 +2744,20 @@ class MainWindow(QMainWindow, Async):
 
         def update(client, rid, statuses):
             nonlocal snapshot
-            if snapshot is None:
-                snapshot = prepare(client, statuses)
-            updates, errors, sppi_project = snapshot
-            if updates:
-                return errors + self.store.update_redmine_tasks(board_id, updates, sppi_project=sppi_project, request_id=rid)
-            return errors
+            try:
+                if snapshot is None:
+                    snapshot = prepare(client, statuses)
+                updates, errors, sppi_project = snapshot
+                if updates:
+                    return errors + self.store.update_redmine_tasks(board_id, updates, sppi_project=sppi_project, request_id=rid)
+                return errors
+            finally:
+                if scan_sppi:
+                    self.sppi_progress.emit(board_id, '')
 
         message = 'Выгрузка из Redmine завершена' if scan_sppi else 'Добавленные ТИ обновлены'
-        self.redmine_operation(update, message)
+        busy = 'Выгрузка задач из Redmine…' if scan_sppi else 'Обновление ТИ по #ID…'
+        self.redmine_operation(update, message, busy_message=busy)
 
     def add_redmine_task(self):
         if not self.redmine_url:
@@ -2796,7 +2806,7 @@ class MainWindow(QMainWindow, Async):
             return
         self.open_task({'board_id': self.board_id, 'column_id': self.columns_data[0]['id']})
 
-    def mutate(self, fn, success='Сохранено', retry=False):
+    def mutate(self, fn, success='Сохранено', retry=False, *, busy_message='Сохранение…'):
         if self.pending_action and not retry:
             self.status.setText('Результат прошлой записи неизвестен. Нажмите «Повторить запись»; новая операция пока недоступна.')
             return
@@ -2809,7 +2819,7 @@ class MainWindow(QMainWindow, Async):
         self.generation += 1
         self.mutating = True
         self.update_board_controls()
-        self.status.setText('Сохранение…')
+        self.status.setText(busy_message)
         def done(result, error):
             self.mutating = False
             self.retry_button.setVisible(bool(error) and not isinstance(error, (Conflict, ValueError)))

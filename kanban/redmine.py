@@ -226,26 +226,28 @@ def read_sppi_issue_ids(client, project_id, board, employees, *, on_issue=None):
             data = issue.raw()
             if ti_is_closed((data.get('status') or {}).get('name')):
                 continue
-            if on_issue is not None:
-                subject = ' '.join((data.get('subject') or '').split())
-                on_issue('Проверка #{}{}'.format(issue.id, ' · ' + subject if subject else ''))
             fields = custom_field_values(data)
             responsible = list(resource_ids(fields.get('ответственный за ти')))
-            if not responsible or not any(board_key in status_key(name) for name in
-                                          version_names_for(client, fields.get('приоритет реализации'), versions)):
-                continue
+            version_labels = list(dict.fromkeys(
+                version_names_for(client, fields.get('приоритет реализации'), versions)))
+            matches_employee = False
             for user_id in responsible:
                 if user_id not in people:
                     try:
                         person = client.user.get(user_id).raw()
                     except (ForbiddenError, ResourceNotFoundError):
                         person = {}
-                    first, last = person.get('firstname', ''), person.get('lastname', '')
+                    first, last = person.get('firstname') or '', person.get('lastname') or ''
                     names = (person.get('login') or '', person.get('name') or '', f'{first} {last}', f'{last} {first}')
-                    people[user_id] = any(status_key(name) in employee_keys for name in names)
-                if people[user_id]:
-                    issue_ids.append(issue.id)
-                    break
+                    label = names[2].strip() or names[1] or names[0] or '#{} (имя недоступно)'.format(user_id)
+                    people[user_id] = label, any(status_key(name) in employee_keys for name in names)
+                matches_employee |= people[user_id][1]
+            if on_issue is not None:
+                owners = ', '.join(dict.fromkeys(people[user_id][0] for user_id in responsible)) or '—'
+                names = ', '.join(version_labels) or '—'
+                on_issue('#{} · Ответственный: {} · Версия: {}'.format(issue.id, owners, names))
+            if matches_employee and any(board_key in status_key(name) for name in version_labels):
+                issue_ids.append(issue.id)
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:

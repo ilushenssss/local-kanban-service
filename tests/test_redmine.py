@@ -29,6 +29,7 @@ class RedmineTest(unittest.TestCase):
             candidate(1, ['42'], ['1342']), candidate(2, '43', ['1342']),
             candidate(3, '42', ['1343']), candidate(4, '42', '1342'),
             candidate(5, '99', '9999', 'ТИ закрыто'),
+            candidate(6, None, None),
         ]
         client.version.get.side_effect = lambda version: SimpleNamespace(
             name={1342: '2.0-218 И-01', 1343: '2.0-219 И-01'}[version])
@@ -36,7 +37,13 @@ class RedmineTest(unittest.TestCase):
             'firstname': 'Анна', 'lastname': 'Иванова' if user_id == 42 else 'Смирнова'}})
         progress = []
         self.assertEqual(read_sppi_issue_ids(client, 88, '2.0-218', ['Иванова Анна'], on_issue=progress.append), [1, 4])
-        self.assertEqual(progress, ['Проверка #{} · Задача {}'.format(i, i) for i in range(1, 5)])
+        self.assertEqual(progress, [
+            '#1 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
+            '#2 · Ответственный: Анна Смирнова · Версия: 2.0-218 И-01',
+            '#3 · Ответственный: Анна Иванова · Версия: 2.0-219 И-01',
+            '#4 · Ответственный: Анна Иванова · Версия: 2.0-218 И-01',
+            '#6 · Ответственный: — · Версия: —',
+        ])
         client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
         self.assertEqual(client.user.get.call_args_list, [call(42), call(43)])
         self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343)])

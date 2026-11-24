@@ -911,6 +911,7 @@ class UITest(unittest.TestCase):
             self.assertIn('Баги', item.toolTip())
 
     def test_current_work_refreshes_linked_ti_and_imports_sppi_with_separate_buttons(self):
+        from threading import Event
         from kanban.installation import save_folder
         base = Path(self.tmp.name)
         save_folder(base, self.store.folder)
@@ -932,9 +933,14 @@ class UITest(unittest.TestCase):
         issue = {'title': 'ТИ из СППИ', 'status': 'Проект ТИ', 'tracker_name': 'ТИ-119',
                  'approvals': [{'department': 'ОСП', 'status': 'Да'}],
                  'issue_references': {'basis': ['СП-12'], 'bugs': ['42'], 'children': subtasks}}
+        release_scan = Event()
+        scan_lines = ['#{} · Ответственный: Анна Иванова · Версия: 2.0-218 И-01'.format(issue_id)
+                      for issue_id in range(115, 120)]
+
         def scan(client, project_id, board_name, employees, *, on_issue):
-            for issue_id in range(115, 120):
-                on_issue('Проверка #{}'.format(issue_id))
+            for line in scan_lines:
+                on_issue(line)
+            release_scan.wait(8)
             return [119]
 
         with patch('kanban.redmine.read_sppi_issue_ids', side_effect=scan) as discover, \
@@ -951,13 +957,20 @@ class UITest(unittest.TestCase):
             fetch.reset_mock()
 
             window.import_sppi_button.click()
+            try:
+                self.assertEqual(window.status.text(), 'Выгрузка задач из Redmine…')
+                wait_for(lambda: getattr(window.sppi_log_lines[-1], 'full_text', '') == scan_lines[-1])
+                self.assertTrue(window.sppi_log.isVisible())
+                self.assertEqual([line.full_text for line in window.sppi_log_lines], scan_lines[-4:])
+                self.assertIn('Ответственный', window.sppi_log_lines[-1].text())
+            finally:
+                release_scan.set()
             wait_for(lambda: not window.mutating and not window.loading and window.card_lists[0].count() == 2)
             self.assertEqual(discover.call_args.args, (window.redmine_client, 88, '2.0-218', ['Иванова Анна']))
             self.assertEqual([(args[1], kwargs['skip_closed']) for args, kwargs in fetch.call_args_list],
                              [(118, True), (119, True)])
-        self.assertTrue(window.sppi_log.isVisible())
-        self.assertEqual([line.full_text for line in window.sppi_log_lines],
-                         ['Проверка #{}'.format(i) for i in range(116, 120)])
+        self.assertFalse(window.sppi_log.isVisible())
+        self.assertTrue(all(not line.full_text for line in window.sppi_log_lines))
         item = window.card_lists[0].item(1)
         self.assertIn('Основание: СП-12', item.toolTip())
         self.assertIn('ОСП: Да', item.toolTip())
