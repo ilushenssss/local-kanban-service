@@ -5,14 +5,14 @@ import json
 from pathlib import Path
 import tempfile
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone, QSignalBlocker
+from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone, QSignalBlocker, QSaveFile, QIODevice
 from PyQt5.QtGui import QDesktopServices, QDrag, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QComboBox,
+    QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
 from .store import Store, Conflict, AccessRestricted, DatabaseTooNew
-from . import installation, redmine
+from . import bugzilla, installation, redmine
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
@@ -1219,6 +1219,7 @@ class MainWindow(QMainWindow, Async):
         self.redmine_url = redmine_url
         self.redmine_statuses = {redmine.status_key(k): v.strip() for k, v in (redmine_statuses or {}).items()}
         self.redmine_client = None
+        self.bugzilla_loading = False
         self.redmine_refresh_message = ''
         self.sppi_view_board = None
         self.sppi_view_dirty = False
@@ -1583,8 +1584,10 @@ class MainWindow(QMainWindow, Async):
         for action in menu.actions():
             text = action.text()
             if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…', 'Проект поиска оснований…',
-                        'Проект СППИ…'):
+                        'Проект СППИ…', 'Адрес Bugzilla…'):
                 action.setEnabled(permissions.get('admin', False))
+            elif text == 'Выгрузить баг из Bugzilla…':
+                action.setEnabled(self.store is not None and not self.access_restricted and not self.bugzilla_loading)
             elif text == 'Подключение…':
                 action.setEnabled((self.store is None and self.installation_base is not None)
                                   or permissions.get('admin', False))
@@ -1617,11 +1620,94 @@ class MainWindow(QMainWindow, Async):
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh_workspace)
         menu.addAction('Подключение…', self.open_connection_settings)
+        menu.addAction('Адрес Bugzilla…', self.edit_bugzilla_url)
+        menu.addAction('Выгрузить баг из Bugzilla…', self.export_bugzilla_bug)
         self.notifications.add_settings(menu)
         menu.addAction('Часовой пояс…', self.change_timezone)
         menu.addAction('Резервная копия', self.backup)
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
+
+    def edit_bugzilla_url(self):
+        store = self.store
+        if store is None or not getattr(self, 'permissions', {}).get('admin', False):
+            return
+
+        def done(url, error):
+            if error:
+                self.status.setText(error_text(error))
+                return
+            if self.access_restricted or self.store is not store:
+                return
+            value, accepted = QInputDialog.getText(
+                self, 'Адрес Bugzilla', 'Базовый адрес сервера Bugzilla', text=url)
+            value = value.strip().rstrip('/')
+            if accepted and value != url:
+                self.mutate(lambda rid: store.set_bugzilla_url(value, rid), 'Адрес Bugzilla сохранён')
+
+        self.work(store.bugzilla_url, done)
+
+    def export_bugzilla_bug(self):
+        store = self.store
+        if store is None or self.access_restricted or self.bugzilla_loading:
+            return
+        value, accepted = QInputDialog.getText(self, 'Выгрузить баг из Bugzilla', 'ID бага')
+        if not accepted:
+            return
+        try:
+            number = bugzilla.bug_number(value)
+        except bugzilla.BugzillaError as error:
+            self.status.setText(error_text(error))
+            return
+
+        def done(raw, error):
+            self.bugzilla_loading = False
+            if self.access_restricted or self.store is not store:
+                return
+            if error:
+                self.status.setText(error_text(error))
+                return
+            self.status.setText(f'Баг #{number} загружен из Bugzilla')
+            self.show_bugzilla_json(number, raw)
+
+        self.bugzilla_loading = True
+        self.status.setText(f'Загрузка бага #{number} из Bugzilla…')
+        self.work(lambda: bugzilla.read_bug(store.bugzilla_url(), number), done)
+
+    def show_bugzilla_json(self, number, raw):
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f'Баг #{number} · Bugzilla')
+        dialog.resize(760, 460)
+        layout = QVBoxLayout(dialog)
+        preview = QPlainTextEdit()
+        preview.setReadOnly(True)
+        preview.setLineWrapMode(QPlainTextEdit.NoWrap)
+        preview.setAccessibleName('Ответ Bugzilla в формате JSON')
+        preview.setPlainText(raw)
+        layout.addWidget(preview)
+        status = QLabel()
+        status.setWordWrap(True)
+        layout.addWidget(status)
+
+        def save():
+            path, _ = QFileDialog.getSaveFileName(dialog, 'Сохранить ответ Bugzilla',
+                                                  f'bugzilla-{number}.json', 'JSON (*.json)')
+            if not path or self.access_restricted:
+                return
+            content = raw.encode('utf-8')
+            output = QSaveFile(path)
+            if not output.open(QIODevice.WriteOnly) or output.write(content) != len(content) or not output.commit():
+                status.setText('Не удалось сохранить JSON. Проверьте доступ к выбранной папке.')
+            else:
+                status.setText('JSON сохранён')
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        button('Сохранить JSON…', save, actions, 'primary')
+        button('Закрыть', dialog.accept, actions)
+        layout.addLayout(actions)
+        dialog.exec_()
+        dialog.deleteLater()
 
     def open_connection_settings(self):
         if self.loading or self.mutating or self.pending_action:

@@ -9,7 +9,7 @@ from unittest.mock import patch
 from PyQt5 import sip
 from PyQt5.QtCore import Qt, QDate, QPoint, QSettings
 from PyQt5.QtTest import QTest
-from PyQt5.QtWidgets import QApplication, QDialog, QMessageBox, QScrollArea, QTableWidget
+from PyQt5.QtWidgets import QApplication, QDialog, QFileDialog, QInputDialog, QMessageBox, QPlainTextEdit, QPushButton, QScrollArea, QTableWidget
 from kanban.store import SCHEMA_VERSION, Store
 from kanban.cards import TASK_NOTICE_ROLE
 from kanban.theme import stylesheet
@@ -786,6 +786,37 @@ class UITest(unittest.TestCase):
         wait_for(lambda: not colleague.loading)
         self.assertEqual(colleague.redmine_url, 'http://new-redmine.example.test')
         self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
+
+    def test_bugzilla_export_saves_the_original_response(self):
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
+            window = MainWindow(str(self.store.folder))
+            self.windows.append(window)
+            window.show()
+            wait_for(lambda: not window.loading and window.store is not None)
+        url = 'https://bugs.example.test/bugzilla'
+        with patch.object(QInputDialog, 'getText', return_value=(url, True)):
+            window.edit_bugzilla_url()
+            wait_for(lambda: self.store.bugzilla_url() == url and not window.mutating and not window.loading)
+
+        raw = '{ "bugs": [{"id": 42, "summary": "Задача"}] }\n'
+        target = Path(self.tmp.name) / 'bugzilla-42.json'
+        previews = []
+
+        def preview_dialog(dialog):
+            preview = dialog.findChild(QPlainTextEdit)
+            previews.append((preview.isReadOnly(), preview.toPlainText()))
+            next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Сохранить JSON…').click()
+            return QDialog.Accepted
+
+        with patch.object(QInputDialog, 'getText', return_value=('42', True)), \
+             patch.object(QFileDialog, 'getSaveFileName', return_value=(str(target), 'JSON (*.json)')), \
+             patch.object(QDialog, 'exec_', new=preview_dialog), \
+             patch('kanban.bugzilla.read_bug', return_value=raw) as fetch:
+            window.export_bugzilla_bug()
+            wait_for(lambda: bool(previews))
+        fetch.assert_called_once_with(url, '42')
+        self.assertEqual(previews, [(True, raw)])
+        self.assertEqual(target.read_bytes(), raw.encode('utf-8'))
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu

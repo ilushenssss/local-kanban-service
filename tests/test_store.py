@@ -42,6 +42,18 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(settings, {'url': 'https://redmine.example.test', 'statuses': {'новый': 'Проект ТИ'}})
         self.assertEqual(member.redmine_settings(), settings)
 
+    def test_only_admin_can_change_shared_bugzilla_url(self):
+        member = Store(self.s.folder, 'bob')
+        self.assertEqual(member.bugzilla_url(), '')
+        with self.assertRaises(AccessDenied):
+            member.set_bugzilla_url('https://bugs.example.test')
+        with self.assertRaises(ValueError):
+            self.s.set_bugzilla_url('https://login:secret@bugs.example.test')
+        self.s.set_bugzilla_url(' https://bugs.example.test/bugzilla/ ')
+        self.assertEqual(member.bugzilla_url(), 'https://bugs.example.test/bugzilla')
+        self.s.set_bugzilla_url('')
+        self.assertEqual(member.bugzilla_url(), '')
+
     def test_shared_redmine_cards_and_status_updates(self):
         board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
         member = Store(self.s.folder, 'bob')

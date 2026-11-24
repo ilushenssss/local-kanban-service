@@ -12,6 +12,7 @@ import sqlite3
 import time
 import uuid
 
+from . import bugzilla
 from .redmine import TI_NUMBER, basis_number, issue_label, status_key, ti_sort_key, validate_url
 
 
@@ -341,7 +342,7 @@ class Store:
     def authorize_write(self, c, operation, payload):
         self.actor(c)
         if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings', 'redmine_basis_project',
-                         'redmine_sppi_project'):
+                         'redmine_sppi_project', 'bugzilla_url'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -391,6 +392,23 @@ class Store:
             return settings
 
         return self.write('redmine_settings', settings, apply)
+
+    def bugzilla_url(self):
+        with self.connection() as c:
+            self.actor(c)
+            row = c.execute("SELECT value FROM settings WHERE key='bugzilla_url'").fetchone()
+            return row[0] if row else ''
+
+    def set_bugzilla_url(self, url, request_id=None):
+        url = url.strip().rstrip('/')
+        if url:
+            bugzilla.parse_url(url)
+
+        def apply(c, uid):
+            c.execute("INSERT OR REPLACE INTO settings VALUES('bugzilla_url',?)", (url,))
+            return url
+
+        return self.write('bugzilla_url', url, apply, request_id)
 
     @staticmethod
     def redmine_basis_project_in(c, board_id):
