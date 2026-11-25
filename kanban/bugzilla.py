@@ -5,7 +5,9 @@ from datetime import datetime
 from gzip import GzipFile
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
 import json
+import os
 import re
+from tempfile import NamedTemporaryFile
 from urllib.parse import quote, urlsplit
 from xml.parsers.expat import ExpatError
 from xmlrpc import client
@@ -72,6 +74,32 @@ def board_card(raw, number, employees):
         if isinstance(bug, dict) and str(bug.get('id')) == number and matches_employee(bug, names):
             return card_fields(bug)
     return None
+
+
+def load_board_cache(path):
+    try:
+        cards = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(cards, dict):
+        return {}
+    return {number: card_fields(card) for number, card in cards.items()
+            if number.isascii() and number.isdecimal() and isinstance(card, dict)
+            and str(card.get('id')).lstrip('0') == number}
+
+
+def save_board_cache(path, cards):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = None
+    try:
+        with NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as stream:
+            temporary = stream.name
+            json.dump(cards, stream, ensure_ascii=False, default=xml_value_to_json)
+        os.replace(temporary, path)
+        temporary = None
+    finally:
+        if temporary is not None:
+            os.unlink(temporary)
 
 
 def xml_value_to_json(value):
@@ -169,6 +197,28 @@ def search_board_bugs(url, project, board, employees, *, login, password):
                         and board_key in str(bug.get('version') or '').casefold() and matches_employee(bug, names)):
                     cards[bug_number(bug['id'])] = card_fields(bug)
     return dict(sorted(cards.items(), key=lambda item: (len(item[0]), item[0])))
+
+
+def refresh_board_bugs(url, numbers, employees, *, login, password):
+    parts = parse_url(url)
+    names = employee_names(employees)
+    numbers = list(dict.fromkeys(bug_number(number) for number in numbers))
+    cards = {}
+    for offset in range(0, len(numbers), 100):
+        batch = numbers[offset:offset + 100]
+        params = {'ids': batch, 'permissive': True,
+                  'include_fields': ['id', 'assigned_to', 'summary', 'cf_event_1', 'cf_cr_num']}
+        response = xml_request(parts, 'Bug.get', params, login, password)
+        for fault in response.get('faults', []):
+            code = fault.get('faultCode')
+            if code not in (100, 101, 102):
+                raise BugzillaError('Bugzilla не смогла обновить часть сохранённых багов.')
+        requested = set(batch)
+        for bug in response_list(response, 'bugs'):
+            number = bug_number(bug['id'])
+            if number in requested and matches_employee(bug, names):
+                cards[number] = card_fields(bug)
+    return cards
 
 
 def read_bug(url, bug_id, *, login=None, password=None):

@@ -23,10 +23,7 @@ def is_approved(card):
     return status_key(card['status']) == 'ти утверждено'
 
 
-class IdentificationCard(QStyledItemDelegate):
-    minimum_height = 129
-    links_top = 89
-
+class ProjectCardDelegate(QStyledItemDelegate):
     @staticmethod
     def body_font(option):
         font = QFont(option.font)
@@ -34,31 +31,26 @@ class IdentificationCard(QStyledItemDelegate):
         font.setBold(False)
         return font
 
-    def links_document(self, option, links, width):
+    def heading_font(self, option):
+        font = self.body_font(option)
+        font.setPixelSize(15)
+        font.setBold(True)
+        return font
+
+    def body_document(self, option, lines, width):
         document = QTextDocument()
         document.setDocumentMargin(0)
         document.setDefaultFont(self.body_font(option))
         text_option = QTextOption()
         text_option.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
         document.setDefaultTextOption(text_option)
-        document.setPlainText('\n'.join(links))
+        document.setPlainText('\n'.join(lines))
         document.setTextWidth(width)
         return document
 
-    def sizeHint(self, option, index):
-        links = (index.data(Qt.UserRole) or {}).get('links')
-        height = self.minimum_height
-        if links:
-            view = self.parent()
-            width = max(1, view.viewport().width() - 2 * view.spacing() - 28)
-            document = self.links_document(option, links, width)
-            height = max(height, self.links_top + ceil(document.size().height()) + 12)
-        return QSize(0, height)
-
-    def paint(self, painter, option, index):
-        card = index.data(Qt.UserRole)
+    @staticmethod
+    def paint_surface(painter, option, positive):
         box = option.rect.adjusted(2, 2, -2, -2)
-        painter.save()
         painter.setRenderHint(painter.Antialiasing)
         focused = option.state & (QStyle.State_Selected | QStyle.State_HasFocus)
         painter.setPen(QColor(TOKENS['accent' if focused else 'border']))
@@ -68,14 +60,33 @@ class IdentificationCard(QStyledItemDelegate):
         outline.addRoundedRect(QRectF(box), 9, 9)
         painter.save()
         painter.setClipPath(outline, Qt.IntersectClip)
-        stripe = QColor('#59a479' if is_approved(card) else TOKENS['danger'])
+        stripe = QColor('#59a479' if positive else TOKENS['danger'])
         painter.fillRect(QRect(box.x(), box.y(), box.width(), 4), stripe)
         painter.restore()
+        return box
+
+
+class IdentificationCard(ProjectCardDelegate):
+    minimum_height = 129
+    links_top = 89
+
+    def sizeHint(self, option, index):
+        links = (index.data(Qt.UserRole) or {}).get('links')
+        height = self.minimum_height
+        if links:
+            view = self.parent()
+            width = max(1, view.viewport().width() - 2 * view.spacing() - 28)
+            document = self.body_document(option, links, width)
+            height = max(height, self.links_top + ceil(document.size().height()) + 12)
+        return QSize(0, height)
+
+    def paint(self, painter, option, index):
+        card = index.data(Qt.UserRole)
+        painter.save()
+        box = self.paint_surface(painter, option, is_approved(card))
         left, top, width = box.x() + 12, box.y() + 8, box.width() - 24
         body_font = self.body_font(option)
-        heading_font = QFont(body_font)
-        heading_font.setPixelSize(15)
-        heading_font.setBold(True)
+        heading_font = self.heading_font(option)
         body_metrics = QFontMetrics(body_font)
 
         def text(value, x, y, span, color, bold=False, align=Qt.AlignLeft):
@@ -102,7 +113,7 @@ class IdentificationCard(QStyledItemDelegate):
         colors = {'да': green, 'нет': red}.get(key, (TOKENS['secondary'], TOKENS['hover']))
         badge(approval, left + 90, top + 30, width - 90, colors)
         if card['links']:
-            document = self.links_document(option, card['links'], width)
+            document = self.body_document(option, card['links'], width)
             context = QAbstractTextDocumentLayout.PaintContext()
             context.palette.setColor(QPalette.Text, QColor(TOKENS['text']))
             painter.translate(left, option.rect.y() + self.links_top)
@@ -110,6 +121,30 @@ class IdentificationCard(QStyledItemDelegate):
         else:
             badge('Не привязано', left, top + 60, width, red)
         painter.restore()
+
+
+def project_card_column(title, delegate, minimum_width=240):
+    panel = QWidget()
+    panel.setObjectName('ColumnPanel')
+    panel.setAttribute(Qt.WA_StyledBackground)
+    panel.setMinimumWidth(minimum_width)
+    stack = QVBoxLayout(panel)
+    stack.setContentsMargins(4, 4, 4, 4)
+    stack.setSpacing(0)
+    heading = QLabel(title)
+    heading.setObjectName('ColumnTitle')
+    heading.setWordWrap(True)
+    heading.setMinimumHeight(64)
+    stack.addWidget(heading)
+    cards = QListWidget()
+    cards.setObjectName('Cards')
+    cards.setAccessibleName(title)
+    cards.setResizeMode(QListView.Adjust)
+    cards.setSpacing(10)
+    cards.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+    cards.setItemDelegate(delegate(cards))
+    stack.addWidget(cards, 1)
+    return panel, cards
 
 
 class IdentificationPage(QWidget):
@@ -139,26 +174,7 @@ class IdentificationPage(QWidget):
         columns.setSpacing(18)
         self.columns = []
         for title in COLUMN_TITLES:
-            panel = QWidget()
-            panel.setObjectName('ColumnPanel')
-            panel.setAttribute(Qt.WA_StyledBackground)
-            panel.setMinimumWidth(240)
-            stack = QVBoxLayout(panel)
-            stack.setContentsMargins(4, 4, 4, 4)
-            stack.setSpacing(0)
-            heading = QLabel(title)
-            heading.setObjectName('ColumnTitle')
-            heading.setWordWrap(True)
-            heading.setMinimumHeight(64)
-            stack.addWidget(heading)
-            cards = QListWidget()
-            cards.setObjectName('Cards')
-            cards.setAccessibleName(title)
-            cards.setResizeMode(QListView.Adjust)
-            cards.setSpacing(10)
-            cards.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-            cards.setItemDelegate(IdentificationCard(cards))
-            stack.addWidget(cards, 1)
+            panel, cards = project_card_column(title, IdentificationCard)
             columns.addWidget(panel, 1)
             self.columns.append(cards)
         self.scroll.setWidget(canvas)

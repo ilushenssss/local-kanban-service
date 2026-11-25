@@ -1,11 +1,12 @@
 import copy
 import datetime as dt
 import getpass
+import hashlib
 import json
 from pathlib import Path
 import tempfile
 import uuid
-from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone, QSignalBlocker, QSaveFile, QIODevice
+from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone, QSignalBlocker, QSaveFile, QIODevice, QStandardPaths
 from PyQt5.QtGui import QDesktopServices, QDrag, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QComboBox,
@@ -1413,7 +1414,8 @@ class MainWindow(QMainWindow, Async):
         self.project_sections.addTab(current_work, 'Текущие работы')
         self.identification_page = IdentificationPage(self.refresh_identification)
         self.project_sections.addTab(self.identification_page, 'ИД')
-        self.bugzilla_page = BugzillaPage(self.export_bugzilla_bug, lambda: self.export_bugzilla_bug(bulk=True))
+        self.bugzilla_page = BugzillaPage(self.export_bugzilla_bug, lambda: self.export_bugzilla_bug(mode='bulk'),
+                                         lambda: self.export_bugzilla_bug(mode='refresh'))
         self.project_sections.addTab(self.bugzilla_page, 'Баги')
         self.project_sections.currentChanged.connect(self.project_section_changed)
         content = QVBoxLayout(current_work)
@@ -1629,12 +1631,12 @@ class MainWindow(QMainWindow, Async):
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
 
-    def export_bugzilla_bug(self, *, bulk=False):
+    def export_bugzilla_bug(self, *, mode='single'):
         store = self.store
         if store is None or self.access_restricted or self.bugzilla_loading:
             return
         board_id = self.project_sections_board if self.project_sections_board == self.board_id else None
-        if bulk:
+        if mode != 'single':
             node = self.board_items.get(board_id)
             if node is None:
                 return
@@ -1643,13 +1645,16 @@ class MainWindow(QMainWindow, Async):
         if not config['url'] or not config['domain']:
             self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
             return
+        numbers = tuple(self.bugzilla_cards.get(board_id, ()))
+        if mode == 'refresh' and not numbers:
+            return
         source_login = self.redmine_login or store.login
         username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
         login = f"{username}@{config['domain']}"
         scope = (config['url'], login)
         session = self.bugzilla_session
         password = session[2] if session and session[:2] == scope else None
-        export = self.prompt_bugzilla_export(login, password, bulk)
+        export = self.prompt_bugzilla_export(login, password, mode)
         if export is None or self.access_restricted or self.store is not store:
             return
         number, password = export
@@ -1669,16 +1674,18 @@ class MainWindow(QMainWindow, Async):
                 self.status.setText(error_text(error))
                 return
             self.bugzilla_session = (*scope, used_password)
-            if bulk:
+            if mode != 'single':
                 current = self.board_items.get(board_id)
                 if current is not None and (current.parent().text(0), current.text(0)) == (project, board):
-                    self.bugzilla_cards[board_id] = result
+                    cache_error = self.save_bugzilla_cards(board_id, result)
                     self.render_bugzilla_cards()
-                    self.status.setText(f'Выгружено багов из Bugzilla: {len(result)}')
+                    verb = 'Обновлено' if mode == 'refresh' else 'Выгружено'
+                    self.status.setText(cache_error or f'{verb} багов из Bugzilla: {len(result)}')
                 return
             raw, card, filter_error = result
             notice = filter_error
             if board_id in self.board_items and not filter_error:
+                self.load_bugzilla_cards(board_id)
                 cards = self.bugzilla_cards.setdefault(board_id, {})
                 if card is not None:
                     cards[number] = card
@@ -1686,6 +1693,9 @@ class MainWindow(QMainWindow, Async):
                 else:
                     cards.pop(number, None)
                     notice = 'Баг не добавлен на доску. Исполнитель не совпадает со списком employees.json.'
+                cache_error = self.save_bugzilla_cards(board_id, cards)
+                if cache_error:
+                    notice += '\n' + cache_error
                 self.render_bugzilla_cards()
             self.status.setText(f'Баг #{number} загружен из Bugzilla')
             self.show_bugzilla_json(number, raw, notice)
@@ -1693,8 +1703,10 @@ class MainWindow(QMainWindow, Async):
         def load():
             if store.bugzilla_settings() != config:
                 raise bugzilla.BugzillaError('Настройки Bugzilla изменились. Обновите TeamSync и повторите выгрузку.')
-            if bulk:
+            if mode != 'single':
                 employees = installation.load_redmine_employees(self.redmine_config_base())
+                if mode == 'refresh':
+                    return bugzilla.refresh_board_bugs(scope[0], numbers, employees, login=login, password=password)
                 return bugzilla.search_board_bugs(scope[0], project, board, employees, login=login, password=password)
             raw = bugzilla.read_bug(scope[0], number, login=login, password=password)
             if board_id is None:
@@ -1707,18 +1719,19 @@ class MainWindow(QMainWindow, Async):
 
         self.bugzilla_loading = True
         self.bugzilla_page.set_loading(True)
-        self.status.setText('Выгрузка багов из Bugzilla…' if bulk else f'Загрузка бага #{number} из Bugzilla…')
+        self.status.setText('Запрос к Bugzilla…' if mode != 'single' else f'Загрузка бага #{number} из Bugzilla…')
         self.work(load, done)
 
-    def prompt_bugzilla_export(self, login, password, bulk):
-        if bulk and password is not None:
+    def prompt_bugzilla_export(self, login, password, mode):
+        if mode != 'single' and password is not None:
             return None, password
         dialog = QDialog(self)
-        dialog.setWindowTitle('Выгрузить баги по фильтрам' if bulk else 'Выгрузить баг из Bugzilla')
+        dialog.setWindowTitle({'single': 'Выгрузить баг из Bugzilla', 'bulk': 'Выгрузить баги по фильтрам',
+                               'refresh': 'Обновить сохранённые баги'}[mode])
         dialog.setMinimumWidth(370)
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
-        bug_id = None if bulk else QLineEdit()
+        bug_id = QLineEdit() if mode == 'single' else None
         if bug_id is not None:
             form.addRow('ID бага', bug_id)
         login_label = QLabel(login)
@@ -1750,7 +1763,7 @@ class MainWindow(QMainWindow, Async):
             dialog.accept()
 
         actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        actions.button(QDialogButtonBox.Ok).setText('Выгрузить')
+        actions.button(QDialogButtonBox.Ok).setText('Обновить' if mode == 'refresh' else 'Выгрузить')
         actions.button(QDialogButtonBox.Cancel).setText('Отмена')
         actions.accepted.connect(validate)
         actions.rejected.connect(dialog.reject)
@@ -1767,8 +1780,35 @@ class MainWindow(QMainWindow, Async):
 
     def render_bugzilla_cards(self):
         board_id = self.project_sections_board
-        cards = self.bugzilla_cards.get(board_id, {})
+        cards = self.load_bugzilla_cards(board_id)
         self.bugzilla_page.show_cards(cards.values(), self.bugzilla_links.get(board_id, ()))
+
+    def bugzilla_cache_path(self, board_id):
+        local = QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)
+        if not local:
+            return None
+        scope = json.dumps([str(self.store.folder), self.store.login, self.bugzilla_config, board_id], sort_keys=True)
+        key = hashlib.sha256(scope.encode('utf-8')).hexdigest()
+        return Path(local) / 'TeamSync' / 'bugzilla' / f'{key}.json'
+
+    def load_bugzilla_cards(self, board_id):
+        if self.access_restricted or self.store is None or board_id is None or not self.bugzilla_config['url']:
+            return {}
+        if board_id not in self.bugzilla_cards:
+            path = self.bugzilla_cache_path(board_id)
+            self.bugzilla_cards[board_id] = bugzilla.load_board_cache(path) if path else {}
+        return self.bugzilla_cards[board_id]
+
+    def save_bugzilla_cards(self, board_id, cards):
+        self.bugzilla_cards[board_id] = cards
+        try:
+            path = self.bugzilla_cache_path(board_id)
+            if path is None:
+                raise OSError
+            bugzilla.save_board_cache(path, cards)
+        except OSError:
+            return 'Не удалось сохранить карточки Bugzilla на этом компьютере.'
+        return ''
 
     def reset_bugzilla_session(self):
         self.bugzilla_session = None
@@ -2213,6 +2253,7 @@ class MainWindow(QMainWindow, Async):
             self.statusBar().show()
         else:
             self.statusBar().hide()
+            self.render_bugzilla_cards()
             visible = {self.board_tabs.tabData(i) for i in range(self.board_tabs.count())}
             for dialog in self.hidden_task_dialogs & self.dialogs:
                 if dialog.data['board_id'] in visible:
@@ -3447,5 +3488,6 @@ class MainWindow(QMainWindow, Async):
         self.notifications.shutdown()
         self.redmine_client = None
         self.redmine_login = None
-        self.reset_bugzilla_session()
+        self.bugzilla_session = None
+        self.bugzilla_cards.clear()
         event.accept()

@@ -787,11 +787,13 @@ class UITest(unittest.TestCase):
         self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
 
     def test_bugzilla_export_saves_the_json_response(self):
-        from PyQt5.QtWidgets import QLabel, QWidget
         from kanban.bugzilla import BugzillaAuthError
         from kanban.installation import save_folder
 
         base = Path(self.tmp.name)
+        locations = patch('kanban.ui.QStandardPaths.writableLocation', return_value=str(base))
+        locations.start()
+        self.addCleanup(locations.stop)
         save_folder(base, self.store.folder)
         (base / 'employees.json').write_text('["anna"]', encoding='utf-8')
         board = self.store.board_action('Разработка / Версия 1')
@@ -880,13 +882,12 @@ class UITest(unittest.TestCase):
         wait_for(lambda: '42' in window.bugzilla_page.linked)
 
         def column_labels(name):
-            panel = next(panel for panel in window.bugzilla_page.scroll.widget().findChildren(QWidget, 'ColumnPanel')
-                         if panel.accessibleName() == name)
-            return {label.text() for label in panel.findChildren(QLabel)}
+            column = next(column for column in window.bugzilla_page.columns if column.accessibleName() == name)
+            return '\n'.join(column.item(i).data(Qt.AccessibleTextRole) for i in range(column.count())).splitlines()
 
         self.assertIn('#4', column_labels('Не привязаны'))
         self.assertNotIn('#42', column_labels('Не привязаны'))
-        self.assertTrue({'#42', 'Дальнейшее действие', 'ТИ', 'КР-1'} <= column_labels('Привязаны'))
+        self.assertTrue({'#42', 'Дальнейшее действие — Событие', 'ТИ — КР-1'} <= set(column_labels('Привязаны')))
         self.store.link_redmine_issue(board, 27002, 'ТИ с другим багом', column, column,
                                       issue_references={'bugs': ['4']})
         window.refresh()
@@ -896,6 +897,31 @@ class UITest(unittest.TestCase):
         wait_for(lambda: not window.loading and window.project_sections_board == other)
         window.project_sections.setCurrentWidget(window.bugzilla_page)
         self.assertEqual(window.bugzilla_page.snapshot, ())
+        self.assertFalse(window.bugzilla_page.refresh_button.isEnabled())
+        cache = window.bugzilla_cache_path(board)
+        self.assertTrue(cache.is_file())
+        self.assertNotIn('пример-пароля'.encode(), cache.read_bytes())
+        window.close()
+
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
+            reopened = MainWindow(None, installation_base=base)
+            self.windows.append(reopened)
+            reopened.show()
+            wait_for(lambda: not reopened.loading and board in reopened.board_items)
+        reopened.select_tree_board(reopened.board_items[board], 0)
+        wait_for(lambda: not reopened.loading and reopened.project_sections_board == board)
+        reopened.project_sections.setCurrentWidget(reopened.bugzilla_page)
+        self.assertEqual(reopened.bugzilla_page.snapshot, tuple(bulk.values()))
+        self.assertIsNone(reopened.bugzilla_session)
+
+        updated = {'42': dict(bulk['42'], summary='Обновлённый заголовок')}
+        with patch.object(reopened, 'prompt_bugzilla_export', return_value=(None, 'пример-пароля')) as prompt, \
+             patch('kanban.bugzilla.refresh_board_bugs', return_value=updated) as refresh:
+            reopened.bugzilla_page.refresh_button.click()
+            wait_for(lambda: not reopened.bugzilla_loading)
+        prompt.assert_called_once_with('tester@example.test', None, 'refresh')
+        refresh.assert_called_once_with(url, ('42', '4'), ['anna'], login='tester@example.test', password='пример-пароля')
+        self.assertEqual(reopened.bugzilla_page.snapshot, tuple(updated.values()))
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu

@@ -10,6 +10,22 @@ from kanban import bugzilla
 
 
 class BugzillaTest(unittest.TestCase):
+    @patch('kanban.bugzilla.xml_request')
+    def test_refresh_requests_only_saved_ids_and_filters_response(self, request):
+        request.return_value = {'bugs': [
+            {'id': 42, 'summary': 'Обновлённый заголовок', 'assigned_to': 'Anna@example.test'},
+            {'id': 7, 'assigned_to': 'other@example.test'},
+            {'id': 142, 'assigned_to': 'anna@example.test'},
+        ], 'faults': [{'id': '9', 'faultCode': 102}]}
+        cards = bugzilla.refresh_board_bugs('https://bugs.example.test', ['42', '7', '9'], ['anna'],
+                                           login='user@example.test', password='sample')
+        self.assertEqual(cards, {'42': {'id': 42, 'summary': 'Обновлённый заголовок',
+                                        'cf_event_1': None, 'cf_cr_num': None}})
+        args = request.call_args.args
+        self.assertEqual(args[1], 'Bug.get')
+        self.assertEqual(args[2]['ids'], ['42', '7', '9'])
+        self.assertTrue(args[2]['permissive'])
+
     def test_board_card_matches_employee_substring_and_keeps_only_selected_fields(self):
         raw = json.dumps({'bugs': [
             {'id': 41, 'assigned_to': 'anna@example.test'},

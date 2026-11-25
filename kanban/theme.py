@@ -97,7 +97,6 @@ QLabel#SectionTitle, QLabel#ColumnTitle { font-size: 14px; font-weight: 600; }
 QLabel#Muted, QLabel#muted, QLabel#Status, QLabel#hint { color: %(muted)s; }
 QLabel#fieldLabel { font-weight: 600; }
 QWidget#ColumnPanel { background: %(hover)s; border: 1px solid %(border)s; border-radius: 8px; }
-QWidget#BugzillaCard { background: %(background)s; border: 1px solid %(border)s; border-radius: 8px; }
 QWidget#ColumnPanel QLabel { background: transparent; border: none; }
 QLabel#ColumnTitle { padding: 12px 4px; border-radius: 5px; color: %(text)s; }
 QWidget#ColumnPanel[tone="0"] { background: %(hover)s; border-top: 3px solid #568bd7; }
