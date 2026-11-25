@@ -61,6 +61,31 @@ class StoreTest(unittest.TestCase):
         self.s.set_connection_settings(bugzilla_config=config)
         self.assertEqual(member.bugzilla_settings(), {'url': 'https://bugs.example.test/bugzilla', 'domain': 'example.test'})
 
+    def test_bugzilla_cards_are_shared_only_with_board_members(self):
+        board = self.s.board_action('Проект / Релиз')
+        member = Store(self.s.folder, 'bob')
+        self.s.save_user('outsider', 'outsider')
+        outsider = Store(self.s.folder, 'outsider')
+        self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        config = {'url': 'https://bugs.example.test', 'domain': 'example.test'}
+        self.s.set_connection_settings(bugzilla_config=config)
+        self.assertIsNone(member.bugzilla_board_snapshot(board))
+        self.s.save_bugzilla_cards(board, config, {'42': {'id': 42, 'summary': 'Баг', 'assigned_to': 'private'}})
+        snapshot = member.bugzilla_board_snapshot(board)
+        self.assertEqual(snapshot['cards'], {'42': {'id': 42, 'summary': 'Баг', 'cf_event_1': None, 'cf_cr_num': None}})
+        self.assertEqual(member.board_snapshot(board, {}, 'bugs')[3], snapshot)
+        with self.assertRaises(AccessDenied):
+            outsider.bugzilla_board_snapshot(board)
+        with self.assertRaises(AccessDenied):
+            outsider.save_bugzilla_cards(board, config, {'42': None})
+        member.save_bugzilla_cards(board, config, {'43': {'id': 43, 'summary': 'От коллеги'}})
+        with self.assertRaisesRegex(ValueError, 'Другой участник'):
+            self.s.save_bugzilla_cards(board, config, {}, replace=True, revision=snapshot['revision'])
+        self.assertEqual(set(member.bugzilla_board_snapshot(board)['cards']), {'42', '43'})
+        self.s.set_board_access(board, [], self.s.profile()['id'])
+        with self.assertRaises(AccessDenied):
+            member.bugzilla_board_snapshot(board)
+
     def test_shared_redmine_cards_and_status_updates(self):
         board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
         member = Store(self.s.folder, 'bob')

@@ -798,6 +798,7 @@ class UITest(unittest.TestCase):
         (base / 'employees.json').write_text('["anna"]', encoding='utf-8')
         board = self.store.board_action('Разработка / Версия 1')
         other = self.store.board_action('Разработка / Версия 2')
+        self.grant_all(board)
 
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
             window = MainWindow(None, installation_base=base)
@@ -862,7 +863,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(previews, [(True, raw), (True, raw), (True, unmatched), (True, raw)])
         self.assertEqual(target.read_bytes(), raw.encode('utf-8'))
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
-        self.assertNotIn('Событие'.encode(), self.store.db.read_bytes())
+        self.assertIn('Событие'.encode(), self.store.db.read_bytes())
         self.assertEqual(window.bugzilla_page.snapshot, ({'id': 42, 'summary': 'Задача',
                                                         'cf_event_1': 'Событие', 'cf_cr_num': 'КР-1'},))
         column = self.store.columns(board)[0]['name']
@@ -898,12 +899,10 @@ class UITest(unittest.TestCase):
         window.project_sections.setCurrentWidget(window.bugzilla_page)
         self.assertEqual(window.bugzilla_page.snapshot, ())
         self.assertFalse(window.bugzilla_page.refresh_button.isEnabled())
-        cache = window.bugzilla_cache_path(board)
-        self.assertTrue(cache.is_file())
-        self.assertNotIn('пример-пароля'.encode(), cache.read_bytes())
+        self.assertFalse(window.bugzilla_cache_path(board).exists())
         window.close()
 
-        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'colleague')):
             reopened = MainWindow(None, installation_base=base)
             self.windows.append(reopened)
             reopened.show()
@@ -911,7 +910,7 @@ class UITest(unittest.TestCase):
         reopened.select_tree_board(reopened.board_items[board], 0)
         wait_for(lambda: not reopened.loading and reopened.project_sections_board == board)
         reopened.project_sections.setCurrentWidget(reopened.bugzilla_page)
-        self.assertEqual(reopened.bugzilla_page.snapshot, tuple(bulk.values()))
+        wait_for(lambda: reopened.bugzilla_page.snapshot == tuple(bulk.values()))
         self.assertIsNone(reopened.bugzilla_session)
 
         updated = {'42': dict(bulk['42'], summary='Обновлённый заголовок')}
@@ -919,8 +918,9 @@ class UITest(unittest.TestCase):
              patch('kanban.bugzilla.refresh_board_bugs', return_value=updated) as refresh:
             reopened.bugzilla_page.refresh_button.click()
             wait_for(lambda: not reopened.bugzilla_loading)
-        prompt.assert_called_once_with('tester@example.test', None, 'refresh')
-        refresh.assert_called_once_with(url, ('42', '4'), ['anna'], login='tester@example.test', password='пример-пароля')
+        prompt.assert_called_once_with('colleague@example.test', None, 'refresh')
+        refresh.assert_called_once_with(url, ('42', '4'), ['anna'], login='colleague@example.test', password='пример-пароля',
+                                        keep_unavailable=bulk)
         self.assertEqual(reopened.bugzilla_page.snapshot, tuple(updated.values()))
 
     def test_redmine_import_and_shared_refresh(self):

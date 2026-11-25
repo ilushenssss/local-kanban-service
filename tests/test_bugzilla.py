@@ -26,6 +26,10 @@ class BugzillaTest(unittest.TestCase):
         self.assertEqual(args[1], 'Bug.get')
         self.assertEqual(args[2]['ids'], ['42', '7', '9'])
         self.assertTrue(args[2]['permissive'])
+        old_card = {'id': 9, 'summary': 'Доступен коллеге'}
+        shared = bugzilla.refresh_board_bugs('https://bugs.example.test', ['42', '7', '9'], ['anna'],
+                                            login='user@example.test', password='sample', keep_unavailable={'9': old_card})
+        self.assertEqual(shared, dict(cards, **{'9': old_card}))
 
     def test_board_card_matches_employee_substring_and_keeps_only_selected_fields(self):
         raw = json.dumps({'bugs': [

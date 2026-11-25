@@ -350,12 +350,13 @@ class Store:
             self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
-        elif operation in ('redmine_link', 'redmine_unlink', 'redmine_refresh', 'redmine_identification'):
+        elif operation in ('redmine_link', 'redmine_unlink', 'redmine_refresh', 'redmine_identification', 'bugzilla_cards'):
             permission = {'redmine_link': 'create_task', 'redmine_unlink': 'archive_task'}.get(operation, 'read')
             self.require(c, permission, payload[0])
             board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (payload[0],)).fetchone()
             if not board or not self.project_board(board):
-                raise ValueError('Задачи Redmine доступны только на активной проектной доске')
+                service = 'Карточки Bugzilla' if operation == 'bugzilla_cards' else 'Задачи Redmine'
+                raise ValueError(f'{service} доступны только на активной проектной доске')
         elif operation in ('task', 'card_task'):
             old = self.task_row(c, payload['id']) if payload.get('id') else None
             self.require(c, 'edit' if old else 'create_task', payload['board_id'])
@@ -390,6 +391,47 @@ class Store:
         with self.connection() as c:
             self.actor(c)
             return self.bugzilla_settings_in(c)
+
+    @staticmethod
+    def bugzilla_cards_in(c, board_id, config):
+        key = f'bugzilla_cards:{board_id}'
+        row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+        snapshot = json.loads(row[0]) if row else None
+        return snapshot if snapshot and snapshot['config'] == config else None
+
+    def bugzilla_board_snapshot(self, board_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            self.require(c, 'read', board_id)
+            board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (board_id,)).fetchone()
+            if not board or not self.project_board(board):
+                raise ValueError('Баги доступны только на активной проектной доске.')
+            return self.bugzilla_cards_in(c, board_id, self.bugzilla_settings_in(c))
+
+    def save_bugzilla_cards(self, board_id, config, cards, *, replace=False, revision=None, board_name=None):
+        cards = {number: bugzilla.card_fields(card) if card is not None else None for number, card in cards.items()}
+        cards = json.loads(json.dumps(cards, ensure_ascii=False, default=bugzilla.xml_value_to_json))
+
+        def apply(c, uid):
+            if self.bugzilla_settings_in(c) != config:
+                raise ValueError('Настройки Bugzilla изменились. Повторите выгрузку.')
+            if board_name is not None and c.execute('SELECT name FROM boards WHERE id=?', (board_id,)).fetchone()[0] != board_name:
+                raise ValueError('Название доски изменилось. Повторите выгрузку.')
+            current = self.bugzilla_cards_in(c, board_id, config)
+            if replace and (current['revision'] if current else None) != revision:
+                raise ValueError('Другой участник уже обновил баги доски. Повторите выгрузку.')
+            updated = {} if replace or current is None else current['cards']
+            for number, card in cards.items():
+                if card is None:
+                    updated.pop(number, None)
+                else:
+                    updated[number] = card
+            snapshot = {'config': config, 'revision': uuid.uuid4().hex, 'cards': updated}
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                      (f'bugzilla_cards:{board_id}', json.dumps(snapshot, ensure_ascii=False)))
+            return True
+
+        return self.write('bugzilla_cards', [board_id, config, cards, replace, revision, board_name], apply)
 
     def set_connection_settings(self, *, redmine=None, bugzilla_config=None):
         if redmine is not None:
@@ -1218,6 +1260,7 @@ class Store:
                     catalogs['identification_project'] = self.redmine_basis_project_in(c, selected)
                     tasks = self.identification_in(c, board, actor)
             elif view == 'bugs' and selected is not None:
+                tasks = self.bugzilla_cards_in(c, selected, catalogs['bugzilla'])
                 catalogs['linked_bug_ids'] = {
                     number.lstrip('0') for (references,) in c.execute(
                         'SELECT issue_references FROM redmine_links WHERE board_id=?', (selected,))

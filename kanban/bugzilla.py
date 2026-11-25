@@ -5,10 +5,8 @@ from datetime import datetime
 from gzip import GzipFile
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
 import json
-import os
 import re
 from socket import timeout as SocketTimeout
-from tempfile import NamedTemporaryFile
 from urllib.parse import quote, urlsplit
 from xml.parsers.expat import ExpatError
 from xmlrpc import client
@@ -91,20 +89,6 @@ def load_board_cache(path):
     return {number: card_fields(card) for number, card in cards.items()
             if number.isascii() and number.isdecimal() and isinstance(card, dict)
             and str(card.get('id')).lstrip('0') == number}
-
-
-def save_board_cache(path, cards):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = None
-    try:
-        with NamedTemporaryFile(mode='w', encoding='utf-8', dir=path.parent, delete=False) as stream:
-            temporary = stream.name
-            json.dump(cards, stream, ensure_ascii=False, default=xml_value_to_json)
-        os.replace(temporary, path)
-        temporary = None
-    finally:
-        if temporary is not None:
-            os.unlink(temporary)
 
 
 def xml_value_to_json(value):
@@ -218,7 +202,7 @@ def search_board_bugs(url, project, board, employees, *, login, password):
     return dict(sorted(cards.items(), key=lambda item: (len(item[0]), item[0])))
 
 
-def refresh_board_bugs(url, numbers, employees, *, login, password):
+def refresh_board_bugs(url, numbers, employees, *, login, password, keep_unavailable=None):
     parts = parse_url(url)
     names = employee_names(employees)
     numbers = list(dict.fromkeys(bug_number(number) for number in numbers))
@@ -232,6 +216,9 @@ def refresh_board_bugs(url, numbers, employees, *, login, password):
             code = fault.get('faultCode')
             if code not in (100, 101, 102):
                 raise BugzillaError('Bugzilla не смогла обновить часть сохранённых багов.')
+            number = str(fault.get('id'))
+            if code == 102 and keep_unavailable and number in keep_unavailable:
+                cards[number] = keep_unavailable[number]
         requested = set(batch)
         for bug in response_list(response, 'bugs'):
             number = bug_number(bug['id'])
