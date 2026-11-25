@@ -1283,10 +1283,10 @@ class Store:
             elif view == 'bugs' and selected is not None:
                 tasks = self.bugzilla_cards_in(c, selected, catalogs['bugzilla'])
                 catalogs['linked_bug_ids'] = {
-                    number.lstrip('0') for (references,) in c.execute(
+                    number for (references,) in c.execute(
                         'SELECT issue_references FROM redmine_links WHERE board_id=?', (selected,))
                     for value in json.loads(references).get('bugs', [])
-                    for number in re.findall(r'[0-9]+', value)
+                    for number in bugzilla.reference_ids(value)
                 }
             elif selected is not None:
                 board = next(b for b in boards if b['id'] == selected)
@@ -1302,6 +1302,8 @@ class Store:
                 if view in ('board', 'list') and self.project_board(board):
                     query = (filters.get('query') or '').casefold()
                     basis_project = self.redmine_basis_project_in(c, selected)
+                    bug_snapshot = self.bugzilla_cards_in(c, selected, catalogs['bugzilla']) if view == 'board' else None
+                    bug_ids = set(bug_snapshot['cards']) if bug_snapshot else set()
                     redmine_cards = []
                     for entry in c.execute('SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (selected,)):
                         col = entry['column_id']
@@ -1317,6 +1319,8 @@ class Store:
                             suffix = ' #{} {}'.format(entry['issue_id'], entry['title'])
                             if not any(query in (name + suffix).casefold() for name in (label, tracker)):
                                 continue
+                        card['linked_bugs'] = [value for value in card['issue_references'].get('bugs', [])
+                                               if bug_ids and bugzilla.reference_ids(value) & bug_ids]
                         redmine_cards.append(dict(card, id=-entry['issue_id'], redmine_id=entry['issue_id'],
                                                   number=entry['issue_id'], version=entry['revision'], archived=False,
                                                   assignees=[], assignee_names=[], labels=[], due_date=None,

@@ -387,9 +387,11 @@ class CardDelegate(QStyledItemDelegate):
         text('Баги' if bugs else 'Баги —', x, y, width)
         y += REFERENCE_LABEL_HEIGHT
         span = (width - CHIP_GAP * (BUG_CHIPS_PER_ROW - 1)) // BUG_CHIPS_PER_ROW
+        linked_bugs = set(task.get('linked_bugs', ()))
         for index, value in enumerate(bugs):
             row, column = divmod(index, BUG_CHIPS_PER_ROW)
-            chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT))
+            palette = DEPARTMENT_PALETTE['green'] if value in linked_bugs else None
+            chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT), palette=palette)
         y += chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
         text('КРИС ТИ', x, y, width-106)
         text(kris_progress_text(progress), x+width-100, y, 100, align=Qt.AlignRight)

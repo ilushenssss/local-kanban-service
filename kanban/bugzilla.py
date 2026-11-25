@@ -57,6 +57,10 @@ def bug_number(value):
     return number
 
 
+def reference_ids(value):
+    return {number.lstrip('0') for number in re.findall(r'[0-9]+', value)}
+
+
 def employee_names(employees):
     return tuple(name.strip().casefold() for name in employees if name.strip())
 

@@ -868,7 +868,7 @@ class UITest(unittest.TestCase):
                                                         'cf_event_1': 'Событие', 'cf_cr_num': 'КР-1'},))
         column = self.store.columns(board)[0]['name']
         self.store.link_redmine_issue(board, 27001, 'ТИ со ссылкой', column, column,
-                                      issue_references={'bugs': ['142, BZ #42']})
+                                      issue_references={'bugs': ['142', 'BZ #00042']})
         bulk = {'42': window.bugzilla_page.snapshot[0], '4': {
             'id': 4, 'summary': 'Свободный баг', 'cf_event_1': 'Проверить', 'cf_cr_num': 'ТИ-2',
         }}
@@ -893,6 +893,11 @@ class UITest(unittest.TestCase):
         window.refresh()
         wait_for(lambda: '4' in window.bugzilla_page.linked)
         self.assertIn('4', column_labels('Привязаны'))
+        window.project_sections.setCurrentIndex(0)
+        wait_for(lambda: not window.loading and window.last_snapshot[0] == 'board')
+        items = [cards.item(i) for cards in window.card_lists for i in range(cards.count())]
+        self.assertEqual({item.data(Qt.UserRole)['redmine_id']: item.data(Qt.UserRole)['linked_bugs']
+                          for item in items}, {27001: ['BZ #00042'], 27002: ['4']})
         window.select_tree_board(window.board_items[other], 0)
         wait_for(lambda: not window.loading and window.project_sections_board == other)
         window.project_sections.setCurrentWidget(window.bugzilla_page)
