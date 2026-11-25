@@ -886,14 +886,13 @@ class UITest(unittest.TestCase):
             column = next(column for column in window.bugzilla_page.columns if column.accessibleName() == name)
             return '\n'.join(column.item(i).data(Qt.AccessibleTextRole) for i in range(column.count())).splitlines()
 
-        self.assertIn('#4', column_labels('Не привязаны'))
-        self.assertNotIn('#42', column_labels('Не привязаны'))
-        self.assertTrue({'#42', 'Дальнейшее действие — Событие', 'ТИ — КР-1'} <= set(column_labels('Привязаны')))
+        self.assertEqual(column_labels('Не привязаны'), ['4', 'Свободный баг', 'ТИ-2', 'Проверить'])
+        self.assertEqual(column_labels('Привязаны'), ['42', 'Задача', 'КР-1', 'Событие'])
         self.store.link_redmine_issue(board, 27002, 'ТИ с другим багом', column, column,
                                       issue_references={'bugs': ['4']})
         window.refresh()
         wait_for(lambda: '4' in window.bugzilla_page.linked)
-        self.assertIn('#4', column_labels('Привязаны'))
+        self.assertIn('4', column_labels('Привязаны'))
         window.select_tree_board(window.board_items[other], 0)
         wait_for(lambda: not window.loading and window.project_sections_board == other)
         window.project_sections.setCurrentWidget(window.bugzilla_page)

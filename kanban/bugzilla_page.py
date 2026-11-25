@@ -2,7 +2,7 @@ import json
 from math import ceil
 
 from PyQt5.QtCore import QRect, QSize, Qt
-from PyQt5.QtGui import QAbstractTextDocumentLayout, QColor, QPalette
+from PyQt5.QtGui import QAbstractTextDocumentLayout, QColor, QFontMetrics, QPalette
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget
 from .bugzilla import xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
@@ -16,28 +16,37 @@ def field_text(value):
 
 
 class BugzillaCard(ProjectCardDelegate):
+    side_padding = 8
+
+    def details_offset(self, option, number, width):
+        number_width = QFontMetrics(self.heading_font(option)).horizontalAdvance(number)
+        return max(width * 2 // 5, number_width + 10)
+
     def sizeHint(self, option, index):
         card = index.data(Qt.UserRole)
         if card is None:
-            return QSize(0, 86)
-        _, lines, _ = card
+            return QSize(0, 66)
+        number, lines, _ = card
         view = self.parent()
-        width = max(1, view.viewport().width() - 2 * view.spacing() - 28)
-        height = ceil(self.body_document(option, lines, width).size().height())
-        return QSize(0, max(86, 44 + height))
+        width = max(1, view.viewport().width() - 2 * (view.spacing() + self.side_padding) - 4)
+        details_width = max(1, width - self.details_offset(option, number, width))
+        height = ceil(self.body_document(option, lines, details_width).size().height())
+        return QSize(0, max(66, 22 + height))
 
     def paint(self, painter, option, index):
         number, lines, linked = index.data(Qt.UserRole)
         painter.save()
         box = self.paint_surface(painter, option, linked)
-        x, y, width = box.x() + 12, box.y() + 8, box.width() - 24
+        x, y = box.x() + self.side_padding, box.y() + 8
+        width = box.width() - 2 * self.side_padding
+        offset = self.details_offset(option, number, width)
         painter.setFont(self.heading_font(option))
         painter.setPen(QColor(TOKENS['text']))
-        painter.drawText(QRect(x, y, width, 22), Qt.AlignVCenter | Qt.AlignLeft, number)
-        document = self.body_document(option, lines, width)
+        painter.drawText(QRect(x, y, offset, 22), Qt.AlignTop | Qt.AlignLeft, number)
+        document = self.body_document(option, lines, max(1, width - offset))
         context = QAbstractTextDocumentLayout.PaintContext()
         context.palette.setColor(QPalette.Text, QColor(TOKENS['text']))
-        painter.translate(x, y + 23)
+        painter.translate(x + offset, y + 1)
         document.documentLayout().draw(painter, context)
         painter.restore()
 
@@ -77,9 +86,11 @@ class BugzillaPage(QWidget):
         columns.setSpacing(18)
         self.columns = []
         for title in ('Не привязаны', 'Привязаны'):
-            panel, cards = project_card_column(title, BugzillaCard, minimum_width=200)
+            panel, cards = project_card_column(title, BugzillaCard, minimum_width=150)
+            cards.setSpacing(5)
             columns.addWidget(panel, 1)
             self.columns.append(cards)
+        columns.addStretch(2)
         self.scroll.setWidget(canvas)
         layout.addWidget(self.scroll, 1)
         self.show_cards(())
@@ -103,10 +114,10 @@ class BugzillaPage(QWidget):
             column.clear()
         for bug in snapshot:
             is_linked = str(bug['id']).lstrip('0') in linked
-            number = f"#{bug['id']}"
+            number = str(bug['id'])
             lines = [field_text(bug['summary']),
-                     'Дальнейшее действие — ' + field_text(bug['cf_event_1']),
-                     'ТИ — ' + field_text(bug['cf_cr_num'])]
+                     field_text(bug['cf_cr_num']),
+                     field_text(bug['cf_event_1'])]
             item = QListWidgetItem(self.columns[int(is_linked)])
             item.setData(Qt.UserRole, (number, lines, is_linked))
             summary = '\n'.join([number, *lines])
