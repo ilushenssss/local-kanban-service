@@ -6,7 +6,7 @@ from PyQt5.QtGui import QAbstractTextDocumentLayout, QColor, QFontMetrics, QPale
 from PyQt5.QtWidgets import QHBoxLayout, QLabel, QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget
 from .bugzilla import xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
-from .theme import TOKENS
+from .theme import STICKERS, TOKENS
 
 
 def field_text(value):
@@ -17,10 +17,21 @@ def field_text(value):
 
 class BugzillaCard(ProjectCardDelegate):
     side_padding = 8
+    badge_padding = 5
+    badge_extra_height = 6
+    row_gap = 3
 
     def details_offset(self, option, number, width):
         number_width = QFontMetrics(self.heading_font(option)).horizontalAdvance(number)
         return max(width * 2 // 5, number_width + 10)
+
+    def detail_rows(self, option, lines, width):
+        for row, value in enumerate(lines):
+            badge = row > 0
+            inset = self.badge_padding if badge else 0
+            document = self.body_document(option, [value], max(1, width - 2 * inset))
+            height = ceil(document.size().height()) + (self.badge_extra_height if badge else 0)
+            yield document, height
 
     def sizeHint(self, option, index):
         card = index.data(Qt.UserRole)
@@ -29,9 +40,9 @@ class BugzillaCard(ProjectCardDelegate):
         number, lines, _ = card
         view = self.parent()
         width = max(1, view.viewport().width() - 2 * (view.spacing() + self.side_padding) - 4)
-        details_width = max(1, width - self.details_offset(option, number, width))
-        height = ceil(self.body_document(option, lines, details_width).size().height())
-        return QSize(0, max(66, 22 + height))
+        details_width = width - self.details_offset(option, number, width)
+        height = sum(height for _, height in self.detail_rows(option, lines, details_width))
+        return QSize(0, max(66, 22 + height + 2 * self.row_gap))
 
     def paint(self, painter, option, index):
         number, lines, linked = index.data(Qt.UserRole)
@@ -43,11 +54,25 @@ class BugzillaCard(ProjectCardDelegate):
         painter.setFont(self.heading_font(option))
         painter.setPen(QColor(TOKENS['text']))
         painter.drawText(QRect(x, y, offset, 22), Qt.AlignTop | Qt.AlignLeft, number)
-        document = self.body_document(option, lines, max(1, width - offset))
+        details_width = max(1, width - offset)
+        ti_colors = STICKERS[0] if lines[1] == '—' else (TOKENS['secondary'], TOKENS['hover'])
+        colors = ((TOKENS['text'], None, None), (*ti_colors, None),
+                  (TOKENS['secondary'], TOKENS['properties'], TOKENS['field_border']))
         context = QAbstractTextDocumentLayout.PaintContext()
-        context.palette.setColor(QPalette.Text, QColor(TOKENS['text']))
-        painter.translate(x + offset, y + 1)
-        document.documentLayout().draw(painter, context)
+        x += offset
+        y += 1
+        for (document, height), (foreground, background, border) in zip(
+                self.detail_rows(option, lines, details_width), colors):
+            inset = self.badge_padding if background else 0
+            if background:
+                badge_width = min(details_width, ceil(document.idealWidth()) + 2 * inset)
+                self.paint_badge_background(painter, QRect(x, y, badge_width, height), background, border)
+            context.palette.setColor(QPalette.Text, QColor(foreground))
+            painter.save()
+            painter.translate(x + inset, y + (self.badge_extra_height // 2 if background else 0))
+            document.documentLayout().draw(painter, context)
+            painter.restore()
+            y += height + self.row_gap
         painter.restore()
 
 

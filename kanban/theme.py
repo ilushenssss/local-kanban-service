@@ -59,14 +59,16 @@ def card_refresh_rect(rect, offset=0):
 
 def paint_card_refresh(painter, rect):
     painter.save()
+    painter.setRenderHint(QPainter.Antialiasing)
     painter.setPen(Qt.NoPen)
     painter.setBrush(QColor(TOKENS['hover']))
     painter.drawRoundedRect(rect, 5, 5)
     painter.setBrush(Qt.NoBrush)
     painter.setPen(QPen(QColor(TOKENS['secondary']), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-    x, y = rect.center().x(), rect.center().y()
-    painter.drawArc(QRectF(x - 5, y - 5, 10, 10), 35 * 16, 295 * 16)
-    painter.drawPolyline(QPointF(x + 5.5, y - 6), QPointF(x + 4.2, y - 2.9), QPointF(x + 0.9, y - 3.5))
+    center = QRectF(rect).center()
+    x, y = center.x(), center.y()
+    painter.drawArc(QRectF(x - 6, y - 6, 12, 12), 30 * 16, 300 * 16)
+    painter.drawPolyline(QPointF(x + 5.2, y - 7), QPointF(x + 5.2, y - 3), QPointF(x + 1.2, y - 3))
     painter.restore()
 
 

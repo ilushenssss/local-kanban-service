@@ -50,6 +50,12 @@ class ProjectCardDelegate(QStyledItemDelegate):
         return document
 
     @staticmethod
+    def paint_badge_background(painter, rect, color, border=None):
+        painter.setPen(QColor(border) if border else Qt.NoPen)
+        painter.setBrush(QColor(color))
+        painter.drawRoundedRect(rect, 4, 4)
+
+    @staticmethod
     def paint_surface(painter, option, positive):
         box = option.rect.adjusted(2, 2, -2, -2)
         painter.setRenderHint(painter.Antialiasing)
@@ -99,9 +105,7 @@ class IdentificationCard(ProjectCardDelegate):
         def badge(value, x, y, max_width, colors):
             foreground, background = colors
             span = min(max_width, body_metrics.horizontalAdvance(value) + 9)
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(QColor(background))
-            painter.drawRoundedRect(QRect(x, y, span, 20), 4, 4)
+            self.paint_badge_background(painter, QRect(x, y, span, 20), background)
             text(value, x + 4, y - 1, span - 8, foreground, align=Qt.AlignHCenter)
 
         red, green = STICKERS[0], STICKERS[2]
