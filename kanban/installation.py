@@ -40,7 +40,7 @@ def load_redmine_employees(base):
     except (OSError, ValueError):
         raise ValueError('Проверьте файл employees.json рядом с main.pyw.') from None
     if not isinstance(employees, list) or any(not isinstance(name, str) or not name.strip() for name in employees):
-        raise ValueError('В employees.json ожидается список имён или логинов Redmine.')
+        raise ValueError('В employees.json ожидается список имён или логинов сотрудников.')
     return employees
 
 

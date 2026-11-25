@@ -1217,7 +1217,7 @@ class Store:
                 if self.project_board(board):
                     catalogs['identification_project'] = self.redmine_basis_project_in(c, selected)
                     tasks = self.identification_in(c, board, actor)
-            elif selected is not None:
+            elif selected is not None and view != 'bugs':
                 board = next(b for b in boards if b['id'] == selected)
                 tasks = self.cards_in(c, selected, {} if view == 'statistics' else filters)
                 if view == 'board':

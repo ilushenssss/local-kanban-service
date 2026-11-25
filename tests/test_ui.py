@@ -687,7 +687,7 @@ class UITest(unittest.TestCase):
         self.assertEqual([column['name'] for column in w.columns_data], expected_columns)
         self.assertTrue(tabs.tabBar().isVisible())
         self.assertEqual([tabs.tabText(i) for i in range(tabs.count())],
-                         ['Текущие работы', 'ИД', 'Будет определена в дальнейшем'])
+                         ['Текущие работы', 'ИД', 'Баги'])
         self.assertEqual(tabs.currentIndex(), 0)
         canvas = w.scroll.widget()
         for index in (1, 2):
@@ -696,7 +696,7 @@ class UITest(unittest.TestCase):
             if index == 1:
                 self.assertIs(tabs.currentWidget(), w.identification_page)
             else:
-                self.assertIsNone(tabs.currentWidget().layout())
+                self.assertIs(tabs.currentWidget(), w.bugzilla_page)
             self.assertFalse(w.scroll.isVisible())
             self.assertFalse(w.new_task_button.isEnabled())
         tabs.setCurrentIndex(0)
@@ -788,9 +788,16 @@ class UITest(unittest.TestCase):
 
     def test_bugzilla_export_saves_the_json_response(self):
         from kanban.bugzilla import BugzillaAuthError
+        from kanban.installation import save_folder
+
+        base = Path(self.tmp.name)
+        save_folder(base, self.store.folder)
+        (base / 'employees.json').write_text('["anna"]', encoding='utf-8')
+        board = self.store.board_action('Разработка / Версия 1')
+        other = self.store.board_action('Разработка / Версия 2')
 
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
-            window = MainWindow(str(self.store.folder))
+            window = MainWindow(None, installation_base=base)
             self.windows.append(window)
             window.show()
             wait_for(lambda: not window.loading and window.store is not None)
@@ -810,8 +817,13 @@ class UITest(unittest.TestCase):
             wait_for(lambda: not window.loading)
         self.assertEqual(self.store.bugzilla_settings(), {'url': url, 'domain': domain})
         window.redmine_login = 'redmine-user@old.example.test'
+        window.select_tree_board(window.board_items[board], 0)
+        wait_for(lambda: not window.loading and window.project_sections_board == board)
+        window.project_sections.setCurrentWidget(window.bugzilla_page)
 
-        raw = '{ "bugs": [{"id": 42, "summary": "Задача"}] }\n'
+        raw = ('{ "bugs": [{"id": 42, "assigned_to": "ANNA@example.test", "summary": "Задача", '
+               '"cf_event_1": "Событие", "cf_cr_num": "КР-1"}] }\n')
+        unmatched = raw.replace('ANNA@example.test', 'other@example.test')
         target = Path(self.tmp.name) / 'bugzilla-42.json'
         previews = []
         password_modes = []
@@ -832,18 +844,28 @@ class UITest(unittest.TestCase):
 
         with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(target), 'JSON (*.json)')), \
              patch.object(QDialog, 'exec_', new=run_dialog), \
-             patch('kanban.bugzilla.read_bug', side_effect=[raw, raw, BugzillaAuthError('Вход отклонён'), raw]) as fetch:
-            for _ in range(4):
-                window.export_bugzilla_bug()
+             patch('kanban.bugzilla.read_bug', side_effect=[raw, raw, unmatched, BugzillaAuthError('Вход отклонён'), raw]) as fetch:
+            card_counts = []
+            for _ in range(5):
+                window.bugzilla_page.export_button.click()
                 wait_for(lambda: not window.bugzilla_loading)
-        self.assertEqual(fetch.call_count, 4)
+                card_counts.append(len(window.bugzilla_page.snapshot))
+        self.assertEqual(card_counts, [1, 1, 0, 0, 1])
+        self.assertEqual(fetch.call_count, 5)
         for request in fetch.call_args_list:
             self.assertEqual(request.args, (url, '42'))
             self.assertEqual(request.kwargs, {'login': 'redmine-user@example.test', 'password': 'пример-пароля'})
-        self.assertEqual(password_modes, [[QLineEdit.Password], [], [], [QLineEdit.Password]])
-        self.assertEqual(previews, [(True, raw)] * 3)
+        self.assertEqual(password_modes, [[QLineEdit.Password], [], [], [], [QLineEdit.Password]])
+        self.assertEqual(previews, [(True, raw), (True, raw), (True, unmatched), (True, raw)])
         self.assertEqual(target.read_bytes(), raw.encode('utf-8'))
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
+        self.assertNotIn('Событие'.encode(), self.store.db.read_bytes())
+        self.assertEqual(window.bugzilla_page.snapshot, ({'id': 42, 'summary': 'Задача',
+                                                        'cf_event_1': 'Событие', 'cf_cr_num': 'КР-1'},))
+        window.select_tree_board(window.board_items[other], 0)
+        wait_for(lambda: not window.loading and window.project_sections_board == other)
+        window.project_sections.setCurrentWidget(window.bugzilla_page)
+        self.assertEqual(window.bugzilla_page.snapshot, ())
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu

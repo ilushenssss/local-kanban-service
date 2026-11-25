@@ -10,6 +10,21 @@ from kanban import bugzilla
 
 
 class BugzillaTest(unittest.TestCase):
+    def test_board_card_matches_employee_substring_and_keeps_only_selected_fields(self):
+        raw = json.dumps({'bugs': [
+            {'id': 41, 'assigned_to': 'anna@example.test'},
+            {'id': 42, 'assigned_to': 'ANNA.IVANOVA@example.test', 'cf_event_1': ['A', 'B'],
+             'cf_cr_num': 0, 'summary': 'Проверка'},
+            {'id': 43, 'assigned_to': 'other@example.test'},
+            {'id': 44, 'assigned_to': None},
+        ]})
+        self.assertEqual(bugzilla.board_card(raw, '42', [' anna.ivanova ']), {
+            'id': 42, 'cf_event_1': ['A', 'B'], 'cf_cr_num': 0, 'summary': 'Проверка',
+        })
+        for number in ('43', '44', '142'):
+            self.assertIsNone(bugzilla.board_card(raw, number, ['anna']))
+        self.assertIsNone(bugzilla.board_card(raw, '42', []))
+
     @patch('kanban.bugzilla.HTTPSConnection')
     def test_read_bug_requests_specific_id_and_preserves_raw_json(self, connect):
         response = connect.return_value.getresponse.return_value.__enter__.return_value

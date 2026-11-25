@@ -17,6 +17,7 @@ from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityComb
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
 from .identification import IdentificationPage
+from .bugzilla_page import BugzillaPage
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -1217,6 +1218,7 @@ class MainWindow(QMainWindow, Async):
         self.redmine_login = None
         self.bugzilla_config = {'url': '', 'domain': ''}
         self.bugzilla_session = None
+        self.bugzilla_cards = {}
         self.bugzilla_loading = False
         self.redmine_refresh_message = ''
         self.sppi_view_board = None
@@ -1410,7 +1412,8 @@ class MainWindow(QMainWindow, Async):
         self.project_sections.addTab(current_work, 'Текущие работы')
         self.identification_page = IdentificationPage(self.refresh_identification)
         self.project_sections.addTab(self.identification_page, 'ИД')
-        self.project_sections.addTab(QWidget(), 'Будет определена в дальнейшем')
+        self.bugzilla_page = BugzillaPage(self.export_bugzilla_bug)
+        self.project_sections.addTab(self.bugzilla_page, 'Баги')
         self.project_sections.currentChanged.connect(self.project_section_changed)
         content = QVBoxLayout(current_work)
         content.setContentsMargins(20, 16, 20, 12)
@@ -1554,6 +1557,7 @@ class MainWindow(QMainWindow, Async):
             self.project_sections_board = project_board
             self.sppi_log.setVisible(project_board is not None and project_board == self.sppi_log_board)
             self.identification_page.show_cards(None, '', None)
+            self.render_bugzilla_cards()
             self.project_sections.setCurrentIndex(0)
             self.project_sections.tabBar().setVisible(project_board is not None)
         self.update_board_controls()
@@ -1628,6 +1632,7 @@ class MainWindow(QMainWindow, Async):
         store = self.store
         if store is None or self.access_restricted or self.bugzilla_loading:
             return
+        board_id = self.project_sections_board if self.project_sections_board == self.board_id else None
         config = self.bugzilla_config
         if not config['url'] or not config['domain']:
             self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
@@ -1689,32 +1694,62 @@ class MainWindow(QMainWindow, Async):
         if not accepted or self.access_restricted or self.store is not store:
             return
 
-        def done(raw, error):
+        def done(result, error):
             nonlocal password
             used_password, password = password, None
             self.bugzilla_loading = False
+            self.bugzilla_page.export_button.setEnabled(True)
             if self.access_restricted or self.store is not store:
+                return
+            if self.bugzilla_config != config or (self.redmine_login or store.login) != source_login:
                 return
             if error:
                 if isinstance(error, bugzilla.BugzillaAuthError):
-                    self.bugzilla_session = None
+                    self.reset_bugzilla_session()
                 self.status.setText(error_text(error))
                 return
-            if self.bugzilla_config == config and (self.redmine_login or store.login) == source_login:
-                self.bugzilla_session = (*scope, used_password)
+            raw, card, filter_error = result
+            self.bugzilla_session = (*scope, used_password)
+            notice = filter_error
+            if board_id in self.board_items and not filter_error:
+                cards = self.bugzilla_cards.setdefault(board_id, {})
+                if card is not None:
+                    cards[number] = card
+                    notice = 'Баг добавлен во вкладку «Баги».'
+                else:
+                    cards.pop(number, None)
+                    notice = 'Баг не добавлен на доску. Исполнитель не совпадает со списком employees.json.'
+                self.render_bugzilla_cards()
             self.status.setText(f'Баг #{number} загружен из Bugzilla')
-            self.show_bugzilla_json(number, raw)
+            self.show_bugzilla_json(number, raw, notice)
 
         def load():
             if store.bugzilla_settings() != config:
                 raise bugzilla.BugzillaError('Настройки Bugzilla изменились. Обновите TeamSync и повторите выгрузку.')
-            return bugzilla.read_bug(scope[0], number, login=login, password=password)
+            raw = bugzilla.read_bug(scope[0], number, login=login, password=password)
+            if board_id is None:
+                return raw, None, ''
+            try:
+                employees = installation.load_redmine_employees(self.redmine_config_base())
+            except ValueError as error:
+                return raw, None, error_text(error)
+            return raw, bugzilla.board_card(raw, number, employees), ''
 
         self.bugzilla_loading = True
+        self.bugzilla_page.export_button.setEnabled(False)
         self.status.setText(f'Загрузка бага #{number} из Bugzilla…')
         self.work(load, done)
 
-    def show_bugzilla_json(self, number, raw):
+    def render_bugzilla_cards(self):
+        cards = self.bugzilla_cards.get(self.project_sections_board, {})
+        self.bugzilla_page.show_cards(cards.values())
+
+    def reset_bugzilla_session(self):
+        self.bugzilla_session = None
+        self.bugzilla_cards.clear()
+        self.render_bugzilla_cards()
+
+    def show_bugzilla_json(self, number, raw, notice=''):
         dialog = QDialog(self)
         dialog.setWindowTitle(f'Баг #{number} · Bugzilla')
         dialog.resize(760, 460)
@@ -1725,7 +1760,8 @@ class MainWindow(QMainWindow, Async):
         preview.setAccessibleName('Ответ Bugzilla в формате JSON')
         preview.setPlainText(raw)
         layout.addWidget(preview)
-        status = QLabel()
+        status = QLabel(notice)
+        status.setTextFormat(Qt.PlainText)
         status.setWordWrap(True)
         layout.addWidget(status)
 
@@ -1912,14 +1948,14 @@ class MainWindow(QMainWindow, Async):
         if settings['url'] != self.redmine_url:
             self.redmine_client = None
             self.redmine_login = None
-            self.bugzilla_session = None
+            self.reset_bugzilla_session()
         self.redmine_url = settings['url']
         self.redmine_statuses = settings['statuses']
 
     def apply_bugzilla_settings(self, settings):
         if settings != self.bugzilla_config:
             self.bugzilla_config = settings
-            self.bugzilla_session = None
+            self.reset_bugzilla_session()
 
     def change_timezone(self):
         zones = sorted({bytes(zone).decode('ascii') for zone in QTimeZone.availableTimeZoneIds()})
@@ -2139,7 +2175,7 @@ class MainWindow(QMainWindow, Async):
         if restricted:
             self.redmine_client = None
             self.redmine_login = None
-            self.bugzilla_session = None
+            self.reset_bugzilla_session()
             self.last_snapshot = None
             self.generation += 1
             self.messenger.deactivate()
@@ -2308,6 +2344,8 @@ class MainWindow(QMainWindow, Async):
         bid = self.board_id
         if page == 0 and self.project_sections.currentWidget() is self.identification_page and self.project_sections_board == bid:
             view = 'identification'
+        elif page == 0 and self.project_sections.currentWidget() is self.bugzilla_page:
+            view = 'bugs'
         self.loading = True
         if live_sppi:
             self.sppi_view_dirty = False
@@ -2355,6 +2393,8 @@ class MainWindow(QMainWindow, Async):
             if structure != getattr(self, 'tree_structure', None):
                 self.tree_structure = structure
                 self.rebuild_board_tree(structure)
+                for stored_board in self.bugzilla_cards.keys() - self.board_items.keys():
+                    del self.bugzilla_cards[stored_board]
             self.create_project_item.setDisabled(not self.permissions.get('create_board', False))
             wanted = [(b['id'], b['name']) for b in boards]
             current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
@@ -2399,7 +2439,7 @@ class MainWindow(QMainWindow, Async):
             self.columns_data = columns
             if view == 'identification':
                 self.identification_page.show_cards(selected, catalogs.get('identification_project'), tasks)
-            elif page == 0:
+            elif view == 'board':
                 self.render_board(selected, columns, tasks, totals)
             self.set_access_restricted(False)
             if self.mutating:
@@ -2917,6 +2957,9 @@ class MainWindow(QMainWindow, Async):
         self.sppi_log.setVisible(bool(lines))
 
     def refresh_workspace(self):
+        if self.pages.currentIndex() == 0 and self.project_sections.currentWidget() is self.bugzilla_page:
+            self.refresh()
+            return
         if self.pages.currentIndex() == 0 and self.project_sections.currentWidget() is self.identification_page:
             self.refresh_identification()
             return
@@ -3147,8 +3190,8 @@ class MainWindow(QMainWindow, Async):
                 if isinstance(result, dict) and 'redmine_client' in result:
                     if not self.access_restricted:
                         self.redmine_client = result['redmine_client']
-                        if self.redmine_login != result['redmine_login']:
-                            self.bugzilla_session = None
+                        if (self.redmine_login or self.store.login) != result['redmine_login']:
+                            self.reset_bugzilla_session()
                         self.redmine_login = result['redmine_login']
                     success_message = '\n'.join(result['redmine_errors']) or success
                     self.redmine_refresh_message = success_message
@@ -3361,5 +3404,5 @@ class MainWindow(QMainWindow, Async):
         self.notifications.shutdown()
         self.redmine_client = None
         self.redmine_login = None
-        self.bugzilla_session = None
+        self.reset_bugzilla_session()
         event.accept()

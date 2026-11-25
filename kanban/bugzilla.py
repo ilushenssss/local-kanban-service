@@ -52,6 +52,18 @@ def bug_number(value):
     return number
 
 
+def board_card(raw, number, employees):
+    names = [name.strip().casefold() for name in employees if name.strip()]
+    for bug in json.loads(raw)['bugs']:
+        if not isinstance(bug, dict) or str(bug.get('id')) != number:
+            continue
+        assignee = bug.get('assigned_to')
+        assignee = assignee.casefold() if isinstance(assignee, str) else ''
+        if any(name in assignee for name in names):
+            return {key: bug.get(key) for key in ('id', 'summary', 'cf_event_1', 'cf_cr_num')}
+    return None
+
+
 def xml_value_to_json(value):
     if isinstance(value, datetime):
         return value.isoformat()
