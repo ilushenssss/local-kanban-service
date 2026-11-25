@@ -2,6 +2,7 @@ from datetime import datetime
 from gzip import compress
 from io import BytesIO
 import json
+from socket import timeout as SocketTimeout
 import unittest
 from unittest.mock import MagicMock, patch
 from xmlrpc import client
@@ -78,6 +79,24 @@ class BugzillaTest(unittest.TestCase):
             self.assertIn('cf_cr_num', params['include_fields'])
             versions.append(params['version'])
         self.assertEqual(versions, ['2.0-218 И-01', '2.0-218 И-02'])
+        self.assertEqual(connect.return_value.connect.call_count, len(replies))
+        self.assertEqual([call.args for call in connect.return_value.sock.settimeout.call_args_list], [(60,)] * len(replies))
+
+    @patch('kanban.bugzilla.HTTPSConnection')
+    def test_bulk_timeout_reports_request_and_phase(self, connect):
+        connection = connect.return_value
+        args = ('https://bugs.example.test', 'Проект', 'Версия', ['anna'])
+        credentials = {'login': 'user@example.test', 'password': 'sample'}
+        connection.connect.side_effect = SocketTimeout('timed out')
+        with self.assertRaisesRegex(bugzilla.BugzillaError, r'10 с.*Product\.get_accessible_products.*подключение'):
+            bugzilla.search_board_bugs(*args, **credentials)
+        connection.sock.settimeout.assert_not_called()
+
+        connection.connect.side_effect = None
+        connection.getresponse.side_effect = SocketTimeout('timed out')
+        with self.assertRaisesRegex(bugzilla.BugzillaError, r'60 с.*Product\.get_accessible_products.*ожидание ответа'):
+            bugzilla.search_board_bugs(*args, **credentials)
+        connection.sock.settimeout.assert_called_once_with(60)
 
     @patch('kanban.bugzilla.HTTPSConnection')
     def test_read_bug_requests_specific_id_and_preserves_raw_json(self, connect):

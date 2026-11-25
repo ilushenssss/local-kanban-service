@@ -7,6 +7,7 @@ from http.client import HTTPConnection, HTTPException, HTTPSConnection
 import json
 import os
 import re
+from socket import timeout as SocketTimeout
 from tempfile import NamedTemporaryFile
 from urllib.parse import quote, urlsplit
 from xml.parsers.expat import ExpatError
@@ -20,6 +21,10 @@ class BugzillaError(ValueError):
 
 class BugzillaAuthError(BugzillaError):
     pass
+
+
+CONNECT_TIMEOUT = 10
+BULK_RESPONSE_TIMEOUT = 60
 
 
 def connection_settings(url, domain):
@@ -126,13 +131,21 @@ def read_xml_response(raw, number):
     return payload
 
 
-def request(parts, method, suffix, headers, body=None):
+def request(parts, method, suffix, headers, body=None, *, operation=None, response_timeout=CONNECT_TIMEOUT):
     path = quote(parts.path.rstrip('/'), safe='/%') + suffix
     connection_type = HTTPSConnection if parts.scheme == 'https' else HTTPConnection
     limit = 4 * 1024 * 1024
+    phase = 'подключение'
+    timeout = CONNECT_TIMEOUT
     try:
-        with closing(connection_type(parts.hostname, parts.port, timeout=10)) as connection:
+        with closing(connection_type(parts.hostname, parts.port, timeout=CONNECT_TIMEOUT)) as connection:
+            connection.connect()
+            phase = 'отправка запроса'
             connection.request(method, path, body=body, headers=headers)
+            phase = 'ожидание ответа'
+            timeout = response_timeout
+            if timeout != CONNECT_TIMEOUT:
+                connection.sock.settimeout(timeout)
             with connection.getresponse() as response:
                 if response.status == 401:
                     raise BugzillaAuthError('Bugzilla не приняла логин или пароль.')
@@ -147,6 +160,9 @@ def request(parts, method, suffix, headers, body=None):
                         raw = stream.read(limit + 1)
                 else:
                     raw = response.read(limit + 1)
+    except (TimeoutError, SocketTimeout):
+        name = operation or f'{method} {suffix}'
+        raise BugzillaError(f'Превышено время ожидания Bugzilla ({timeout} с). Запрос {name}, этап «{phase}».') from None
     except (OSError, HTTPException, EOFError, zlib.error):
         raise BugzillaError('Не удалось получить ответ от Bugzilla. Проверьте соединение и адрес сервера.') from None
     if len(raw) > limit:
@@ -154,12 +170,13 @@ def request(parts, method, suffix, headers, body=None):
     return raw
 
 
-def xml_request(parts, method, params, login, password, number=None):
+def xml_request(parts, method, params, login, password, number=None, *, response_timeout=CONNECT_TIMEOUT):
     if not login or not password:
         raise BugzillaError('Введите логин и пароль Bugzilla.')
     headers = {'Accept': 'text/xml', 'Content-Type': 'text/xml', 'Accept-Encoding': 'gzip'}
     body = client.dumps((dict(params, login=login, password=password),), methodname=method, encoding='utf-8')
-    raw = request(parts, 'POST', '/xmlrpc.cgi', headers, body.encode('utf-8'))
+    raw = request(parts, 'POST', '/xmlrpc.cgi', headers, body.encode('utf-8'), operation=method,
+                  response_timeout=response_timeout)
     return read_xml_response(raw, number)
 
 
@@ -176,11 +193,13 @@ def search_board_bugs(url, project, board, employees, *, login, password):
         raise BugzillaError('В employees.json нет сотрудников для выгрузки багов.')
     parts = parse_url(url)
     project_key, board_key = project.casefold(), board.casefold()
-    accessible = xml_request(parts, 'Product.get_accessible_products', {}, login, password)
+    accessible = xml_request(parts, 'Product.get_accessible_products', {}, login, password,
+                             response_timeout=BULK_RESPONSE_TIMEOUT)
     ids = response_list(accessible, 'ids')
     if not ids:
         return {}
-    catalog = xml_request(parts, 'Product.get', {'ids': ids, 'include_fields': ['name', 'versions.name']}, login, password)
+    catalog = xml_request(parts, 'Product.get', {'ids': ids, 'include_fields': ['name', 'versions.name']}, login, password,
+                          response_timeout=BULK_RESPONSE_TIMEOUT)
     cards = {}
     for item in response_list(catalog, 'products'):
         if project_key not in item['name'].casefold():
@@ -191,7 +210,7 @@ def search_board_bugs(url, project, board, employees, *, login, password):
                 continue
             params = {'product': item['name'], 'version': version, 'limit': 0,
                       'include_fields': ['id', 'product', 'version', 'assigned_to', 'summary', 'cf_event_1', 'cf_cr_num']}
-            result = xml_request(parts, 'Bug.search', params, login, password)
+            result = xml_request(parts, 'Bug.search', params, login, password, response_timeout=BULK_RESPONSE_TIMEOUT)
             for bug in response_list(result, 'bugs'):
                 if (project_key in str(bug.get('product') or '').casefold()
                         and board_key in str(bug.get('version') or '').casefold() and matches_employee(bug, names)):
