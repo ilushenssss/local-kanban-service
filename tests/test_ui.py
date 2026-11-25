@@ -1097,6 +1097,7 @@ class UITest(unittest.TestCase):
         cards = member.card_lists[1]
         cards.setCurrentItem(item)
         full_height = cards.visualItemRect(item).height()
+        from kanban.theme import card_refresh_rect
         with patch.object(member, 'show_redmine_task') as open_task:
             button = CardDelegate.ti_disclosure_rect(cards.visualItemRect(item)).center()
             QTest.mouseClick(cards.viewport(), Qt.LeftButton, pos=button)
@@ -1105,6 +1106,12 @@ class UITest(unittest.TestCase):
             self.assertIn('Кодирование до 04.02', item.toolTip())
             self.assertIn('Лист проверки оформлен? Да', item.toolTip())
             self.assertNotIn('Баги', item.toolTip())
+            with patch.object(member, 'sync_project_ti') as refresh_card:
+                QTest.mouseClick(cards.viewport(), Qt.LeftButton,
+                                 pos=card_refresh_rect(cards.visualItemRect(item), 28).center())
+                QTest.keyClick(cards, Qt.Key_R, Qt.ControlModifier)
+                self.assertEqual([call.args for call in refresh_card.call_args_list], [(23018,), (23018,)])
+            open_task.assert_not_called()
             member.refresh()
             wait_for(lambda: not member.loading)
             self.assertIs(cards.item(0), item)
@@ -1217,8 +1224,43 @@ class UITest(unittest.TestCase):
         for entry in ('КРИС подзадачи #120', 'КРИС ТИ: 50% (1/2)', 'Основание: СП-120', 'Баги: 120', 'ОСЗ: Да'):
             self.assertIn(entry, child_card)
 
+    def test_ti_card_refresh_requests_only_the_selected_issue(self):
+        from kanban.installation import save_folder
+        from kanban.theme import card_refresh_rect
+
+        base = Path(self.tmp.name)
+        save_folder(base, self.store.folder)
+        (base / 'all_project.json').write_text('{"Разработка": 49}', encoding='utf-8')
+        self.store.set_redmine_settings('https://redmine.example.test', {})
+        board = self.store.board_action('Разработка / 2.0-218', column_names=['Проект ТИ'])
+        for number in (701, 702):
+            self.store.link_redmine_issue(board, number, f'Задача #{number}', 'Проект ТИ', 'Проект ТИ')
+        with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
+            window = MainWindow(None, installation_base=base)
+            self.windows.append(window)
+            window.show()
+            wait_for(lambda: not window.loading and board in window.board_items)
+        window.select_tree_board(window.board_items[board], 0)
+        wait_for(lambda: not window.loading and window.project_sections_board == board and window.card_lists[0].count() == 2)
+        window.redmine_client = object()
+        cards = window.card_lists[0]
+        target = next(cards.item(i) for i in range(cards.count()) if cards.item(i).data(Qt.UserRole)['redmine_id'] == 701)
+        sibling = next(cards.item(i) for i in range(cards.count()) if cards.item(i).data(Qt.UserRole)['redmine_id'] == 702)
+        issue = {'tracker_name': '', 'title': 'Обновлённая ТИ', 'status': 'Проект ТИ', 'approvals': [], 'issue_references': {}}
+        with patch('kanban.redmine.read_issue', return_value=issue) as fetch, \
+             patch('kanban.redmine.read_kris_progress', return_value=({}, [])), patch.object(window, 'open_task') as opened:
+            QTest.mouseClick(cards.viewport(), Qt.LeftButton, pos=card_refresh_rect(cards.visualItemRect(target)).center())
+            wait_for(lambda: target.data(Qt.UserRole)['title'] == issue['title'])
+            self.assertEqual(fetch.call_count, 1)
+            self.assertEqual(fetch.call_args.args, (window.redmine_client, 701))
+            opened.assert_not_called()
+        self.assertIs(window.card_lists[0], cards)
+        self.assertGreaterEqual(cards.row(sibling), 0)
+        self.assertEqual(sibling.data(Qt.UserRole)['title'], 'Задача #702')
+
     def test_identification_tab_loads_basis_project_and_shows_linked_ti(self):
         from kanban.installation import save_folder
+        from kanban.theme import card_refresh_rect
         base = Path(self.tmp.name)
         save_folder(base, self.store.folder)
         (base / 'all_project.json').write_text('{"Основания": 88}', encoding='utf-8')
@@ -1244,7 +1286,7 @@ class UITest(unittest.TestCase):
         wait_for(lambda: page.refresh_button.isEnabled())
         window.redmine_client = object()
         with patch('kanban.redmine.read_identification_cards', return_value=[
-                {'number': number, 'subject': 'Согласовать спецификацию', 'approval': 'Да', 'status': 'ТИ утверждено',
+                {'issue_id': 710, 'number': number, 'subject': 'Согласовать спецификацию', 'approval': 'Да', 'status': 'ТИ утверждено',
                  'versions': ['2.0-218 И-01']},
                 {'number': 'ТИ(200)-1234-02', 'approval': 'Нет', 'status': 'В работе', 'versions': ['2.0-218 И-02']},
                 {'number': 'ТИ(200)-1234-03', 'approval': 'Нет', 'status': 'В работе', 'versions': ['2.0-219 И-01']},
@@ -1264,6 +1306,21 @@ class UITest(unittest.TestCase):
         self.assertIn(number + '\nСогласовать спецификацию', items[3].toolTip())
         self.assertIn('Не привязано', items[0].toolTip())
         self.assertFalse(page.grab().isNull())
+        target_column = page.columns[3]
+        page.scroll.ensureWidgetVisible(target_column)
+        APP.processEvents()
+        previous = items[3].data(Qt.UserRole)
+        updated = dict(previous, subject='Проверить спецификацию')
+        updated.pop('links')
+        with patch('kanban.redmine.read_identification_card', return_value=updated) as fetch, \
+             patch('kanban.redmine.read_identification_cards') as bulk:
+            QTest.mouseClick(target_column.viewport(), Qt.LeftButton,
+                             pos=card_refresh_rect(target_column.visualItemRect(items[3])).center())
+            wait_for(lambda: target_column.item(0).data(Qt.UserRole)['subject'] == updated['subject'])
+            fetch.assert_called_once_with(window.redmine_client, 88, previous)
+            bulk.assert_not_called()
+        self.assertIs(page.columns[0].item(0), items[0])
+        self.assertIs(target_column.item(0), items[3])
 
     def test_redesigned_workspace_groups_and_message_badges(self):
         names = ['Бэклог', 'В работе', 'На проверке', 'Готово']

@@ -262,6 +262,56 @@ def iter_sppi_issues(client, project_id, board, employees, *, on_issue=None):
         raise RedmineError('Не удалось прочитать задачи СППИ в проекте Redmine #{}.'.format(project_id)) from None
 
 
+def identification_number(fields, subject):
+    number = BASIS_NUMBER.search(str(fields.get('регистрационный номер_лпив') or '')) or BASIS_NUMBER.search(subject)
+    return number.group().upper() if number else None
+
+
+def identification_card(client, data, version_names):
+    fields = custom_field_values(data)
+    approval = fields.get('ти согласовано с отд.цз', fields.get('ти согласовано с отд. цз', 'Не требуется'))
+    approval = str(approval or '').strip()
+    subject = data.get('subject') or ''
+    number = identification_number(fields, subject)
+    if not number or status_key(approval) == 'не требуется':
+        return None
+    versions = list(dict.fromkeys(version_names_for(client, fields.get('приоритет реализации_лпив'), version_names)))
+    status = (data.get('status') or {}).get('name') or ''
+    return {'issue_id': data['id'], 'number': number, 'subject': subject if subject != number else '',
+            'approval': approval, 'status': status, 'versions': versions}
+
+
+def read_identification_card(client, project_id, previous):
+    from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
+
+    try:
+        issue_id = previous.get('issue_id')
+        if issue_id is None:
+            matches = []
+            for issue in client.issue.filter(project_id=project_id, status_id='*'):
+                data = issue.raw()
+                subject = data.get('subject') or ''
+                if identification_number(custom_field_values(data), subject) == previous['number']:
+                    matches.append(data)
+            exact = [data for data in matches if data.get('subject') == (previous.get('subject') or previous['number'])]
+            candidates = exact or matches
+            if len(candidates) != 1:
+                raise RedmineError('Не удалось однозначно определить задачу ИД. Обновите вкладку «ИД» целиком.')
+            issue_id = candidates[0]['id']
+        data = client.issue.get(issue_id).raw()
+        if (data.get('project') or {}).get('id', project_id) != project_id:
+            return None
+        return identification_card(client, data, {})
+    except AuthError:
+        raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+    except (ForbiddenError, ResourceNotFoundError):
+        raise RedmineError('Задача ИД не найдена или недоступна в Redmine.') from None
+    except RedmineError:
+        raise
+    except Exception:
+        raise RedmineError('Не удалось обновить карточку ИД из Redmine.') from None
+
+
 def read_identification_cards(client, project_id):
     from redminelib.exceptions import AuthError
 
@@ -269,22 +319,9 @@ def read_identification_cards(client, project_id):
     version_names = {}
     try:
         for issue in client.issue.filter(project_id=project_id, status_id='*'):
-            data = issue.raw()
-            fields = custom_field_values(data)
-            approval = fields.get('ти согласовано с отд.цз', fields.get('ти согласовано с отд. цз', 'Не требуется'))
-            approval = str(approval or '').strip()
-            if status_key(approval) == 'не требуется':
-                continue
-            registration = fields.get('регистрационный номер_лпив') or ''
-            subject = data.get('subject') or ''
-            number = BASIS_NUMBER.search(str(registration)) or BASIS_NUMBER.search(subject)
-            if not number:
-                continue
-            versions = list(dict.fromkeys(version_names_for(client, fields.get('приоритет реализации_лпив'), version_names)))
-            status = (data.get('status') or {}).get('name') or ''
-            label = number.group().upper()
-            cards.append({'number': label, 'subject': subject if subject != label else '',
-                          'approval': approval, 'status': status, 'versions': versions})
+            card = identification_card(client, issue.raw(), version_names)
+            if card is not None:
+                cards.append(card)
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except Exception:

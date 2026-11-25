@@ -5,7 +5,7 @@ from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
 from .redmine import (APPROVAL_COLORS, CHECK_SHEET_FIELD, issue_label, kris_coding_deadline,
                       kris_coding_lines, kris_progress_text, status_key)
-from .theme import TOKENS, STICKERS, avatar_color
+from .theme import TOKENS, STICKERS, avatar_color, card_refresh_rect, paint_card_refresh
 
 EXPANDED_ROLE = Qt.UserRole + 1
 TASK_NOTICE_ROLE = Qt.UserRole + 2
@@ -341,7 +341,9 @@ class CardDelegate(QStyledItemDelegate):
 
         collapsible = self.parent().redmine_can_collapse(task)
         compact = self.parent().redmine_is_compact(task)
-        control_width = 28 if collapsible else 0
+        collapse_width = 28 if collapsible else 0
+        control_width = collapse_width + 28
+        paint_card_refresh(painter, card_refresh_rect(option.rect, collapse_width))
         if collapsible:
             control = self.ti_disclosure_rect(option.rect)
             painter.setPen(Qt.NoPen)
@@ -354,7 +356,9 @@ class CardDelegate(QStyledItemDelegate):
                                  QPointF(cx+4, cy-2*direction))
         if compact:
             deadline = kris_coding_deadline(progress)
-            deadline_width = 99 if deadline else 0
+            deadline_font = QFont(option.font)
+            deadline_font.setPixelSize(12)
+            deadline_width = QFontMetrics(deadline_font).horizontalAdvance(deadline) + 8 if deadline else 0
             heading(y-2, width-control_width-deadline_width)
             if deadline:
                 text(deadline, x+width-control_width-deadline_width, y-2, deadline_width-4, align=Qt.AlignRight)
@@ -419,6 +423,7 @@ class Cards(QListWidget):
     moved = pyqtSignal(int, int, object)
     dragging = pyqtSignal(bool)
     details_requested = pyqtSignal(object)
+    redmine_refresh_requested = pyqtSignal(object)
     def __init__(self, column_id, expanded_ids=None, *, compact_ti_ids=None):
         super().__init__()
         self.column_id = column_id
@@ -492,6 +497,11 @@ class Cards(QListWidget):
         item = self.itemAt(event.pos())
         if item and event.button() == Qt.LeftButton:
             task = item.data(Qt.UserRole)
+            offset = 28 if self.redmine_can_collapse(task) else 0
+            if task.get('redmine_id') and card_refresh_rect(self.visualItemRect(item), offset).contains(event.pos()):
+                self.redmine_refresh_requested.emit(task)
+                event.accept()
+                return
             if self.redmine_can_collapse(task) and CardDelegate.ti_disclosure_rect(self.visualItemRect(item)).contains(event.pos()):
                 self.toggle_details(item)
                 event.accept()
@@ -504,6 +514,13 @@ class Cards(QListWidget):
         super().mouseReleaseEvent(event)
 
     def keyPressEvent(self, event):
+        item = self.currentItem()
+        if item and event.key() == Qt.Key_R and event.modifiers() == Qt.ControlModifier:
+            task = item.data(Qt.UserRole)
+            if task.get('redmine_id'):
+                self.redmine_refresh_requested.emit(task)
+                event.accept()
+                return
         if self.currentItem() and event.key() == Qt.Key_Space:
             self.toggle_details(self.currentItem())
             event.accept()
@@ -555,6 +572,7 @@ def set_card_notice(item, count):
             hint = 'Пробел — развернуть карточку, Enter — открыть задачу'
         elif cards.redmine_can_collapse(task):
             hint = 'Пробел — свернуть карточку, Enter — открыть задачу'
+        hint += ', Ctrl+R — обновить карточку'
         item.setData(Qt.AccessibleDescriptionRole, hint)
     if task.get('redmine_id'):
         answer = task['issue_references'].get('check_sheet')

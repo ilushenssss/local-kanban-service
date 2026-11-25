@@ -7,7 +7,7 @@ from unittest.mock import Mock, call
 
 from kanban.installation import load_redmine_project_id
 from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_deadline, kris_coding_lines,
-                            kris_progress_text, read_basis_statuses, read_identification_cards, read_issue,
+                            kris_progress_text, read_basis_statuses, read_identification_card, read_identification_cards, read_issue,
                             iter_sppi_issues, read_kris_progress, status_key)
 
 
@@ -129,7 +129,7 @@ class RedmineTest(unittest.TestCase):
             ('04', 'ТИ согласовано с отд.ЦЗ', ' Не требуется ', 'ТИ утверждено'),
             ('05', 'Другое поле', 'Да', 'ТИ утверждено'),
         ):
-            data = {'subject': 'Проверка ' + suffix, 'status': {'name': status}, 'custom_fields': [
+            data = {'id': int(suffix), 'subject': 'Проверка ' + suffix, 'status': {'name': status}, 'custom_fields': [
                 {'name': field, 'value': approval},
                 {'name': 'Регистрационный номер_ЛПИВ', 'value': 'ТИ(200)-1234-' + suffix + ' описание'},
                 {'name': 'Приоритет реализации_ЛПИВ',
@@ -142,15 +142,22 @@ class RedmineTest(unittest.TestCase):
         client.issue.filter.return_value = for_filter
         cards = read_identification_cards(client, 88)
         self.assertEqual(cards, [
-            {'number': 'ТИ(200)-1234-01', 'subject': 'Проверка 01', 'approval': 'Да',
+            {'issue_id': 1, 'number': 'ТИ(200)-1234-01', 'subject': 'Проверка 01', 'approval': 'Да',
              'status': 'ТИ утверждено', 'versions': ['2.0-218 И-01']},
-            {'number': 'ТИ(200)-1234-02', 'subject': 'Проверка 02', 'approval': 'Нет',
+            {'issue_id': 2, 'number': 'ТИ(200)-1234-02', 'subject': 'Проверка 02', 'approval': 'Нет',
              'status': 'В работе', 'versions': ['2.0-219']},
-            {'number': 'ТИ(200)-1234-03', 'subject': 'Проверка 03', 'approval': 'На согласовании',
+            {'issue_id': 3, 'number': 'ТИ(200)-1234-03', 'subject': 'Проверка 03', 'approval': 'На согласовании',
              'status': 'В работе', 'versions': ['2.0-218 И-01']},
         ])
         client.issue.filter.assert_called_once_with(project_id=88, status_id='*')
         self.assertEqual(client.version.get.call_args_list, [call(1342), call(1343), call(9999)])
+        client.issue.get.return_value = for_filter[0]
+        self.assertEqual(read_identification_card(client, 88, cards[0]), cards[0])
+        client.issue.get.assert_called_once_with(1)
+        self.assertEqual(client.issue.filter.call_count, 1)
+        legacy = {key: value for key, value in cards[0].items() if key != 'issue_id'}
+        self.assertEqual(read_identification_card(client, 88, legacy), cards[0])
+        self.assertEqual(client.issue.get.call_args_list, [call(1), call(1)])
 
     @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
     def test_basis_lookup_uses_fixed_number_and_registration_field(self):

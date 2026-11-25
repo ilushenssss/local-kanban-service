@@ -1,7 +1,7 @@
 """Offline application palette: shared by native controls and painted cards."""
 import hashlib
 from pathlib import Path
-from PyQt5.QtCore import QSettings, Qt
+from PyQt5.QtCore import QPointF, QRect, QRectF, QSettings, Qt
 from PyQt5.QtGui import QColor, QPalette, QFontDatabase, QIcon, QPainter, QPainterPath, QPen, QPixmap
 
 LIGHT = dict(background='#FFFFFF', canvas='#F4F5F8', sidebar='#FFFFFF',
@@ -51,6 +51,23 @@ def label_colors(name):
 def avatar_color(name):
     key = int(hashlib.sha256(name.encode('utf-8')).hexdigest(), 16)
     return AVATAR_COLORS[key % len(AVATAR_COLORS)]
+
+
+def card_refresh_rect(rect, offset=0):
+    return QRect(rect.right() - 37 - offset, rect.top() + 4, 26, 26)
+
+
+def paint_card_refresh(painter, rect):
+    painter.save()
+    painter.setPen(Qt.NoPen)
+    painter.setBrush(QColor(TOKENS['hover']))
+    painter.drawRoundedRect(rect, 5, 5)
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(QColor(TOKENS['secondary']), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    x, y = rect.center().x(), rect.center().y()
+    painter.drawArc(QRectF(x - 5, y - 5, 10, 10), 35 * 16, 295 * 16)
+    painter.drawPolyline(QPointF(x + 5.5, y - 6), QPointF(x + 4.2, y - 2.9), QPointF(x + 0.9, y - 3.5))
+    painter.restore()
 
 
 def symbol_icon(name):

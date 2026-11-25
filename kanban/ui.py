@@ -1412,7 +1412,7 @@ class MainWindow(QMainWindow, Async):
         board_layout.addWidget(self.project_sections)
         current_work = QWidget()
         self.project_sections.addTab(current_work, 'Текущие работы')
-        self.identification_page = IdentificationPage(self.refresh_identification)
+        self.identification_page = IdentificationPage(self.refresh_identification, self.refresh_identification_card)
         self.project_sections.addTab(self.identification_page, 'ИД')
         self.bugzilla_page = BugzillaPage(self.export_bugzilla_bug, lambda: self.export_bugzilla_bug(mode='bulk'),
                                          lambda: self.export_bugzilla_bug(mode='refresh'))
@@ -2607,6 +2607,7 @@ class MainWindow(QMainWindow, Async):
                 cards.counter = counter
                 cards.add_task = add_task
                 cards.details_requested.connect(self.load_card_details)
+                cards.redmine_refresh_requested.connect(self.refresh_ti_card)
                 cards.itemClicked.connect(lambda item: self.open_task(item.data(Qt.UserRole)))
                 cards.itemSelectionChanged.connect(lambda cards=cards: self.exclusive_selection(cards))
                 cards.moved.connect(self.move_task)
@@ -3018,6 +3019,26 @@ class MainWindow(QMainWindow, Async):
 
         self.redmine_operation(update, 'Карточки ИД обновлены')
 
+    def refresh_identification_card(self, previous):
+        board_id = self.board_id
+        if not self.store or board_id is None or self.project_sections_board != board_id:
+            return
+        project = self.identification_page.snapshot[1]
+        if not project:
+            return
+        result = None
+
+        def update(client, rid, statuses):
+            nonlocal result
+            if self.store.redmine_basis_project(board_id) != project:
+                raise ValueError('Проект поиска оснований изменился. Обновите ИД.')
+            if result is None:
+                result = (redmine.read_identification_card(client, self.redmine_project_id(project), previous),)
+            self.store.update_identification_card(board_id, project, previous, result[0], rid)
+            return []
+
+        self.redmine_operation(update, 'Карточка ИД обновлена', busy_message='Обновление карточки ИД…')
+
     def show_sppi_progress(self, board_id, message):
         if message:
             if self.access_restricted or board_id != self.board_id:
@@ -3145,7 +3166,11 @@ class MainWindow(QMainWindow, Async):
                             progress.get(issue_id, task.get('kris_progress'))))
         return updates, warnings + basis_warnings
 
-    def sync_project_ti(self):
+    def refresh_ti_card(self, task):
+        if task['board_id'] == self.board_id == self.project_sections_board:
+            self.sync_project_ti(task['redmine_id'])
+
+    def sync_project_ti(self, issue_id=None):
         board_id = self.board_id
         if not self.redmine_url:
             self.refresh()
@@ -3155,18 +3180,20 @@ class MainWindow(QMainWindow, Async):
 
         def prepare(client, statuses):
             issues, errors = [], []
-            linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
+            linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id, issue_id=issue_id)}
+            if issue_id is not None and not linked:
+                return [], ['Карточка ТИ уже убрана с доски.']
             responsible_cache = {}
             self.sppi_progress.emit(board_id, '')
-            for issue_id in linked:
+            for linked_id in linked:
                 try:
-                    issue = redmine.read_issue(client, issue_id, responsible_cache=responsible_cache)
+                    issue = redmine.read_issue(client, linked_id, responsible_cache=responsible_cache)
                 except redmine.RedmineAuthError:
                     raise
                 except redmine.RedmineError as error:
                     errors.append(str(error))
                     continue
-                issues.append((issue_id, issue))
+                issues.append((linked_id, issue))
             if not issues:
                 return [], errors
             columns = {column['id']: column['name'] for column in self.store.columns(board_id)}
@@ -3182,7 +3209,8 @@ class MainWindow(QMainWindow, Async):
                 return errors + self.store.update_redmine_tasks(board_id, updates, request_id=rid)
             return errors
 
-        self.redmine_operation(update, 'Добавленные ТИ обновлены', busy_message='Обновление ТИ по #ID…')
+        success = 'Добавленные ТИ обновлены' if issue_id is None else f'Карточка ТИ #{issue_id} обновлена'
+        self.redmine_operation(update, success, busy_message='Обновление ТИ по #ID…')
 
     def add_redmine_task(self):
         if not self.redmine_url:

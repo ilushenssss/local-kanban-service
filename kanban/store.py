@@ -516,6 +516,25 @@ class Store:
 
         return self.write('redmine_identification', [board_id, project, cards], apply, request_id)
 
+    def update_identification_card(self, board_id, project, previous, card, request_id=None):
+        previous = {key: value for key, value in previous.items() if key != 'links'}
+        key = f'redmine_identification:{board_id}'
+
+        def apply(c, uid):
+            if self.redmine_basis_project_in(c, board_id) != project:
+                raise ValueError('Проект поиска оснований изменился. Обновите ИД.')
+            row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            cards = json.loads(row[0]) if row else []
+            matching = [index for index, stored in enumerate(cards) if stored == previous]
+            if len(matching) != 1:
+                raise ValueError('Карточка ИД изменилась. Откройте её актуальную версию и повторите обновление.')
+            index = matching[0]
+            cards[index:index + 1] = [card] if card is not None else []
+            c.execute('UPDATE settings SET value=? WHERE key=?', (json.dumps(cards, ensure_ascii=False), key))
+            return True
+
+        return self.write('redmine_identification', [board_id, project, previous, card], apply, request_id)
+
     def identification_in(self, c, board, actor):
         key = 'redmine_identification:{}'.format(board['id'])
         row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
@@ -1140,14 +1159,16 @@ class Store:
             tasks[r['task_id']]['unread_count'] = r['total']
         return list(tasks.values())
 
-    def redmine_tasks(self, board_id):
+    def redmine_tasks(self, board_id, *, issue_id=None):
         with self.connection() as c:
             c.execute('BEGIN')
             self.require(c, 'read', board_id)
             self.active_board(c, board_id)
             basis_project = self.redmine_basis_project_in(c, board_id)
-            return [self.redmine_entry(row, basis_project) for row in c.execute(
-                'SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (board_id,))]
+            query = 'SELECT * FROM redmine_links WHERE board_id=?'
+            if issue_id is not None:
+                return [self.redmine_entry(row, basis_project) for row in c.execute(query + ' AND issue_id=?', (board_id, issue_id))]
+            return [self.redmine_entry(row, basis_project) for row in c.execute(query + ' ORDER BY issue_id', (board_id,))]
 
     @staticmethod
     def redmine_entry(row, basis_project):

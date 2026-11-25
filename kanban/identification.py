@@ -1,14 +1,15 @@
 """Read-only ИД cards from the board's Redmine basis project."""
+from collections import defaultdict, deque
 from math import ceil
 
-from PyQt5.QtCore import QRect, QRectF, QSize, Qt
+from PyQt5.QtCore import QRect, QRectF, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import (QAbstractTextDocumentLayout, QColor, QFont, QFontMetrics, QPainterPath,
                          QPalette, QTextDocument, QTextOption)
 from PyQt5.QtWidgets import (QLabel, QListView, QListWidget, QListWidgetItem, QPushButton, QScrollArea,
                              QHBoxLayout, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from .redmine import status_key
-from .theme import STICKERS, TOKENS
+from .theme import STICKERS, TOKENS, card_refresh_rect, paint_card_refresh
 
 
 COLUMN_TITLES = (
@@ -104,7 +105,8 @@ class IdentificationCard(ProjectCardDelegate):
             text(value, x + 4, y - 1, span - 8, foreground, align=Qt.AlignHCenter)
 
         red, green = STICKERS[0], STICKERS[2]
-        text(card['number'], left, top, width, TOKENS['text'], bold=True)
+        text(card['number'], left, top, width - 28, TOKENS['text'], bold=True)
+        paint_card_refresh(painter, card_refresh_rect(option.rect))
         text(card.get('subject', ''), left, top + 22, width, TOKENS['secondary'])
         top += 22
         text('Согласовано:', left, top + 29, 90, TOKENS['secondary'])
@@ -123,7 +125,27 @@ class IdentificationCard(ProjectCardDelegate):
         painter.restore()
 
 
-def project_card_column(title, delegate, minimum_width=240):
+class IdentificationCards(QListWidget):
+    refresh_requested = pyqtSignal(object)
+
+    def mouseReleaseEvent(self, event):
+        item = self.itemAt(event.pos())
+        if item and event.button() == Qt.LeftButton and card_refresh_rect(self.visualItemRect(item)).contains(event.pos()):
+            self.refresh_requested.emit(item.data(Qt.UserRole))
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def keyPressEvent(self, event):
+        item = self.currentItem()
+        if item and event.key() == Qt.Key_R and event.modifiers() == Qt.ControlModifier:
+            self.refresh_requested.emit(item.data(Qt.UserRole))
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+def project_card_column(title, delegate, minimum_width=240, list_type=QListWidget):
     panel = QWidget()
     panel.setObjectName('ColumnPanel')
     panel.setAttribute(Qt.WA_StyledBackground)
@@ -136,7 +158,7 @@ def project_card_column(title, delegate, minimum_width=240):
     heading.setWordWrap(True)
     heading.setMinimumHeight(64)
     stack.addWidget(heading)
-    cards = QListWidget()
+    cards = list_type()
     cards.setObjectName('Cards')
     cards.setAccessibleName(title)
     cards.setResizeMode(QListView.Adjust)
@@ -148,7 +170,7 @@ def project_card_column(title, delegate, minimum_width=240):
 
 
 class IdentificationPage(QWidget):
-    def __init__(self, refresh):
+    def __init__(self, refresh, refresh_card):
         super().__init__()
         self.snapshot = None
         layout = QVBoxLayout(self)
@@ -174,7 +196,8 @@ class IdentificationPage(QWidget):
         columns.setSpacing(18)
         self.columns = []
         for title in COLUMN_TITLES:
-            panel, cards = project_card_column(title, IdentificationCard)
+            panel, cards = project_card_column(title, IdentificationCard, list_type=IdentificationCards)
+            cards.refresh_requested.connect(refresh_card)
             columns.addWidget(panel, 1)
             self.columns.append(cards)
         self.scroll.setWidget(canvas)
@@ -185,8 +208,6 @@ class IdentificationPage(QWidget):
         if snapshot == self.snapshot:
             return
         self.snapshot = snapshot
-        for column in self.columns:
-            column.clear()
         self.refresh_button.setEnabled(bool(project))
         if not project:
             message = 'Укажите проект поиска оснований в настройках доски.'
@@ -197,15 +218,41 @@ class IdentificationPage(QWidget):
         else:
             message = ''
         self.message.setText(message)
+        groups = [[] for _ in self.columns]
         for card in cards or ():
-            column = self.columns[2 * is_approved(card) + bool(card['links'])]
-            item = QListWidgetItem(column)
-            item.setData(Qt.UserRole, card)
-            lines = [card['number']]
-            if card.get('subject'):
-                lines.append(card['subject'])
-            lines.extend(['Статус: ' + (card['status'] or '—'), 'Согласовано: ' + (card['approval'] or '—')])
-            lines.extend(card['links'] or ['Не привязано'])
-            summary = '\n'.join(lines)
-            item.setData(Qt.AccessibleTextRole, summary)
-            item.setToolTip(summary)
+            groups[2 * is_approved(card) + bool(card['links'])].append(card)
+        for column, group in zip(self.columns, groups):
+            self.update_column(column, group)
+
+    @staticmethod
+    def update_column(column, cards):
+        def key(card):
+            return card.get('issue_id') or (card['number'], card.get('subject'))
+
+        existing = defaultdict(deque)
+        for row in range(column.count()):
+            item = column.item(row)
+            existing[key(item.data(Qt.UserRole))].append(item)
+        for row, card in enumerate(cards):
+            matches = existing[key(card)]
+            item = matches.popleft() if matches else QListWidgetItem()
+            old_row = column.row(item)
+            if old_row != row:
+                if old_row >= 0:
+                    column.takeItem(old_row)
+                column.insertItem(row, item)
+            if item.data(Qt.UserRole) != card:
+                item.setData(Qt.UserRole, card)
+                lines = [card['number']]
+                if card.get('subject'):
+                    lines.append(card['subject'])
+                lines.extend(['Статус: ' + (card['status'] or '—'), 'Согласовано: ' + (card['approval'] or '—')])
+                lines.extend(card['links'] or ['Не привязано'])
+                summary = '\n'.join(lines)
+                hint = 'Ctrl+R — обновить карточку'
+                item.setData(Qt.AccessibleTextRole, summary)
+                item.setData(Qt.AccessibleDescriptionRole, hint)
+                item.setToolTip(summary + '\n' + hint)
+        for items in existing.values():
+            for item in items:
+                column.takeItem(column.row(item))
