@@ -6,7 +6,7 @@ import unittest
 from PyQt5.QtCore import QByteArray, QBuffer, QIODevice, Qt
 from PyQt5.QtGui import QImage
 from kanban.stickers import prepare_sticker, MAX_SOURCE
-from kanban.store import Store, SCHEMA
+from kanban.store import AccessDenied, Store, SCHEMA
 from tools.restore import restore
 
 
@@ -43,6 +43,22 @@ class StickersTest(unittest.TestCase):
         for bad in (b'invalid', b'x' * (MAX_SOURCE + 1)):
             with self.assertRaises(ValueError):
                 prepare_sticker(bad)
+
+    def test_standard_pack_is_shared_but_admin_managed_and_preserves_chat_history(self):
+        bob = Store(self.store.folder, 'bob')
+        original = image_bytes()
+        key = self.store.add_standard_sticker('Привет', original)
+        self.assertEqual(self.store.add_standard_sticker('Привет', original), key)
+        (read_key, name, sticker), = bob.standard_stickers()
+        self.assertEqual((read_key, name), (key, 'Привет'))
+        with self.assertRaises(AccessDenied):
+            bob.add_standard_sticker('Тест', original)
+        with self.assertRaises(AccessDenied):
+            bob.remove_standard_sticker(key)
+        message = bob.team_send_sticker(sticker, board_id=self.bid)
+        self.store.remove_standard_sticker(key)
+        self.assertEqual(bob.standard_stickers(), [])
+        self.assertEqual(bob.team_sticker(message), sticker)
 
     def test_v3_upgrade_keeps_administrator_and_text_messages(self):
         folder = self.root / 'v3'

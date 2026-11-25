@@ -9,7 +9,7 @@ import uuid
 from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone, QSignalBlocker, QSaveFile, QIODevice, QStandardPaths
 from PyQt5.QtGui import QDesktopServices, QDrag, QIcon, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QComboBox,
+    QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QTextBrowser, QPlainTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
 from .store import Store, Conflict, AccessRestricted, DatabaseTooNew
@@ -23,11 +23,13 @@ from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
 from .messenger import Messenger
+from .people import open_employee_profile
 from .notifications import Notifications
 from .board_badges import BoardBadgeDelegate
 from .avatars import avatar_image, avatar_resources
 from .spellcheck import SpellTextEdit, SpellLineEdit, spell_engine
 from .stickers import MAX_SOURCE
+from .sticker_pack import StickerPackDialog
 from .theme import apply_theme, theme_settings, symbol_icon
 
 
@@ -143,6 +145,7 @@ class CatalogDialog(QDialog, Async):
         self.init_async()
         self.store, self.board_id, self.kind = store, board_id, kind
         self.edit_id = None
+        self.can_manage = False
         self.retry = None
         self.delete_retry = None
         self.setWindowTitle('Сотрудники' if kind == 'users' else 'Метки доски')
@@ -151,18 +154,18 @@ class CatalogDialog(QDialog, Async):
         heading = QLabel(self.windowTitle())
         heading.setObjectName('Heading')
         root.addWidget(heading)
-        hint = QLabel('Отметка «Ограничить доступ» блокирует вход в TeamSync. Снимите отметку, чтобы восстановить доступ.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
-        hint.setObjectName('Muted')
-        hint.setWordWrap(True)
-        root.addWidget(hint)
         self.list = QListWidget()
+        self.edit_intro = QLabel('Отметка «Ограничить доступ» блокирует вход в TeamSync. Снимите отметку, чтобы восстановить доступ.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
+        self.edit_intro.setObjectName('Muted')
+        self.edit_intro.setWordWrap(True)
+        root.addWidget(self.edit_intro)
         if kind == 'users':
-            caption = QLabel('Ограничить доступ')
-            caption.setBuddy(self.list)
-            root.addWidget(caption)
+            self.list.setIconSize(QSize(36, 36))
             self.list.itemChanged.connect(self.change_restriction)
         root.addWidget(self.list, 1)
-        form = QFormLayout()
+        self.edit_form = QWidget()
+        form = QFormLayout(self.edit_form)
+        form.setContentsMargins(0, 0, 0, 0)
         form.setRowWrapPolicy(QFormLayout.WrapAllRows)
         self.login = QLineEdit()
         self.login.setPlaceholderText('Например, ivanov')
@@ -170,9 +173,9 @@ class CatalogDialog(QDialog, Async):
         self.name.setPlaceholderText('Иванов Иван' if kind == 'users' else 'Например, Документы')
         if kind == 'users':
             form.addRow('Пользователь Windows', self.login)
-        form.addRow('Имя сотрудника' if kind == 'users' else 'Название метки', self.name)
+        form.addRow('ФИО сотрудника' if kind == 'users' else 'Название метки', self.name)
         style_form(form)
-        root.addLayout(form)
+        root.addWidget(self.edit_form)
         actions = QHBoxLayout()
         self.save_button = button('Добавить', self.save_entry, actions, 'primary')
         self.edit_button = button('Изменить имя' if kind == 'users' else 'Переименовать', self.edit_entry, actions)
@@ -184,16 +187,21 @@ class CatalogDialog(QDialog, Async):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.PlainText)
         root.addWidget(self.status)
+        if kind == 'users':
+            for control in (self.edit_intro, self.edit_form, self.save_button, self.edit_button):
+                control.hide()
         self.load()
 
     def load(self):
         self.save_button.setEnabled(False)
         def done(data, error):
-            self.save_button.setEnabled(True)
             if error:
                 self.status.setText(error_text(error) + '. Закройте и откройте справочник для повтора.')
                 return
-            allowed = self.kind == 'users' or data.get('permissions', {}).get('manage', False)
+            allowed = self.can_manage = data.get('permissions', {}).get('manage', False)
+            if self.kind == 'users':
+                for control in (self.edit_intro, self.edit_form, self.save_button, self.edit_button):
+                    control.setVisible(allowed)
             self.save_button.setEnabled(allowed)
             self.edit_button.setEnabled(allowed)
             if self.kind == 'labels':
@@ -201,11 +209,21 @@ class CatalogDialog(QDialog, Async):
             self.list.clear()
             rows = sorted(data[self.kind], key=lambda x: (x.get('display_name') or x.get('name')).casefold())
             for row in rows:
-                title = '{} · {}'.format(row['display_name'], row['login']) if self.kind == 'users' else row['name']
+                title = row['name'] if self.kind == 'labels' else row['display_name']
+                if self.kind == 'users' and allowed:
+                    title += ' · ' + row['login']
                 item = QListWidgetItem(title)
                 item.setData(Qt.UserRole, row)
                 if self.kind == 'users':
-                    if row['role'] == 'admin':
+                    item.setSizeHint(QSize(0, 44))
+                    if row['avatar']:
+                        item.setIcon(QIcon(QPixmap.fromImage(avatar_image(row['avatar']))))
+                    if not allowed:
+                        item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
+                        if row['restricted']:
+                            item.setToolTip('Доступ к TeamSync ограничен')
+                            item.setData(Qt.AccessibleDescriptionRole, 'Доступ к TeamSync ограничен')
+                    elif row['role'] == 'admin':
                         item.setFlags(item.flags() & ~Qt.ItemIsUserCheckable)
                         item.setToolTip('Доступ действующего администратора нельзя ограничить')
                     else:
@@ -213,9 +231,12 @@ class CatalogDialog(QDialog, Async):
                         item.setData(Qt.AccessibleDescriptionRole, 'Ограничить доступ к TeamSync')
                 self.list.addItem(item)
             self.status.setText('Записей: {}'.format(len(rows)))
-        self.work(lambda: {'users': self.store.access_users()} if self.kind == 'users' else self.store.catalogs(self.board_id), done)
+        self.work(self.store.employee_directory if self.kind == 'users' else lambda: self.store.catalogs(self.board_id),
+                  done)
 
     def change_restriction(self, item):
+        if not self.can_manage:
+            return
         row = item.data(Qt.UserRole)
         restricted = item.checkState() == Qt.Checked
         if row['role'] == 'admin' or restricted == bool(row['restricted']):
@@ -255,7 +276,7 @@ class CatalogDialog(QDialog, Async):
         self.work(lambda: self.store.set_user_restricted(row['id'], restricted), done)
 
     def edit_entry(self):
-        if self.jobs or self.retry or self.delete_retry or not self.list.currentItem():
+        if not self.can_manage or self.jobs or self.retry or self.delete_retry or not self.list.currentItem():
             return
         row = self.list.currentItem().data(Qt.UserRole)
         self.edit_id = row['id']
@@ -268,7 +289,7 @@ class CatalogDialog(QDialog, Async):
         self.name.setFocus()
 
     def save_entry(self):
-        if self.jobs or self.delete_retry:
+        if not self.can_manage or self.jobs or self.delete_retry:
             return
         payload = (self.login.text(), self.name.text(), self.edit_id)
         if not self.retry:
@@ -551,7 +572,11 @@ class TaskDialog(QDialog, Async):
         chat_heading = QLabel('Обсуждение')
         chat_heading.setObjectName('ChatHeading')
         comments_layout.addWidget(chat_heading)
-        self.comments = QTextEdit()
+        self.comments = QTextBrowser()
+        self.comments.setOpenLinks(False)
+        self.comments.setOpenExternalLinks(False)
+        self.comments.anchorClicked.connect(
+            lambda url: open_employee_profile(url, self, self.store, self.work, self.status))
         self.comments.setReadOnly(True)
         self.comments.setObjectName('ChatTimeline')
         comments_layout.addWidget(self.comments)
@@ -1597,7 +1622,7 @@ class MainWindow(QMainWindow, Async):
         permissions = getattr(self, 'permissions', {})
         for action in menu.actions():
             text = action.text()
-            if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…', 'Проект поиска оснований…',
+            if text in ('Роли сотрудников', 'Набор стандартных стикеров…', 'Резервная копия', 'Часовой пояс…', 'Проект поиска оснований…',
                         'Проект СППИ…'):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Выгрузить баг из Bugzilla…':
@@ -1636,6 +1661,7 @@ class MainWindow(QMainWindow, Async):
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh_workspace)
         menu.addAction('Личные настройки…', self.open_avatar_settings)
+        menu.addAction('Набор стандартных стикеров…', self.open_sticker_pack)
         menu.addAction('Подключение…', self.open_connection_settings)
         menu.addAction('Выгрузить баг из Bugzilla…', self.export_bugzilla_bug)
         self.notifications.add_settings(menu)
@@ -1643,6 +1669,13 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Резервная копия', self.backup)
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
+
+    def open_sticker_pack(self):
+        if not self.store or self.access_restricted or not self.permissions.get('admin', False):
+            return
+        dialog = StickerPackDialog(self.store, self.work, self, manage=True)
+        dialog.exec_()
+        dialog.deleteLater()
 
     def open_avatar_settings(self):
         store = self.store
@@ -2540,7 +2573,7 @@ class MainWindow(QMainWindow, Async):
             self.permissions = catalogs.get('permissions', {})
             self.apply_redmine_settings(catalogs.get('redmine'))
             self.apply_bugzilla_settings(catalogs['bugzilla'])
-            self.users_button.setEnabled(self.permissions.get('admin', False))
+            self.users_button.setEnabled(True)
             self.create_board_button.setEnabled(True)
             if page == 4:
                 self.my_tasks.update_data(personal)

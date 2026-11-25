@@ -43,8 +43,3 @@ def prepare_sticker(source):
     if not image.save(dest, 'PNG') or len(output) > MAX_PNG:
         raise ValueError('Не удалось подготовить стикер')
     return bytes(output), image.width(), image.height()
-
-
-def sticker_from_file(path):
-    with Path(path).open('rb') as src:
-        return prepare_sticker(src.read(MAX_SOURCE + 1))

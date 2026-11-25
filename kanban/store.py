@@ -293,6 +293,29 @@ class Store:
             self.require(c, 'admin')
             return [dict(r) for r in c.execute('SELECT * FROM users ORDER BY display_name')]
 
+    def employee_directory(self):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            role = self.actor(c)['role']
+            admin = role == 'admin'
+            fields = 'u.*' if admin else 'u.display_name,u.restricted'
+            users = [dict(row) for row in c.execute(
+                "SELECT " + fields + ",s.value AS avatar FROM users u "
+                "LEFT JOIN settings s ON s.key='avatar:' || u.id "
+                "WHERE u.restricted=0 OR ? ORDER BY u.display_name,u.id", (role != 'employee',))]
+            return {'users': users, 'permissions': {'manage': admin}}
+
+    def employee_profile(self, user_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            role = self.actor(c)['role']
+            row = c.execute('''SELECT u.display_name,s.value AS avatar FROM users u
+                LEFT JOIN settings s ON s.key='avatar:' || u.id
+                WHERE u.id=? AND (u.restricted=0 OR ?)''', (user_id, role != 'employee')).fetchone()
+            if row is None:
+                raise AccessDenied('Профиль сотрудника недоступен')
+            return dict(row)
+
     def set_role(self, user_id, role, request_id=None):
         if role not in ('admin', 'manager', 'employee'):
             raise ValueError('Неизвестная роль')
@@ -362,7 +385,7 @@ class Store:
     def authorize_write(self, c, operation, payload):
         self.actor(c)
         if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings', 'redmine_basis_project',
-                         'redmine_sppi_project', 'connection_settings'):
+                         'redmine_sppi_project', 'connection_settings', 'standard_sticker'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -936,6 +959,39 @@ class Store:
                 if temporary.exists():
                     temporary.unlink()
         return self.write('team_sticker', [board_id, digest], apply, request_id)
+
+    def standard_stickers(self):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            self.actor(c)
+            return [(key, key.split(':', 2)[2], image) for key, image in c.execute(
+                "SELECT key,value FROM settings WHERE key GLOB 'standard_sticker:*:*' "
+                "AND typeof(value)='blob' ORDER BY key")]
+
+    def add_standard_sticker(self, name, source):
+        from .stickers import prepare_sticker
+        with self.connection() as c:
+            self.require(c, 'admin')
+        image, _, _ = prepare_sticker(source)
+        digest = hashlib.sha256(image).hexdigest()
+        name = name.strip()[:100] or 'Стикер'
+        key = f'standard_sticker:{digest}:{name}'
+
+        def apply(c, uid):
+            c.execute('INSERT OR IGNORE INTO settings VALUES(?,?)', (key, image))
+            return key
+
+        return self.write('standard_sticker', [key], apply)
+
+    def remove_standard_sticker(self, key):
+        if not key.startswith('standard_sticker:'):
+            raise ValueError('Неизвестный стикер')
+
+        def apply(c, uid):
+            c.execute("DELETE FROM settings WHERE key=? AND key GLOB 'standard_sticker:*:*'", (key,))
+            return True
+
+        return self.write('standard_sticker', [key], apply)
 
     def team_sticker(self, message_id):
         with self.connection() as c:

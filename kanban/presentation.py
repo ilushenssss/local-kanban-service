@@ -89,7 +89,12 @@ def comments_html(entries, login, sticker_html=None, timezone='UTC', *, avatar_s
     result = []
     for entry in entries:
         own = entry.get('login') == login
-        author = html.escape('Вы' if own else entry['author'])
+        author = html.escape(entry['author'])
+        if type(entry.get('user_id')) is int:
+            author = '<a style="color:{}" href="employee:{}">{}</a>'.format(
+                TOKENS['accent'], entry['user_id'], author)
+        if own:
+            author += ' (Вы)'
         avatar = (avatar_sources or {}).get(entry.get('login'))
         if avatar:
             author = '<img src="{}" width="22" height="22" />&nbsp;{}'.format(html.escape(avatar), author)

@@ -2,28 +2,33 @@
 import uuid
 from PyQt5.QtCore import Qt, QTimer, QSize, QUrl, QByteArray, QBuffer, QIODevice, pyqtSignal
 from PyQt5.QtGui import QPainter, QColor, QFont, QImage, QPixmap, QTextDocument
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QTextBrowser, QFileDialog, QDialog, QDialogButtonBox
+from PyQt5.QtWidgets import QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QTextBrowser, QDialog, QDialogButtonBox
 from .theme import TOKENS, symbol_icon
 from .widgets import MessageEdit
 from .presentation import comments_html
-from .stickers import prepare_sticker, sticker_from_file
+from .stickers import prepare_sticker
 from .avatars import avatar_resources
+from .people import open_employee_profile
+from .sticker_pack import StickerPackDialog
 
 
 class StickerInput(MessageEdit):
     imagePasted = pyqtSignal(bytes)
 
-    def insertFromMimeData(self, source):
-        if source.hasImage():
-            value = source.imageData()
-            image = value.toImage() if isinstance(value, QPixmap) else QImage(value)
-            data = QByteArray()
-            buffer = QBuffer(data)
-            buffer.open(QIODevice.WriteOnly)
-            if image.save(buffer, 'PNG'):
-                self.imagePasted.emit(bytes(data))
-        else:
-            super().insertFromMimeData(source)
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_V and event.modifiers() == Qt.ControlModifier:
+            source = QApplication.clipboard().mimeData()
+            if source and source.hasImage():
+                value = source.imageData()
+                image = value.toImage() if isinstance(value, QPixmap) else QImage(value)
+                data = QByteArray()
+                buffer = QBuffer(data)
+                buffer.open(QIODevice.WriteOnly)
+                if image.save(buffer, 'PNG'):
+                    self.imagePasted.emit(bytes(data))
+                event.accept()
+                return
+        super().keyPressEvent(event)
 
 
 class StickerTimeline(QTextBrowser):
@@ -109,6 +114,7 @@ class Messenger(QWidget):
         self.timeline.setOpenLinks(False)
         self.timeline.setOpenExternalLinks(False)
         self.timeline.anchorClicked.connect(self.view_sticker)
+        self.timeline.anchorClicked.connect(self.view_profile)
         self.timeline.setReadOnly(True)
         layout.addWidget(self.timeline, 1)
         self.input = StickerInput()
@@ -122,8 +128,8 @@ class Messenger(QWidget):
         self.send_button.clicked.connect(self.send)
         self.input.sendRequested.connect(self.send_button.click)
         actions = QHBoxLayout()
-        self.image_button = QPushButton('Фотостикер…')
-        self.image_button.setToolTip('PNG, JPG, WebP до 10 МБ; также можно вставить изображение через Ctrl+V')
+        self.image_button = QPushButton('Стикеры')
+        self.image_button.setToolTip('Открыть стандартные стикеры. Своё изображение можно вставить через Ctrl+V.')
         self.image_button.clicked.connect(self.choose_sticker)
         actions.addWidget(self.image_button)
         actions.addWidget(self.send_button)
@@ -318,9 +324,10 @@ class Messenger(QWidget):
         if not self.active or self.sending or self.retry or self.sticker_retry or self.preparing:
             self.status.setText('Сначала завершите текущую отправку')
             return
-        path, _ = QFileDialog.getOpenFileName(self, 'Выберите фотостикер', '', 'Изображения (*.png *.jpg *.jpeg *.webp)')
-        if path:
-            self.prepare_image(lambda: sticker_from_file(path))
+        dialog = StickerPackDialog(self.window.store, self.window.work, self)
+        if dialog.exec_() == QDialog.Accepted and dialog.selected_sticker:
+            self.preview_sticker(dialog.selected_sticker)
+        dialog.deleteLater()
 
     def paste_sticker(self, data):
         if not self.active or self.sending or self.retry or self.sticker_retry or self.preparing:
@@ -338,11 +345,15 @@ class Messenger(QWidget):
             if error:
                 self.status.setText('Не удалось подготовить стикер: ' + str(error))
                 return
-            self.sticker = result[0]
-            self.preview_image.setPixmap(QPixmap.fromImage(QImage.fromData(self.sticker)).scaled(140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-            self.preview.show()
-            self.status.setText('Предпросмотр. Нажмите «Отправить стикер».')
+            self.preview_sticker(result[0])
         self.window.work(fn, done)
+
+    def preview_sticker(self, data):
+        self.sticker = data
+        self.preview_image.setPixmap(QPixmap.fromImage(QImage.fromData(data)).scaled(
+            140, 140, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        self.preview.show()
+        self.status.setText('Предпросмотр. Нажмите «Отправить стикер».')
 
     def remove_sticker(self):
         if not self.sending and not self.sticker_retry:
@@ -375,6 +386,10 @@ class Messenger(QWidget):
             self.remove_sticker()
             self.poll()
         self.window.work(lambda: self.window.store.team_send_sticker(data, rid, board_id=self.board_id), done)
+
+    def view_profile(self, url):
+        if self.active and self.window.store:
+            open_employee_profile(url, self, self.window.store, self.window.work, self.status)
 
     def view_sticker(self, url):
         if url.scheme() != 'sticker':

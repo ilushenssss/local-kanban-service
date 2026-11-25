@@ -87,7 +87,7 @@ class UITest(unittest.TestCase):
     def test_employee_changes_own_avatar_on_existing_tasks_and_messages(self):
         from PyQt5.QtCore import QUrl
         from PyQt5.QtGui import QColor, QImage, QTextDocument
-        from PyQt5.QtWidgets import QMenu
+        from PyQt5.QtWidgets import QLabel, QMenu
 
         employee = Store(self.store.folder, 'colleague')
         self.store.set_role(employee.profile()['id'], 'employee')
@@ -148,6 +148,24 @@ class UITest(unittest.TestCase):
         import re
         url = re.search(r'src="(avatar:[^"]+)', observer.messenger.markup)[1]
         self.assertFalse(observer.messenger.timeline.document().resource(QTextDocument.ImageResource, QUrl(url)).isNull())
+        profile_link = QUrl('employee:{}'.format(employee.profile()['id']))
+        profiles = []
+
+        def profile(card):
+            self.assertEqual(card.windowTitle(), 'Профиль сотрудника')
+            self.assertIn('colleague', [label.text() for label in card.findChildren(QLabel)])
+            self.assertTrue(any(label.accessibleName() == 'Фото профиля' and not label.pixmap().isNull()
+                                for label in card.findChildren(QLabel)))
+            profiles.append(card.parentWidget())
+            return QDialog.Accepted
+
+        observer.messenger.open_chat()
+        with patch.object(QDialog, 'exec_', new=profile):
+            observer.messenger.timeline.anchorClicked.emit(profile_link)
+            wait_for(lambda: len(profiles) == 1)
+            dialog.comments.anchorClicked.emit(profile_link)
+            wait_for(lambda: len(profiles) == 2)
+        self.assertEqual(profiles, [observer.messenger, dialog])
 
         settings('Удалить аватар')
         observer.refresh()
@@ -160,6 +178,30 @@ class UITest(unittest.TestCase):
         dialog.refresh_timer.stop()
         wait_for(lambda: not dialog.jobs)
         self.assertTrue(dialog.close())
+
+    def test_directory_read_only_and_manager_can_see_blocked_employee(self):
+        from kanban.store import AccessDenied
+        member = Store(self.store.folder, 'colleague')
+        self.store.set_role(member.profile()['id'], 'employee')
+        blocked = Store(self.store.folder, 'another').profile()['id']
+        self.store.set_user_restricted(blocked, True)
+        manager = Store(self.store.folder, 'designer')
+        for store, blocked_visible in ((member, False), (manager, True)):
+            dialog = CatalogDialog(store, self.bid, 'users')
+            self.windows.append(dialog)
+            dialog.show()
+            wait_for(lambda: not dialog.jobs)
+            items = [dialog.list.item(i) for i in range(dialog.list.count())]
+            self.assertEqual('another' in [item.text() for item in items], blocked_visible)
+            self.assertFalse(any(item.flags() & Qt.ItemIsUserCheckable for item in items))
+            self.assertFalse(dialog.save_button.isVisible())
+            self.assertFalse(dialog.edit_button.isVisible())
+            self.assertTrue(all(set(item.data(Qt.UserRole)) == {'display_name', 'restricted', 'avatar'} for item in items))
+            with self.assertRaises(AccessDenied):
+                store.set_user_restricted(blocked, False)
+        with self.assertRaises(AccessDenied):
+            member.employee_profile(blocked)
+        self.assertEqual(manager.employee_profile(blocked)['display_name'], 'another')
 
     def test_newer_database_reports_required_client_update(self):
         newer = SCHEMA_VERSION + 1
@@ -453,6 +495,20 @@ class UITest(unittest.TestCase):
         m = w.messenger
         m.open_chat()
         wait_for(lambda: not m.loading and not w.jobs)
+        self.store.add_standard_sticker('Привет', image_bytes())
+
+        def select_standard(dialog):
+            wait_for(lambda: not dialog.pending and dialog.list.count() == 1)
+            self.assertFalse(dialog.manage)
+            dialog.list.setCurrentRow(0)
+            dialog.primary.click()
+            return dialog.result()
+
+        with patch.object(QDialog, 'exec_', new=select_standard):
+            self.assertEqual(m.image_button.text(), 'Стикеры')
+            m.image_button.click()
+        self.assertTrue(m.preview.isVisible())
+        m.remove_sticker()
         m.input.setPlainText('Текстовый черновик')
         mime = QMimeData()
         sample = QImage(400, 400, QImage.Format_ARGB32)
@@ -469,7 +525,9 @@ class UITest(unittest.TestCase):
         painter.drawText(sample.rect(), Qt.AlignCenter, 'Привет!')
         painter.end()
         mime.setImageData(sample)
-        m.input.insertFromMimeData(mime)
+        APP.clipboard().setMimeData(mime)
+        QTest.keyClick(m.input, Qt.Key_V, Qt.ControlModifier)
+        APP.clipboard().clear()
         wait_for(lambda: not m.preparing and not w.jobs)
         self.assertTrue(m.preview.isVisible())
         self.assertEqual(m.input.toPlainText(), 'Текстовый черновик')
