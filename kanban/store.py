@@ -1217,7 +1217,14 @@ class Store:
                 if self.project_board(board):
                     catalogs['identification_project'] = self.redmine_basis_project_in(c, selected)
                     tasks = self.identification_in(c, board, actor)
-            elif selected is not None and view != 'bugs':
+            elif view == 'bugs' and selected is not None:
+                catalogs['linked_bug_ids'] = {
+                    number.lstrip('0') for (references,) in c.execute(
+                        'SELECT issue_references FROM redmine_links WHERE board_id=?', (selected,))
+                    for value in json.loads(references).get('bugs', [])
+                    for number in re.findall(r'[0-9]+', value)
+                }
+            elif selected is not None:
                 board = next(b for b in boards if b['id'] == selected)
                 tasks = self.cards_in(c, selected, {} if view == 'statistics' else filters)
                 if view == 'board':

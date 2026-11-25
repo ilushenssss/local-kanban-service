@@ -1219,6 +1219,7 @@ class MainWindow(QMainWindow, Async):
         self.bugzilla_config = {'url': '', 'domain': ''}
         self.bugzilla_session = None
         self.bugzilla_cards = {}
+        self.bugzilla_links = {}
         self.bugzilla_loading = False
         self.redmine_refresh_message = ''
         self.sppi_view_board = None
@@ -1412,7 +1413,7 @@ class MainWindow(QMainWindow, Async):
         self.project_sections.addTab(current_work, 'Текущие работы')
         self.identification_page = IdentificationPage(self.refresh_identification)
         self.project_sections.addTab(self.identification_page, 'ИД')
-        self.bugzilla_page = BugzillaPage(self.export_bugzilla_bug)
+        self.bugzilla_page = BugzillaPage(self.export_bugzilla_bug, lambda: self.export_bugzilla_bug(bulk=True))
         self.project_sections.addTab(self.bugzilla_page, 'Баги')
         self.project_sections.currentChanged.connect(self.project_section_changed)
         content = QVBoxLayout(current_work)
@@ -1628,11 +1629,16 @@ class MainWindow(QMainWindow, Async):
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
 
-    def export_bugzilla_bug(self):
+    def export_bugzilla_bug(self, *, bulk=False):
         store = self.store
         if store is None or self.access_restricted or self.bugzilla_loading:
             return
         board_id = self.project_sections_board if self.project_sections_board == self.board_id else None
+        if bulk:
+            node = self.board_items.get(board_id)
+            if node is None:
+                return
+            project, board = node.parent().text(0), node.text(0)
         config = self.bugzilla_config
         if not config['url'] or not config['domain']:
             self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
@@ -1643,62 +1649,16 @@ class MainWindow(QMainWindow, Async):
         scope = (config['url'], login)
         session = self.bugzilla_session
         password = session[2] if session and session[:2] == scope else None
-        dialog = QDialog(self)
-        dialog.setWindowTitle('Выгрузить баг из Bugzilla')
-        dialog.setMinimumWidth(370)
-        layout = QVBoxLayout(dialog)
-        form = QFormLayout()
-        bug_id = QLineEdit()
-        form.addRow('ID бага', bug_id)
-        login_label = QLabel(login)
-        login_label.setTextFormat(Qt.PlainText)
-        form.addRow('Логин Bugzilla', login_label)
-        password_input = None
-        if password is None:
-            password_input = QLineEdit()
-            password_input.setEchoMode(QLineEdit.Password)
-            form.addRow('Пароль Bugzilla', password_input)
-        style_form(form)
-        layout.addLayout(form)
-        error_label = QLabel()
-        error_label.setWordWrap(True)
-        layout.addWidget(error_label)
-
-        def validate():
-            try:
-                bugzilla.bug_number(bug_id.text())
-            except bugzilla.BugzillaError as error:
-                error_label.setText(error_text(error))
-                bug_id.setFocus()
-                return
-            if password_input is not None and not password_input.text():
-                error_label.setText('Введите пароль Bugzilla.')
-                password_input.setFocus()
-                return
-            dialog.accept()
-
-        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        actions.button(QDialogButtonBox.Ok).setText('Выгрузить')
-        actions.button(QDialogButtonBox.Cancel).setText('Отмена')
-        actions.accepted.connect(validate)
-        actions.rejected.connect(dialog.reject)
-        layout.addWidget(actions)
-        accepted = dialog.exec_() == QDialog.Accepted
-        if accepted:
-            number = bugzilla.bug_number(bug_id.text())
-            if password_input is not None:
-                password = password_input.text()
-        if password_input is not None:
-            password_input.clear()
-        dialog.deleteLater()
-        if not accepted or self.access_restricted or self.store is not store:
+        export = self.prompt_bugzilla_export(login, password, bulk)
+        if export is None or self.access_restricted or self.store is not store:
             return
+        number, password = export
 
         def done(result, error):
             nonlocal password
             used_password, password = password, None
             self.bugzilla_loading = False
-            self.bugzilla_page.export_button.setEnabled(True)
+            self.bugzilla_page.set_loading(False)
             if self.access_restricted or self.store is not store:
                 return
             if self.bugzilla_config != config or (self.redmine_login or store.login) != source_login:
@@ -1708,8 +1668,15 @@ class MainWindow(QMainWindow, Async):
                     self.reset_bugzilla_session()
                 self.status.setText(error_text(error))
                 return
-            raw, card, filter_error = result
             self.bugzilla_session = (*scope, used_password)
+            if bulk:
+                current = self.board_items.get(board_id)
+                if current is not None and (current.parent().text(0), current.text(0)) == (project, board):
+                    self.bugzilla_cards[board_id] = result
+                    self.render_bugzilla_cards()
+                    self.status.setText(f'Выгружено багов из Bugzilla: {len(result)}')
+                return
+            raw, card, filter_error = result
             notice = filter_error
             if board_id in self.board_items and not filter_error:
                 cards = self.bugzilla_cards.setdefault(board_id, {})
@@ -1726,6 +1693,9 @@ class MainWindow(QMainWindow, Async):
         def load():
             if store.bugzilla_settings() != config:
                 raise bugzilla.BugzillaError('Настройки Bugzilla изменились. Обновите TeamSync и повторите выгрузку.')
+            if bulk:
+                employees = installation.load_redmine_employees(self.redmine_config_base())
+                return bugzilla.search_board_bugs(scope[0], project, board, employees, login=login, password=password)
             raw = bugzilla.read_bug(scope[0], number, login=login, password=password)
             if board_id is None:
                 return raw, None, ''
@@ -1736,13 +1706,69 @@ class MainWindow(QMainWindow, Async):
             return raw, bugzilla.board_card(raw, number, employees), ''
 
         self.bugzilla_loading = True
-        self.bugzilla_page.export_button.setEnabled(False)
-        self.status.setText(f'Загрузка бага #{number} из Bugzilla…')
+        self.bugzilla_page.set_loading(True)
+        self.status.setText('Выгрузка багов из Bugzilla…' if bulk else f'Загрузка бага #{number} из Bugzilla…')
         self.work(load, done)
 
+    def prompt_bugzilla_export(self, login, password, bulk):
+        if bulk and password is not None:
+            return None, password
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Выгрузить баги по фильтрам' if bulk else 'Выгрузить баг из Bugzilla')
+        dialog.setMinimumWidth(370)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        bug_id = None if bulk else QLineEdit()
+        if bug_id is not None:
+            form.addRow('ID бага', bug_id)
+        login_label = QLabel(login)
+        login_label.setTextFormat(Qt.PlainText)
+        form.addRow('Логин Bugzilla', login_label)
+        password_input = None
+        if password is None:
+            password_input = QLineEdit()
+            password_input.setEchoMode(QLineEdit.Password)
+            form.addRow('Пароль Bugzilla', password_input)
+        style_form(form)
+        layout.addLayout(form)
+        error_label = QLabel()
+        error_label.setWordWrap(True)
+        layout.addWidget(error_label)
+
+        def validate():
+            if bug_id is not None:
+                try:
+                    bugzilla.bug_number(bug_id.text())
+                except bugzilla.BugzillaError as error:
+                    error_label.setText(error_text(error))
+                    bug_id.setFocus()
+                    return
+            if password_input is not None and not password_input.text():
+                error_label.setText('Введите пароль Bugzilla.')
+                password_input.setFocus()
+                return
+            dialog.accept()
+
+        actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        actions.button(QDialogButtonBox.Ok).setText('Выгрузить')
+        actions.button(QDialogButtonBox.Cancel).setText('Отмена')
+        actions.accepted.connect(validate)
+        actions.rejected.connect(dialog.reject)
+        layout.addWidget(actions)
+        accepted = dialog.exec_() == QDialog.Accepted
+        if accepted:
+            number = bugzilla.bug_number(bug_id.text()) if bug_id is not None else None
+            if password_input is not None:
+                password = password_input.text()
+        if password_input is not None:
+            password_input.clear()
+        dialog.deleteLater()
+        return (number, password) if accepted else None
+
     def render_bugzilla_cards(self):
-        cards = self.bugzilla_cards.get(self.project_sections_board, {})
-        self.bugzilla_page.show_cards(cards.values())
+        board_id = self.project_sections_board
+        cards = self.bugzilla_cards.get(board_id, {})
+        self.bugzilla_page.show_cards(cards.values(), self.bugzilla_links.get(board_id, ()))
 
     def reset_bugzilla_session(self):
         self.bugzilla_session = None
@@ -2395,6 +2421,8 @@ class MainWindow(QMainWindow, Async):
                 self.rebuild_board_tree(structure)
                 for stored_board in self.bugzilla_cards.keys() - self.board_items.keys():
                     del self.bugzilla_cards[stored_board]
+                for stored_board in self.bugzilla_links.keys() - self.board_items.keys():
+                    del self.bugzilla_links[stored_board]
             self.create_project_item.setDisabled(not self.permissions.get('create_board', False))
             wanted = [(b['id'], b['name']) for b in boards]
             current = [(self.board_tabs.tabData(i), self.board_tabs.tabText(i)) for i in range(self.board_tabs.count())]
@@ -2439,6 +2467,9 @@ class MainWindow(QMainWindow, Async):
             self.columns_data = columns
             if view == 'identification':
                 self.identification_page.show_cards(selected, catalogs.get('identification_project'), tasks)
+            elif view == 'bugs' and selected is not None:
+                self.bugzilla_links[selected] = catalogs['linked_bug_ids']
+                self.render_bugzilla_cards()
             elif view == 'board':
                 self.render_board(selected, columns, tasks, totals)
             self.set_access_restricted(False)

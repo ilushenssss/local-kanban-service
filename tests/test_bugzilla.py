@@ -26,6 +26,44 @@ class BugzillaTest(unittest.TestCase):
         self.assertIsNone(bugzilla.board_card(raw, '42', []))
 
     @patch('kanban.bugzilla.HTTPSConnection')
+    def test_bulk_search_resolves_exact_products_and_versions_and_verifies_all_substrings(self, connect):
+        response = connect.return_value.getresponse.return_value.__enter__.return_value
+        response.status = 200
+        response.getheader.return_value = ''
+        bug = {'id': 42, 'product': 'Система ПРОЕКТ', 'version': '2.0-218 И-01',
+               'assigned_to': 'ANNA@example.test', 'summary': 'Подходящий', 'cf_event_1': 'Проверить', 'cf_cr_num': 7}
+        replies = [
+            {'ids': [1, 2]},
+            {'products': [{'name': 'Система ПРОЕКТ', 'versions': [{'name': '2.0-218 И-01'}, {'name': '2.0-219'},
+                                                                {'name': '2.0-218 И-02'}]},
+                          {'name': 'Другая система', 'versions': [{'name': '2.0-218 И-01'}]}]},
+            {'bugs': [bug, dict(bug, id=43, product='Другая система'), dict(bug, id=44, version='2.0-219'),
+                      dict(bug, id=45, assigned_to='other@example.test')]},
+            {'bugs': [dict(bug, id=46, version='2.0-218 И-02', assigned_to='bob@example.test')]},
+        ]
+        response.read.side_effect = [client.dumps((reply,), methodresponse=True, encoding='utf-8').encode()
+                                     for reply in replies]
+        cards = bugzilla.search_board_bugs('https://bugs.example.test/bugzilla', 'Проект', '2.0-218', ['anna', 'BOB'],
+                                          login='user@example.test', password='sample')
+        self.assertEqual(set(cards), {'42', '46'})
+        self.assertEqual(cards['42'], {'id': 42, 'summary': 'Подходящий', 'cf_event_1': 'Проверить', 'cf_cr_num': 7})
+        calls = []
+        for request in connect.return_value.request.call_args_list:
+            self.assertEqual(request.args, ('POST', '/bugzilla/xmlrpc.cgi'))
+            (params,), method = client.loads(request.kwargs['body'])
+            calls.append((method, params))
+        self.assertEqual([method for method, _ in calls],
+                         ['Product.get_accessible_products', 'Product.get', 'Bug.search', 'Bug.search'])
+        self.assertEqual(calls[1][1]['ids'], [1, 2])
+        versions = []
+        for _, params in calls[2:]:
+            self.assertEqual(params['product'], 'Система ПРОЕКТ')
+            self.assertEqual(params['limit'], 0)
+            self.assertIn('cf_cr_num', params['include_fields'])
+            versions.append(params['version'])
+        self.assertEqual(versions, ['2.0-218 И-01', '2.0-218 И-02'])
+
+    @patch('kanban.bugzilla.HTTPSConnection')
     def test_read_bug_requests_specific_id_and_preserves_raw_json(self, connect):
         response = connect.return_value.getresponse.return_value.__enter__.return_value
         response.status = 200

@@ -787,6 +787,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
 
     def test_bugzilla_export_saves_the_json_response(self):
+        from PyQt5.QtWidgets import QLabel, QWidget
         from kanban.bugzilla import BugzillaAuthError
         from kanban.installation import save_folder
 
@@ -862,6 +863,35 @@ class UITest(unittest.TestCase):
         self.assertNotIn('Событие'.encode(), self.store.db.read_bytes())
         self.assertEqual(window.bugzilla_page.snapshot, ({'id': 42, 'summary': 'Задача',
                                                         'cf_event_1': 'Событие', 'cf_cr_num': 'КР-1'},))
+        column = self.store.columns(board)[0]['name']
+        self.store.link_redmine_issue(board, 27001, 'ТИ со ссылкой', column, column,
+                                      issue_references={'bugs': ['142, BZ #42']})
+        bulk = {'42': window.bugzilla_page.snapshot[0], '4': {
+            'id': 4, 'summary': 'Свободный баг', 'cf_event_1': 'Проверить', 'cf_cr_num': 'ТИ-2',
+        }}
+        with patch('kanban.bugzilla.search_board_bugs', return_value=bulk) as search, \
+             patch.object(QDialog, 'exec_') as prompt:
+            window.bugzilla_page.export_all_button.click()
+            wait_for(lambda: not window.bugzilla_loading)
+            prompt.assert_not_called()
+        search.assert_called_once_with(url, 'Разработка', 'Версия 1', ['anna'],
+                                       login='redmine-user@example.test', password='пример-пароля')
+        window.refresh()
+        wait_for(lambda: '42' in window.bugzilla_page.linked)
+
+        def column_labels(name):
+            panel = next(panel for panel in window.bugzilla_page.scroll.widget().findChildren(QWidget, 'ColumnPanel')
+                         if panel.accessibleName() == name)
+            return {label.text() for label in panel.findChildren(QLabel)}
+
+        self.assertIn('#4', column_labels('Не привязаны'))
+        self.assertNotIn('#42', column_labels('Не привязаны'))
+        self.assertTrue({'#42', 'Дальнейшее действие', 'ТИ', 'КР-1'} <= column_labels('Привязаны'))
+        self.store.link_redmine_issue(board, 27002, 'ТИ с другим багом', column, column,
+                                      issue_references={'bugs': ['4']})
+        window.refresh()
+        wait_for(lambda: '4' in window.bugzilla_page.linked)
+        self.assertIn('#4', column_labels('Привязаны'))
         window.select_tree_board(window.board_items[other], 0)
         wait_for(lambda: not window.loading and window.project_sections_board == other)
         window.project_sections.setCurrentWidget(window.bugzilla_page)
