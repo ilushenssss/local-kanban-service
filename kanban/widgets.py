@@ -1,7 +1,7 @@
 """Shared native Qt form controls; no network or external resources."""
 import re
 
-from PyQt5.QtGui import QTextCursor
+from PyQt5.QtGui import QIcon, QTextCursor
 from PyQt5.QtCore import Qt, QDate, QLocale, pyqtSignal, QEvent, QPointF, QSize
 from PyQt5.QtWidgets import (QWidget, QComboBox, QHBoxLayout, QVBoxLayout, QCheckBox,
     QDateEdit, QCalendarWidget, QListWidget, QListWidgetItem, QLineEdit, QPushButton, QLabel, QTextEdit, QRadioButton, QButtonGroup, QToolButton, QSizePolicy, QCompleter)
@@ -98,6 +98,7 @@ class RegistrySelection(QWidget):
         super().__init__(parent)
         self.placeholder = placeholder
         self.colored = colored
+        self.icons = {}
         self.options = None
         self.chosen = set(selected)
         layout = QVBoxLayout(self)
@@ -132,6 +133,12 @@ class RegistrySelection(QWidget):
     def values(self):
         return sorted(self.chosen)
 
+    def set_icons(self, icons):
+        self.icons = icons
+        for i in range(self.list.count()):
+            item = self.list.item(i)
+            item.setIcon(icons.get(item.data(Qt.UserRole), QIcon()))
+
     def set_values(self, values):
         self.chosen = set(values)
         self.render()
@@ -165,6 +172,8 @@ class RegistrySelection(QWidget):
             if value in self.chosen:
                 item = QListWidgetItem(label)
                 item.setData(Qt.UserRole, value)
+                if value in self.icons:
+                    item.setIcon(self.icons[value])
                 item.setToolTip(label)
                 item.setSizeHint(QSize(0, max(28, self.list.fontMetrics().height() + 8)))
                 self.list.addItem(item)

@@ -7,7 +7,7 @@ from pathlib import Path
 import tempfile
 import uuid
 from PyQt5.QtCore import Qt, QTimer, QObject, QRunnable, QThreadPool, pyqtSignal, QUrl, QPoint, QSize, QEvent, QTimeZone, QSignalBlocker, QSaveFile, QIODevice, QStandardPaths
-from PyQt5.QtGui import QDesktopServices, QDrag, QPixmap
+from PyQt5.QtGui import QDesktopServices, QDrag, QIcon, QPixmap
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QPlainTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
@@ -25,7 +25,9 @@ from .board_views import BoardView
 from .messenger import Messenger
 from .notifications import Notifications
 from .board_badges import BoardBadgeDelegate
+from .avatars import avatar_image, avatar_resources
 from .spellcheck import SpellTextEdit, SpellLineEdit, spell_engine
+from .stickers import MAX_SOURCE
 from .theme import apply_theme, theme_settings, symbol_icon
 
 
@@ -633,6 +635,12 @@ class TaskDialog(QDialog, Async):
         self.render_dates()
         self.history_entries = d.get('history', [])
         self.comment_entries = d.get('comments', [])
+        self.avatars = d.get('avatars', {})
+        assignee_avatars = {login: self.avatars[login] for login in d.get('assignees', []) if login in self.avatars}
+        if assignee_avatars != getattr(self, 'assignee_avatars', None):
+            self.assignee_avatars = assignee_avatars
+            self.assignees.set_icons({login: QIcon(QPixmap.fromImage(avatar_image(image)))
+                                      for login, image in assignee_avatars.items()})
         self.render_comments()
         QTimer.singleShot(0, self.acknowledge_comments)
         selected = self.attachments.currentItem()
@@ -720,7 +728,9 @@ class TaskDialog(QDialog, Async):
 
     def render_comments(self):
         from .presentation import conversation_html
-        markup = conversation_html(self.comment_entries, self.history_entries, self.store.login, self.columns, self.display_timezone())
+        sources = avatar_resources(self.comments.document(), self.avatars)
+        markup = conversation_html(self.comment_entries, self.history_entries, self.store.login, self.columns,
+                                   self.display_timezone(), avatar_sources=sources)
         if markup != getattr(self, 'comments_markup', None):
             bar = self.comments.verticalScrollBar()
             at_bottom = getattr(self, 'chat_initial_scroll', True) or bar.value() >= bar.maximum() - 4
@@ -1592,6 +1602,8 @@ class MainWindow(QMainWindow, Async):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Выгрузить баг из Bugzilla…':
                 action.setEnabled(self.store is not None and not self.access_restricted and not self.bugzilla_loading)
+            elif text == 'Личные настройки…':
+                action.setEnabled(self.store is not None and not self.access_restricted)
             elif text == 'Подключение…':
                 action.setEnabled((self.store is None and self.installation_base is not None)
                                   or permissions.get('admin', False))
@@ -1623,6 +1635,7 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh_workspace)
+        menu.addAction('Личные настройки…', self.open_avatar_settings)
         menu.addAction('Подключение…', self.open_connection_settings)
         menu.addAction('Выгрузить баг из Bugzilla…', self.export_bugzilla_bug)
         self.notifications.add_settings(menu)
@@ -1630,6 +1643,95 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Резервная копия', self.backup)
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
+
+    def open_avatar_settings(self):
+        store = self.store
+        if store is None or self.access_restricted:
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle('Личные настройки')
+        dialog.setMinimumWidth(320)
+        layout = QVBoxLayout(dialog)
+        profile = QHBoxLayout()
+        preview = QLabel()
+        preview.setFixedSize(64, 64)
+        preview.setAlignment(Qt.AlignCenter)
+        profile.addWidget(preview)
+        description = QLabel()
+        description.setWordWrap(True)
+        profile.addWidget(description, 1)
+        layout.addLayout(profile)
+        actions = QHBoxLayout()
+        choose_button = QPushButton('Выбрать фото…')
+        remove_button = QPushButton('Удалить аватар')
+        actions.addWidget(choose_button)
+        actions.addWidget(remove_button)
+        layout.addLayout(actions)
+        status = QuietStatus()
+        status.setWordWrap(True)
+        layout.addWidget(status)
+        close = QDialogButtonBox(QDialogButtonBox.Close)
+        close.rejected.connect(dialog.reject)
+        layout.addWidget(close)
+        current = None
+        finished = False
+
+        def update_preview():
+            if current:
+                pixmap = QPixmap.fromImage(avatar_image(current))
+                preview.setPixmap(pixmap.scaled(preview.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation))
+            else:
+                preview.clear()
+            preview.setAccessibleName('Текущий аватар' if current else 'Аватар отсутствует')
+            description.setText('Фото профиля' if current else 'Аватар не добавлен')
+
+        def run(action, *, saving=False):
+            choose_button.setEnabled(False)
+            remove_button.setEnabled(False)
+            status.setText('Сохранение…' if saving else 'Загрузка…')
+
+            def done(result, error):
+                nonlocal current
+                if self.store is not store:
+                    return
+                if isinstance(error, AccessRestricted):
+                    self.set_access_restricted(True)
+                    return
+                if saving and error is None:
+                    self.refresh()
+                    self.messenger.poll()
+                    for task in self.dialogs:
+                        task.refresh_extras()
+                if finished:
+                    return
+                if error is None:
+                    current = result
+                    update_preview()
+                choose_button.setEnabled(True)
+                remove_button.setEnabled(bool(current))
+                status.setText(error_text(error) if error else ('Сохранено' if saving else ''))
+
+            self.work(action, done)
+
+        def choose():
+            name, _ = QFileDialog.getOpenFileName(dialog, 'Выберите фото профиля', '',
+                                                  'Изображения (*.png *.jpg *.jpeg *.webp)')
+            if not name:
+                return
+
+            def save():
+                with Path(name).open('rb') as source:
+                    return store.set_avatar(source.read(MAX_SOURCE + 1))
+
+            run(save, saving=True)
+
+        choose_button.clicked.connect(choose)
+        remove_button.clicked.connect(lambda: run(lambda: store.set_avatar(None), saving=True))
+        update_preview()
+        run(store.own_avatar)
+        dialog.exec_()
+        finished = True
+        dialog.deleteLater()
 
     def export_bugzilla_bug(self, *, mode='single'):
         store = self.store
@@ -2479,6 +2581,7 @@ class MainWindow(QMainWindow, Async):
                 if chat_board_id is not None and not any(b["id"] == chat_board_id for b in boards):
                     chat.deactivate()
                     chat.messages.clear()
+                    chat.avatars.clear()
                     chat.stickers.clear()
                     chat.timeline.clear()
                     chat.markup = None

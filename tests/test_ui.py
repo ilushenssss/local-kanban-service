@@ -84,6 +84,83 @@ class UITest(unittest.TestCase):
         users = self.store.access_users()
         self.store.set_board_access(board_id, [u['id'] for u in users], self.store.profile()['id'])
 
+    def test_employee_changes_own_avatar_on_existing_tasks_and_messages(self):
+        from PyQt5.QtCore import QUrl
+        from PyQt5.QtGui import QColor, QImage, QTextDocument
+        from PyQt5.QtWidgets import QMenu
+
+        employee = Store(self.store.folder, 'colleague')
+        self.store.set_role(employee.profile()['id'], 'employee')
+        task = self.store.detail(self.result['id'])
+        self.store.save_task(dict(task, assignees=['colleague']))
+        employee.comment(task['id'], 'Обсуждение задачи')
+        employee.team_send('Сообщение доски', board_id=self.bid)
+        source = QImage(240, 180, QImage.Format_RGB32)
+        source.fill(QColor('#367bd1'))
+        picture = str(Path(self.tmp.name) / 'avatar.png')
+        self.assertTrue(source.save(picture))
+        with patch('kanban.ui.Store', return_value=employee):
+            owner = MainWindow(str(self.store.folder))
+            self.windows.append(owner)
+            owner.show()
+            wait_for(lambda: not owner.loading and owner.board_id == self.bid)
+        with patch('kanban.ui.Store', return_value=self.store):
+            observer = MainWindow(str(self.store.folder))
+            self.windows.append(observer)
+            observer.show()
+            wait_for(lambda: not observer.loading and observer.board_id == self.bid)
+
+        def settings(action):
+            def interact(dialog):
+                buttons = {b.text(): b for b in dialog.findChildren(QPushButton)}
+                wait_for(buttons['Выбрать фото…'].isEnabled)
+                self.assertEqual(buttons['Удалить аватар'].isEnabled(), action == 'Удалить аватар')
+                buttons[action].click()
+                wait_for(buttons['Выбрать фото…'].isEnabled)
+                self.assertEqual(buttons['Удалить аватар'].isEnabled(), action == 'Выбрать фото…')
+                return QDialog.Accepted
+
+            def open_settings(menu, *_):
+                action = next(a for a in menu.actions() if a.text() == 'Личные настройки…')
+                self.assertTrue(action.isEnabled())
+                action.trigger()
+
+            with patch.object(QDialog, 'exec_', new=interact), patch.object(QMenu, 'exec_', new=open_settings), \
+                 patch.object(QFileDialog, 'getOpenFileName', return_value=(picture, '')):
+                owner.settings_button.click()
+
+        settings('Выбрать фото…')
+        image = Store(self.store.folder, 'colleague').own_avatar()
+        self.assertIsNone(self.store.own_avatar())
+        self.assertEqual(QImage.fromData(image).pixelColor(48, 48).name(), '#367bd1')
+        self.assertEqual(QImage.fromData(image).pixelColor(0, 0).alpha(), 0)
+        observer.refresh()
+        item = observer.card_lists[0].item(0)
+        wait_for(lambda: item.data(Qt.UserRole).get('avatars') == {'colleague': image})
+        observer.open_personal_task(task)
+        wait_for(lambda: bool(observer.dialogs))
+        dialog = next(iter(observer.dialogs))
+        wait_for(lambda: dialog.assignees.list.count() > 0)
+        self.assertFalse(dialog.assignees.list.item(0).icon().isNull())
+        self.assertIn('src="avatar:', dialog.comments_markup)
+        observer.messenger.poll()
+        wait_for(lambda: 'src="avatar:' in (observer.messenger.markup or ''))
+        import re
+        url = re.search(r'src="(avatar:[^"]+)', observer.messenger.markup)[1]
+        self.assertFalse(observer.messenger.timeline.document().resource(QTextDocument.ImageResource, QUrl(url)).isNull())
+
+        settings('Удалить аватар')
+        observer.refresh()
+        observer.messenger.poll()
+        dialog.refresh_extras()
+        wait_for(lambda: 'avatars' not in item.data(Qt.UserRole) and 'src="avatar:' not in observer.messenger.markup
+                 and 'src="avatar:' not in dialog.comments_markup and dialog.assignees.list.item(0).icon().isNull())
+        self.assertIsNone(Store(self.store.folder, 'colleague').own_avatar())
+        self.assertIn('Сообщение доски', observer.messenger.markup)
+        dialog.refresh_timer.stop()
+        wait_for(lambda: not dialog.jobs)
+        self.assertTrue(dialog.close())
+
     def test_newer_database_reports_required_client_update(self):
         newer = SCHEMA_VERSION + 1
         with self.store.connection() as connection:

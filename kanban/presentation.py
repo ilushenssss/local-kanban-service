@@ -83,32 +83,35 @@ def history_html(entries, columns=(), users=(), timezone='UTC'):
     return ''.join(result)
 
 
-def comments_html(entries, login, sticker_html=None, timezone='UTC'):
+def comments_html(entries, login, sticker_html=None, timezone='UTC', *, avatar_sources=None):
     if not entries:
         return '<p style="color:{}">Пока нет комментариев.</p>'.format(TOKENS['muted'])
     result = []
     for entry in entries:
         own = entry.get('login') == login
-        author = 'Вы' if own else entry['author']
+        author = html.escape('Вы' if own else entry['author'])
+        avatar = (avatar_sources or {}).get(entry.get('login'))
+        if avatar:
+            author = '<img src="{}" width="22" height="22" />&nbsp;{}'.format(html.escape(avatar), author)
         body = html.escape(entry['body']).replace('\n', '<br>')
         if entry.get('kind') == 'sticker' and sticker_html:
             body = sticker_html(entry)
         background = '' if entry.get('kind') == 'sticker' else ' bgcolor="{}"'.format(TOKENS['selection'] if own else TOKENS['hover'])
         bubble = '<td width="78%"{bg} style="padding:10px"><b>{author}</b><br>{body}<br><span style="color:{muted};font-size:9pt">{date}</span></td>'.format(
-            bg=background, author=html.escape(author),
+            bg=background, author=author,
             body=body, muted=TOKENS['muted'], date=html.escape(date_text(entry['created_at'], True, timezone)))
         spacer = '<td width="22%"></td>'
         result.append('<table width="100%" cellspacing="0" cellpadding="9"><tr>{}</tr></table><br>'.format(spacer+bubble if own else bubble+spacer))
     return ''.join(result)
 
 
-def conversation_html(comments, events, login, columns=(), timezone='UTC'):
+def conversation_html(comments, events, login, columns=(), timezone='UTC', *, avatar_sources=None):
     timeline = [(x['created_at'], 1, x['id'], x) for x in comments]
     timeline += [(x['created_at'], 0, x['id'], x) for x in events if x['operation'] != 'Комментарий']
     result = []
     for date, kind, identifier, entry in sorted(timeline, key=lambda item: item[:3]):
         if kind:
-            result.append(comments_html([entry], login, timezone=timezone))
+            result.append(comments_html([entry], login, timezone=timezone, avatar_sources=avatar_sources))
         else:
             text = entry['author'] + ' · ' + entry['operation']
             changes = history_text(entry, columns, timezone=timezone)

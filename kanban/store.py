@@ -21,6 +21,8 @@ SCHEMA_VERSION = 15
 
 TASK_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:task:' || :uid || ':' || n.id)"
 CHAT_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:chat:' || :uid || ':' || m.id)"
+AVATAR_IMAGES = ("SELECT u.login,s.value FROM users u JOIN settings s ON s.key='avatar:' || u.id "
+                 "WHERE typeof(s.value)='blob' AND u.id IN ")
 
 
 def mention_logins(text):
@@ -248,6 +250,26 @@ class Store:
     def profile(self):
         with self.connection() as c:
             return dict(self.actor(c))
+
+    def own_avatar(self):
+        with self.connection() as c:
+            uid = self.actor(c)['id']
+            return dict(c.execute(AVATAR_IMAGES + '(?)', (uid,))).get(self.login)
+
+    def set_avatar(self, source):
+        from .avatars import prepare_avatar
+        image = prepare_avatar(source) if source is not None else None
+
+        def apply(c, uid):
+            key = f'avatar:{uid}'
+            if image is None:
+                c.execute('DELETE FROM settings WHERE key=?', (key,))
+            else:
+                c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)', (key, image))
+            return True
+
+        self.write('avatar', [hashlib.sha256(image).hexdigest() if image is not None else None], apply)
+        return image
 
     def audit_access(self, c, operation, payload):
         c.execute('INSERT INTO access_history(actor,created_at,operation,payload) VALUES(?,?,?,?)',
@@ -877,7 +899,9 @@ class Store:
             uid = self.actor(c)['id']
             unread = c.execute('SELECT COUNT(*) FROM team_messages m WHERE m.board_id=:board AND m.id>:last AND m.user_id<>:uid' + CHAT_NOTICE_UNREAD, {'board': board_id, 'last': last, 'uid': uid}).fetchone()[0]
             messages = [dict(r) for r in c.execute('SELECT m.*,s.width,s.height,u.login,u.display_name AS author FROM team_messages m JOIN users u ON u.id=m.user_id LEFT JOIN team_stickers s ON s.message_id=m.id WHERE m.board_id=? AND m.id>? ORDER BY m.id', (board_id, after))]
-            return {'messages': messages, 'unread': unread}
+            avatars = dict(c.execute(AVATAR_IMAGES + '(SELECT user_id FROM team_messages WHERE board_id=?)',
+                                     (board_id,)))
+            return {'messages': messages, 'unread': unread, 'avatars': avatars}
 
     def team_send(self, text, request_id=None, board_id=None):
         if not text.strip():
@@ -1058,6 +1082,8 @@ class Store:
         d['checklist'] = [dict(r) for r in c.execute('SELECT text,done FROM checklist_items WHERE task_id=? ORDER BY position', (task_id,))]
         for key, query in [('comments', 'SELECT x.*,u.login AS login,u.display_name AS author FROM comments x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id'), ('history', 'SELECT x.*,u.display_name AS author FROM task_history x JOIN users u ON u.id=x.user_id WHERE task_id=? ORDER BY x.id DESC'), ('attachments', 'SELECT * FROM attachments WHERE task_id=? ORDER BY id')]:
             d[key] = [dict(r) for r in c.execute(query, (task_id,))]
+        d['avatars'] = dict(c.execute(AVATAR_IMAGES + '''(SELECT user_id FROM task_assignees WHERE task_id=?1
+                                      UNION SELECT user_id FROM comments WHERE task_id=?1)''', (task_id,)))
         key = 'read:' + json.dumps([self.login, task_id], ensure_ascii=False)
         cursor = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
         last = int(cursor[0]) if cursor else 0
@@ -1151,6 +1177,13 @@ class Store:
                 JOIN task_assignees a ON a.task_id=x.id JOIN users u ON u.id=a.user_id ORDER BY u.login'''):
             tasks[r['task_id']]['assignees'].append(r['login'])
             tasks[r['task_id']]['assignee_names'].append(r['display_name'])
+        if any(task['assignees'] for task in tasks.values()):
+            avatars = dict(rows(AVATAR_IMAGES + '(SELECT a.user_id FROM chosen x JOIN task_assignees a ON a.task_id=x.id)'))
+            if avatars:
+                for task in tasks.values():
+                    images = {login: avatars[login] for login in task['assignees'] if login in avatars}
+                    if images:
+                        task['avatars'] = images
         for r in rows('''SELECT a.task_id,l.name FROM chosen x JOIN task_labels a ON a.task_id=x.id
                 JOIN labels l ON l.id=a.label_id ORDER BY l.name'''):
             tasks[r['task_id']]['labels'].append(r['name'])
@@ -1371,6 +1404,7 @@ class Store:
 
     def save_task(self, data, request_id=None, card_only=False):
         data = dict(data)
+        data.pop('avatars', None)
         if not card_only and not data.get('title', '').strip():
             raise ValueError('Введите название задачи')
         if data.get('due_date'):

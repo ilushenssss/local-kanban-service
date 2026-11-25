@@ -3,6 +3,7 @@ import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
+from .avatars import avatar_image
 from .redmine import (APPROVAL_COLORS, CHECK_SHEET_FIELD, issue_label, kris_coding_deadline,
                       kris_coding_lines, kris_progress_text, status_key)
 from .theme import TOKENS, STICKERS, avatar_color, card_refresh_rect, paint_card_refresh
@@ -223,11 +224,20 @@ class CardDelegate(QStyledItemDelegate):
         else:
             badge('Без срока', TOKENS['secondary'], TOKENS['hover'], kind='date')
         badge(priority, fg, bg, 'priority')
+        avatars = t.get('avatars', {})
+        logins = t.get('assignees', [])
         for i,name in enumerate(names[:2]):
             r = QRect(x+20+i*22, y+61, 18, 18)
+            overflow = i == 1 and len(names) > 2
+            data = avatars.get(logins[i]) if not overflow and i < len(logins) else None
+            if data:
+                image = avatar_image(data)
+                if not image.isNull():
+                    p.drawImage(r, image)
+                    continue
             p.setPen(Qt.NoPen);p.setBrush(QColor(avatar_color(name)));p.drawEllipse(r)
             p.setPen(Qt.white);font(9,True)
-            initials = ('+' + str(len(names)-1)) if i == 1 and len(names) > 2 else ''.join(part[0] for part in name.split()[:2]).upper()
+            initials = ('+' + str(len(names)-1)) if overflow else ''.join(part[0] for part in name.split()[:2]).upper()
             p.drawText(r,Qt.AlignCenter,initials)
         font(11)
         name_x = x+20+min(2, len(names))*22

@@ -7,6 +7,7 @@ from .theme import TOKENS, symbol_icon
 from .widgets import MessageEdit
 from .presentation import comments_html
 from .stickers import prepare_sticker, sticker_from_file
+from .avatars import avatar_resources
 
 
 class StickerInput(MessageEdit):
@@ -80,6 +81,7 @@ class Messenger(QWidget):
         self.setObjectName('Messenger')
         self.setAttribute(Qt.WA_StyledBackground, True)
         self.messages = []
+        self.avatars = {}
         self.loading = False
         self.sending = False
         self.reading = False
@@ -205,28 +207,32 @@ class Messenger(QWidget):
     def poll(self):
         if not self.active or self.loading or not self.window.store:
             return
+        store = self.window.store
         self.loading = True
         after = self.messages[-1]['id'] if self.messages else 0
         def done(result, error):
             self.loading = False
+            if self.window.store is not store or not self.active:
+                return
             if error:
                 self.status.setText('Чат недоступен. Повторная проверка выполняется автоматически; введённый текст сохранён.')
                 return
             if not self.retry and not self.sticker_retry and not self.preparing:
                 self.status.setText('Некоторые стикеры недоступны. Загрузка повторится автоматически.' if result.get('image_errors') else '')
             self.messages.extend(result['messages'])
+            self.avatars = result['avatars']
             self.stickers.update(result.get('stickers', {}))
             self.update_unread(result['unread'])
             self.render()
             self.mark_read()
         missing = [m['id'] for m in self.messages if m.get('kind') == 'sticker' and m['id'] not in self.stickers]
         def read():
-            result = self.window.store.team_chat(after, board_id=self.board_id)
+            result = store.team_chat(after, board_id=self.board_id)
             ids = missing + [m['id'] for m in result['messages'] if m.get('kind') == 'sticker']
             result['stickers'] = {}
             for mid in ids:
                 try:
-                    result['stickers'][mid] = self.window.store.team_sticker(mid)
+                    result['stickers'][mid] = store.team_sticker(mid)
                 except (OSError, ValueError):
                     result['image_errors'] = True
             return result
@@ -249,7 +255,9 @@ class Messenger(QWidget):
             self.timeline.document().addResource(QTextDocument.ImageResource, url, image)
             size = image.size().scaled(180, 180, Qt.KeepAspectRatio)
             return '<a href="sticker:{0}"><img src="sticker:{0}" width="{1}" height="{2}" alt="Фотостикер — открыть" /></a>'.format(mid, size.width(), size.height())
-        markup = comments_html(self.messages, self.window.store.login, sticker_html, getattr(self.window, 'timezone', 'UTC'))
+        sources = avatar_resources(self.timeline.document(), self.avatars)
+        markup = comments_html(self.messages, self.window.store.login, sticker_html, getattr(self.window, 'timezone', 'UTC'),
+                               avatar_sources=sources)
         if markup == self.markup:
             return
         bar = self.timeline.verticalScrollBar()
