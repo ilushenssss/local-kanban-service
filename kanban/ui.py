@@ -2735,7 +2735,19 @@ class MainWindow(QMainWindow, Async):
                         scroll.ensureVisible(scroll.horizontalScrollBar().value(), y, 0, rect.height() // 2)
 
                 table.currentItemChanged.connect(scroll_to_subtask)
-                form.addRow('Согласование приложений', table)
+                section = QWidget()
+                section.setMaximumWidth(680)
+                section_layout = QVBoxLayout(section)
+                section_layout.setContentsMargins(0, 0, 0, 0)
+                caption = QLabel('Согласование приложений')
+                caption.setObjectName('fieldLabel')
+                section_layout.addWidget(caption)
+                section_layout.addWidget(table)
+                centered = QHBoxLayout()
+                centered.addStretch()
+                centered.addWidget(section, 1)
+                centered.addStretch()
+                form.addRow(centered)
             else:
                 message = 'Обновите ТИ по #ID, чтобы загрузить подзадачи.' if progress and subtasks is None else '—'
                 message_label = QLabel(message)

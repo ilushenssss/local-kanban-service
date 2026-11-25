@@ -985,6 +985,7 @@ class UITest(unittest.TestCase):
         dialog_tables = []
         dialog_sizes = []
         scroll_geometry = []
+        table_geometry = []
 
         def read_dialog(dialog):
             dialog_sizes.append(dialog.size())
@@ -995,10 +996,16 @@ class UITest(unittest.TestCase):
                 table.editTriggers(),
             ))
             if table:
-                dialog.resize(430, 330)
+                dialog.resize(1050, 500)
                 dialog.show()
                 APP.processEvents()
                 scroll = dialog.findChild(QScrollArea)
+                left = table.mapTo(scroll.viewport(), QPoint()).x()
+                right = scroll.viewport().width() - (left + table.width())
+                table_geometry.append((table.width(), left, right))
+                dialog.resize(430, 330)
+                APP.processEvents()
+                table_geometry.append((table.width(), scroll.horizontalScrollBar().maximum()))
                 last = table.visualItemRect(table.item(table.rowCount() - 1, 0))
                 table.setCurrentCell(0, 0)
                 QTest.keyClick(table, Qt.Key_End, Qt.ControlModifier)
@@ -1020,6 +1027,11 @@ class UITest(unittest.TestCase):
         self.assertGreater(dialog_scroll, 0)
         self.assertLess(last_row_bottom, viewport_height)
         self.assertEqual(current_row, len(subtasks) - 1)
+        width, left, right = table_geometry[0]
+        self.assertEqual(width, 680)
+        self.assertLessEqual(abs(left - right), 5)
+        self.assertLess(table_geometry[1][0], width)
+        self.assertEqual(table_geometry[1][1], 0)
         size = dialog_sizes[0]
         available = member.screen().availableGeometry()
         self.assertEqual(size.width(), min(1200, available.width() - 24))
