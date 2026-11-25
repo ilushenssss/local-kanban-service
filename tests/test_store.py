@@ -42,17 +42,24 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(settings, {'url': 'https://redmine.example.test', 'statuses': {'новый': 'Проект ТИ'}})
         self.assertEqual(member.redmine_settings(), settings)
 
-    def test_only_admin_can_change_shared_bugzilla_url(self):
+    def test_only_admin_can_change_shared_bugzilla_settings(self):
         member = Store(self.s.folder, 'bob')
-        self.assertEqual(member.bugzilla_url(), '')
+        self.assertEqual(member.bugzilla_settings(), {'url': '', 'domain': ''})
+        with self.s.connection() as c:
+            c.execute("INSERT INTO settings VALUES('bugzilla_url','https://legacy.example.test')")
+            c.commit()
+        self.assertEqual(member.bugzilla_settings(), {'url': 'https://legacy.example.test', 'domain': ''})
+        config = {'url': ' https://bugs.example.test/bugzilla/ ', 'domain': '@Example.Test'}
         with self.assertRaises(AccessDenied):
-            member.set_bugzilla_url('https://bugs.example.test')
+            member.set_connection_settings(bugzilla_config=config)
         with self.assertRaises(ValueError):
-            self.s.set_bugzilla_url('https://login:secret@bugs.example.test')
-        self.s.set_bugzilla_url(' https://bugs.example.test/bugzilla/ ')
-        self.assertEqual(member.bugzilla_url(), 'https://bugs.example.test/bugzilla')
-        self.s.set_bugzilla_url('')
-        self.assertEqual(member.bugzilla_url(), '')
+            self.s.set_connection_settings(bugzilla_config=dict(config, url='https://login:secret@bugs.example.test'))
+        with self.assertRaises(ValueError):
+            self.s.set_connection_settings(redmine={'url': 'https://redmine.example.test', 'statuses': {}},
+                                           bugzilla_config=dict(config, domain='someone@example.test'))
+        self.assertIsNone(member.redmine_settings())
+        self.s.set_connection_settings(bugzilla_config=config)
+        self.assertEqual(member.bugzilla_settings(), {'url': 'https://bugs.example.test/bugzilla', 'domain': 'example.test'})
 
     def test_shared_redmine_cards_and_status_updates(self):
         board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])

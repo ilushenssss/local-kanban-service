@@ -5,6 +5,7 @@ from datetime import datetime
 from gzip import GzipFile
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
 import json
+import re
 from urllib.parse import quote, urlsplit
 from xml.parsers.expat import ExpatError
 from xmlrpc import client
@@ -13,6 +14,23 @@ import zlib
 
 class BugzillaError(ValueError):
     pass
+
+
+class BugzillaAuthError(BugzillaError):
+    pass
+
+
+def connection_settings(url, domain):
+    url = url.strip().rstrip('/')
+    if url:
+        parse_url(url)
+    domain = domain.strip().lower()
+    if domain.startswith('@'):
+        domain = domain[1:]
+    if domain and (len(domain) > 253 or any(
+            not re.fullmatch(r'[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?', part) for part in domain.split('.'))):
+        raise BugzillaError('Укажите почтовый домен Bugzilla, например example.org.')
+    return {'url': url, 'domain': domain}
 
 
 def parse_url(url):
@@ -47,7 +65,7 @@ def read_xml_bug(raw, number):
         (payload,), _ = client.loads(raw.replace(b'\x1b', b''), use_builtin_types=True)
     except client.Fault as error:
         if error.faultCode in (300, 301, 410):
-            raise BugzillaError('Bugzilla не приняла логин или пароль. Проверьте учётные данные и доступ к API.') from None
+            raise BugzillaAuthError('Bugzilla не приняла логин или пароль. Проверьте учётные данные и доступ к API.') from None
         if error.faultCode in (101, 102):
             raise BugzillaError(f'Баг #{number} не найден или недоступен в Bugzilla.') from None
         raise BugzillaError(f'Bugzilla отклонила запрос XML-RPC для бага #{number}.') from None
@@ -82,7 +100,9 @@ def read_bug(url, bug_id, *, login=None, password=None):
         with closing(connection_type(parts.hostname, parts.port, timeout=10)) as connection:
             connection.request(method, path, body=body, headers=headers)
             with connection.getresponse() as response:
-                if response.status in (401, 403):
+                if response.status == 401:
+                    raise BugzillaAuthError('Bugzilla не приняла логин или пароль.')
+                if response.status == 403:
                     raise BugzillaError('Bugzilla требует авторизацию или ограничивает доступ к этому багу.')
                 if response.status == 404:
                     raise BugzillaError(f'Баг #{number} или API не найден в Bugzilla.')

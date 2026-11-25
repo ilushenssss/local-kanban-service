@@ -1214,6 +1214,9 @@ class MainWindow(QMainWindow, Async):
         self.redmine_url = redmine_url
         self.redmine_statuses = {redmine.status_key(k): v.strip() for k, v in (redmine_statuses or {}).items()}
         self.redmine_client = None
+        self.redmine_login = None
+        self.bugzilla_config = {'url': '', 'domain': ''}
+        self.bugzilla_session = None
         self.bugzilla_loading = False
         self.redmine_refresh_message = ''
         self.sppi_view_board = None
@@ -1578,7 +1581,7 @@ class MainWindow(QMainWindow, Async):
         for action in menu.actions():
             text = action.text()
             if text in ('Роли сотрудников', 'Резервная копия', 'Часовой пояс…', 'Проект поиска оснований…',
-                        'Проект СППИ…', 'Адрес Bugzilla…'):
+                        'Проект СППИ…'):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Выгрузить баг из Bugzilla…':
                 action.setEnabled(self.store is not None and not self.access_restricted and not self.bugzilla_loading)
@@ -1614,7 +1617,6 @@ class MainWindow(QMainWindow, Async):
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh_workspace)
         menu.addAction('Подключение…', self.open_connection_settings)
-        menu.addAction('Адрес Bugzilla…', self.edit_bugzilla_url)
         menu.addAction('Выгрузить баг из Bugzilla…', self.export_bugzilla_bug)
         self.notifications.add_settings(menu)
         menu.addAction('Часовой пояс…', self.change_timezone)
@@ -1622,38 +1624,35 @@ class MainWindow(QMainWindow, Async):
         self.apply_menu_permissions(menu)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
 
-    def edit_bugzilla_url(self):
-        store = self.store
-        if store is None or not getattr(self, 'permissions', {}).get('admin', False):
-            return
-
-        def done(url, error):
-            if error:
-                self.status.setText(error_text(error))
-                return
-            if self.access_restricted or self.store is not store:
-                return
-            value, accepted = QInputDialog.getText(
-                self, 'Адрес Bugzilla', 'Базовый адрес сервера Bugzilla', text=url)
-            value = value.strip().rstrip('/')
-            if accepted and value != url:
-                self.mutate(lambda rid: store.set_bugzilla_url(value, rid), 'Адрес Bugzilla сохранён')
-
-        self.work(store.bugzilla_url, done)
-
     def export_bugzilla_bug(self):
         store = self.store
         if store is None or self.access_restricted or self.bugzilla_loading:
             return
+        config = self.bugzilla_config
+        if not config['url'] or not config['domain']:
+            self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
+            return
+        source_login = self.redmine_login or store.login
+        username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
+        login = f"{username}@{config['domain']}"
+        scope = (config['url'], login)
+        session = self.bugzilla_session
+        password = session[2] if session and session[:2] == scope else None
         dialog = QDialog(self)
         dialog.setWindowTitle('Выгрузить баг из Bugzilla')
         dialog.setMinimumWidth(370)
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
-        bug_id, login_input, password_input = QLineEdit(), QLineEdit(), QLineEdit()
-        password_input.setEchoMode(QLineEdit.Password)
-        for label, field in (('ID бага', bug_id), ('Логин Bugzilla', login_input), ('Пароль Bugzilla', password_input)):
-            form.addRow(label, field)
+        bug_id = QLineEdit()
+        form.addRow('ID бага', bug_id)
+        login_label = QLabel(login)
+        login_label.setTextFormat(Qt.PlainText)
+        form.addRow('Логин Bugzilla', login_label)
+        password_input = None
+        if password is None:
+            password_input = QLineEdit()
+            password_input.setEchoMode(QLineEdit.Password)
+            form.addRow('Пароль Bugzilla', password_input)
         style_form(form)
         layout.addLayout(form)
         error_label = QLabel()
@@ -1667,9 +1666,9 @@ class MainWindow(QMainWindow, Async):
                 error_label.setText(error_text(error))
                 bug_id.setFocus()
                 return
-            if not login_input.text().strip() or not password_input.text():
-                error_label.setText('Введите логин и пароль Bugzilla.')
-                (password_input if login_input.text().strip() else login_input).setFocus()
+            if password_input is not None and not password_input.text():
+                error_label.setText('Введите пароль Bugzilla.')
+                password_input.setFocus()
                 return
             dialog.accept()
 
@@ -1682,28 +1681,34 @@ class MainWindow(QMainWindow, Async):
         accepted = dialog.exec_() == QDialog.Accepted
         if accepted:
             number = bugzilla.bug_number(bug_id.text())
-            login, password = login_input.text().strip(), password_input.text()
-        password_input.clear()
+            if password_input is not None:
+                password = password_input.text()
+        if password_input is not None:
+            password_input.clear()
         dialog.deleteLater()
         if not accepted or self.access_restricted or self.store is not store:
             return
 
         def done(raw, error):
+            nonlocal password
+            used_password, password = password, None
             self.bugzilla_loading = False
             if self.access_restricted or self.store is not store:
                 return
             if error:
+                if isinstance(error, bugzilla.BugzillaAuthError):
+                    self.bugzilla_session = None
                 self.status.setText(error_text(error))
                 return
+            if self.bugzilla_config == config and (self.redmine_login or store.login) == source_login:
+                self.bugzilla_session = (*scope, used_password)
             self.status.setText(f'Баг #{number} загружен из Bugzilla')
             self.show_bugzilla_json(number, raw)
 
         def load():
-            nonlocal password
-            try:
-                return bugzilla.read_bug(store.bugzilla_url(), number, login=login, password=password)
-            finally:
-                password = None
+            if store.bugzilla_settings() != config:
+                raise bugzilla.BugzillaError('Настройки Bugzilla изменились. Обновите TeamSync и повторите выгрузку.')
+            return bugzilla.read_bug(scope[0], number, login=login, password=password)
 
         self.bugzilla_loading = True
         self.status.setText(f'Загрузка бага #{number} из Bugzilla…')
@@ -1794,11 +1799,20 @@ class MainWindow(QMainWindow, Async):
         mapping_input.setPlainText('\n'.join('{} = {}'.format(k, v) for k, v in statuses.items()))
         mapping_input.setMaximumHeight(130)
         form.addRow('Статусы Redmine', mapping_input)
+        original_bugzilla = self.bugzilla_config
+        bugzilla_url = QLineEdit(original_bugzilla['url'])
+        bugzilla_url.setPlaceholderText('https://bugs.example.org/bugzilla')
+        bugzilla_url.setAccessibleName('Адрес Bugzilla')
+        form.addRow('Адрес Bugzilla', bugzilla_url)
+        bugzilla_domain = QLineEdit(original_bugzilla['domain'])
+        bugzilla_domain.setPlaceholderText('example.org')
+        bugzilla_domain.setAccessibleName('Почтовый домен Bugzilla')
+        form.addRow('Почтовый домен Bugzilla', bugzilla_domain)
         style_form(form)
         layout.addLayout(form)
         hint = QLabel('Укажите соответствия по одному на строку. Если поле пустое, колонки подбираются по названию статуса.')
         if self.installation_base is not None:
-            hint.setText(hint.text() + '\nПри подключении к другой базе используются её настройки Redmine.')
+            hint.setText(hint.text() + '\nПри переходе на другую базу используются её настройки Redmine и Bugzilla.')
         hint.setWordWrap(True)
         layout.addWidget(hint)
         status = QLabel()
@@ -1826,6 +1840,7 @@ class MainWindow(QMainWindow, Async):
             url = url_input.text().strip()
             mapping = {}
             try:
+                bugzilla_config = bugzilla.connection_settings(bugzilla_url.text(), bugzilla_domain.text())
                 if url:
                     redmine.validate_url(url)
                 for line in mapping_input.toPlainText().splitlines():
@@ -1849,9 +1864,19 @@ class MainWindow(QMainWindow, Async):
                 destination = store if same_database else Store(target)
                 if destination.profile()['role'] != 'admin':
                     raise ValueError('Сохранить подключение может администратор выбранной базы.')
-                result = destination.redmine_settings()
-                if same_database or (store is None and result is None and (url or mapping)):
-                    result = destination.set_redmine_settings(url, mapping)
+                redmine_config = destination.redmine_settings()
+                save_redmine = same_database or (store is None and redmine_config is None and (url or mapping))
+                save_bugzilla = ((same_database and bugzilla_config != original_bugzilla)
+                                 or (store is None and any(bugzilla_config.values())))
+                if save_redmine or save_bugzilla:
+                    if store is None and save_bugzilla and not bugzilla_config['url']:
+                        bugzilla_config['url'] = destination.bugzilla_settings()['url']
+                    result = destination.set_connection_settings(
+                        redmine={'url': url, 'statuses': mapping} if save_redmine else None,
+                        bugzilla_config=bugzilla_config if save_bugzilla else None,
+                    )
+                else:
+                    result = {'redmine': redmine_config, 'bugzilla': destination.bugzilla_settings()}
                 if self.installation_base is not None and self.folder != str(target):
                     installation.save_folder(self.installation_base, target)
                 return result
@@ -1861,7 +1886,7 @@ class MainWindow(QMainWindow, Async):
                 if error:
                     status.setText(error_text(error))
                     return
-                saved.update(folder=str(target), redmine=result)
+                saved.update(folder=str(target), **result)
                 dialog.accept()
 
             status.setText('Сохранение…')
@@ -1878,6 +1903,7 @@ class MainWindow(QMainWindow, Async):
         self.installation_error = ''
         self.folder = saved['folder']
         self.apply_redmine_settings(saved['redmine'])
+        self.apply_bugzilla_settings(saved['bugzilla'])
         self.refresh()
 
     def apply_redmine_settings(self, settings):
@@ -1885,8 +1911,15 @@ class MainWindow(QMainWindow, Async):
             return
         if settings['url'] != self.redmine_url:
             self.redmine_client = None
+            self.redmine_login = None
+            self.bugzilla_session = None
         self.redmine_url = settings['url']
         self.redmine_statuses = settings['statuses']
+
+    def apply_bugzilla_settings(self, settings):
+        if settings != self.bugzilla_config:
+            self.bugzilla_config = settings
+            self.bugzilla_session = None
 
     def change_timezone(self):
         zones = sorted({bytes(zone).decode('ascii') for zone in QTimeZone.availableTimeZoneIds()})
@@ -2105,6 +2138,8 @@ class MainWindow(QMainWindow, Async):
         self.centralWidget().setVisible(not restricted)
         if restricted:
             self.redmine_client = None
+            self.redmine_login = None
+            self.bugzilla_session = None
             self.last_snapshot = None
             self.generation += 1
             self.messenger.deactivate()
@@ -2305,6 +2340,7 @@ class MainWindow(QMainWindow, Async):
             boards, selected, columns, tasks, totals, catalogs, personal = result
             self.permissions = catalogs.get('permissions', {})
             self.apply_redmine_settings(catalogs.get('redmine'))
+            self.apply_bugzilla_settings(catalogs['bugzilla'])
             self.users_button.setEnabled(self.permissions.get('admin', False))
             self.create_board_button.setEnabled(True)
             if page == 4:
@@ -2721,6 +2757,7 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Администратору нужно указать адрес Redmine в «Настройки → Подключение…».')
             return
         client = self.redmine_client
+        login_name = self.redmine_login or self.store.login
         url = self.redmine_url
         statuses = self.redmine_statuses
         credentials = None
@@ -2756,6 +2793,7 @@ class MainWindow(QMainWindow, Async):
             if not all(credentials):
                 self.status.setText('Введите логин и пароль Redmine')
                 return
+            login_name = credentials[0]
 
         def apply(rid):
             nonlocal client, credentials
@@ -2769,11 +2807,11 @@ class MainWindow(QMainWindow, Async):
                 finally:
                     credentials = None
             try:
-                return {'redmine_client': client, 'redmine_errors': operation(client, rid, statuses)}
+                return {'redmine_client': client, 'redmine_login': login_name, 'redmine_errors': operation(client, rid, statuses)}
             except redmine.RedmineAuthError:
                 raise
             except ValueError as error:
-                return {'redmine_client': client, 'redmine_errors': [str(error)]}
+                return {'redmine_client': client, 'redmine_login': login_name, 'redmine_errors': [str(error)]}
 
         self.mutate(apply, success, busy_message=busy_message)
 
@@ -3109,6 +3147,9 @@ class MainWindow(QMainWindow, Async):
                 if isinstance(result, dict) and 'redmine_client' in result:
                     if not self.access_restricted:
                         self.redmine_client = result['redmine_client']
+                        if self.redmine_login != result['redmine_login']:
+                            self.bugzilla_session = None
+                        self.redmine_login = result['redmine_login']
                     success_message = '\n'.join(result['redmine_errors']) or success
                     self.redmine_refresh_message = success_message
                 else:
@@ -3319,4 +3360,6 @@ class MainWindow(QMainWindow, Async):
             chat.timer.stop()
         self.notifications.shutdown()
         self.redmine_client = None
+        self.redmine_login = None
+        self.bugzilla_session = None
         event.accept()

@@ -340,7 +340,7 @@ class Store:
     def authorize_write(self, c, operation, payload):
         self.actor(c)
         if operation in ('role', 'user', 'timezone', 'user_restricted', 'redmine_settings', 'redmine_basis_project',
-                         'redmine_sppi_project', 'bugzilla_url'):
+                         'redmine_sppi_project', 'connection_settings'):
             self.require(c, 'admin')
         elif operation == 'board':
             self.require(c, ('create_personal_board' if payload[4] else 'create_board') if payload[1] is None else 'manage', payload[1])
@@ -379,34 +379,37 @@ class Store:
             return self.redmine_settings_in(c)
 
     def set_redmine_settings(self, url, mapping):
-        url = url.strip().rstrip('/')
-        if url:
-            validate_url(url)
-        settings = {'url': url, 'statuses': {status_key(k): v.strip() for k, v in mapping.items()}}
+        return self.set_connection_settings(redmine={'url': url, 'statuses': mapping})['redmine']
 
-        def apply(c, uid):
-            c.execute("INSERT OR REPLACE INTO settings VALUES('redmine',?)",
-                      (json.dumps(settings, ensure_ascii=False),))
-            return settings
+    @staticmethod
+    def bugzilla_settings_in(c):
+        values = dict(c.execute("SELECT key,value FROM settings WHERE key IN ('bugzilla_url','bugzilla_domain')"))
+        return {'url': values.get('bugzilla_url', ''), 'domain': values.get('bugzilla_domain', '')}
 
-        return self.write('redmine_settings', settings, apply)
-
-    def bugzilla_url(self):
+    def bugzilla_settings(self):
         with self.connection() as c:
             self.actor(c)
-            row = c.execute("SELECT value FROM settings WHERE key='bugzilla_url'").fetchone()
-            return row[0] if row else ''
+            return self.bugzilla_settings_in(c)
 
-    def set_bugzilla_url(self, url, request_id=None):
-        url = url.strip().rstrip('/')
-        if url:
-            bugzilla.parse_url(url)
+    def set_connection_settings(self, *, redmine=None, bugzilla_config=None):
+        if redmine is not None:
+            url = redmine['url'].strip().rstrip('/')
+            if url:
+                validate_url(url)
+            redmine = {'url': url, 'statuses': {status_key(k): v.strip() for k, v in redmine['statuses'].items()}}
+        if bugzilla_config is not None:
+            bugzilla_config = bugzilla.connection_settings(**bugzilla_config)
 
         def apply(c, uid):
-            c.execute("INSERT OR REPLACE INTO settings VALUES('bugzilla_url',?)", (url,))
-            return url
+            if redmine is not None:
+                c.execute("INSERT OR REPLACE INTO settings VALUES('redmine',?)",
+                          (json.dumps(redmine, ensure_ascii=False),))
+            if bugzilla_config is not None:
+                c.executemany('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                              [('bugzilla_' + key, value) for key, value in bugzilla_config.items()])
+            return {'redmine': self.redmine_settings_in(c), 'bugzilla': self.bugzilla_settings_in(c)}
 
-        return self.write('bugzilla_url', url, apply, request_id)
+        return self.write('connection_settings', [redmine, bugzilla_config], apply)
 
     @staticmethod
     def redmine_basis_project_in(c, board_id):
@@ -1205,6 +1208,7 @@ class Store:
             columns = self.columns_in(c, selected)
             catalogs = self.catalogs_in(c, selected, actor)
             catalogs['redmine'] = self.redmine_settings_in(c)
+            catalogs['bugzilla'] = self.bugzilla_settings_in(c)
             tasks, totals, personal = [], {}, []
             if view == 'personal':
                 personal = self.cards_in(c, None, {'assignee': self.login}, actor)

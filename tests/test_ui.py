@@ -787,15 +787,29 @@ class UITest(unittest.TestCase):
         self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
 
     def test_bugzilla_export_saves_the_json_response(self):
+        from kanban.bugzilla import BugzillaAuthError
+
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
             window = MainWindow(str(self.store.folder))
             self.windows.append(window)
             window.show()
             wait_for(lambda: not window.loading and window.store is not None)
         url = 'https://bugs.example.test/bugzilla'
-        with patch.object(QInputDialog, 'getText', return_value=(url, True)):
-            window.edit_bugzilla_url()
-            wait_for(lambda: self.store.bugzilla_url() == url and not window.mutating and not window.loading)
+        domain = 'example.test'
+
+        def save_connection(dialog):
+            fields = {field.accessibleName(): field for field in dialog.findChildren(QLineEdit)}
+            fields['Адрес Bugzilla'].setText(url)
+            fields['Почтовый домен Bugzilla'].setText('@' + domain)
+            next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Сохранить').click()
+            wait_for(lambda: not window.jobs)
+            return dialog.result()
+
+        with patch.object(QDialog, 'exec_', new=save_connection):
+            window.open_connection_settings()
+            wait_for(lambda: not window.loading)
+        self.assertEqual(self.store.bugzilla_settings(), {'url': url, 'domain': domain})
+        window.redmine_login = 'redmine-user@old.example.test'
 
         raw = '{ "bugs": [{"id": 42, "summary": "Задача"}] }\n'
         target = Path(self.tmp.name) / 'bugzilla-42.json'
@@ -805,11 +819,11 @@ class UITest(unittest.TestCase):
         def run_dialog(dialog):
             preview = dialog.findChild(QPlainTextEdit)
             if preview is None:
-                bug_id, login, password = dialog.findChildren(QLineEdit)
-                password_modes.append(password.echoMode())
+                bug_id, *fields = dialog.findChildren(QLineEdit)
                 bug_id.setText('42')
-                login.setText('tester@example.test')
-                password.setText('пример-пароля')
+                password_modes.append([field.echoMode() for field in fields])
+                if fields:
+                    fields[0].setText('пример-пароля')
                 dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok).click()
                 return dialog.result()
             previews.append((preview.isReadOnly(), preview.toPlainText()))
@@ -818,13 +832,18 @@ class UITest(unittest.TestCase):
 
         with patch.object(QFileDialog, 'getSaveFileName', return_value=(str(target), 'JSON (*.json)')), \
              patch.object(QDialog, 'exec_', new=run_dialog), \
-             patch('kanban.bugzilla.read_bug', return_value=raw) as fetch:
-            window.export_bugzilla_bug()
-            wait_for(lambda: bool(previews))
-        fetch.assert_called_once_with(url, '42', login='tester@example.test', password='пример-пароля')
-        self.assertEqual(password_modes, [QLineEdit.Password])
-        self.assertEqual(previews, [(True, raw)])
+             patch('kanban.bugzilla.read_bug', side_effect=[raw, raw, BugzillaAuthError('Вход отклонён'), raw]) as fetch:
+            for _ in range(4):
+                window.export_bugzilla_bug()
+                wait_for(lambda: not window.bugzilla_loading)
+        self.assertEqual(fetch.call_count, 4)
+        for request in fetch.call_args_list:
+            self.assertEqual(request.args, (url, '42'))
+            self.assertEqual(request.kwargs, {'login': 'redmine-user@example.test', 'password': 'пример-пароля'})
+        self.assertEqual(password_modes, [[QLineEdit.Password], [], [], [QLineEdit.Password]])
+        self.assertEqual(previews, [(True, raw)] * 3)
         self.assertEqual(target.read_bytes(), raw.encode('utf-8'))
+        self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu
@@ -863,6 +882,8 @@ class UITest(unittest.TestCase):
         self.assertEqual(self.store.redmine_basis_project(board), 'Внедрение')
 
         def password_dialog(dialog):
+            login = next(field for field in dialog.findChildren(QLineEdit) if field.echoMode() == QLineEdit.Normal)
+            login.setText('tester-redmine')
             password = next(field for field in dialog.findChildren(QLineEdit) if field.echoMode() == QLineEdit.Password)
             password.setText('пример-пароля')
             return QDialog.Accepted
@@ -886,6 +907,7 @@ class UITest(unittest.TestCase):
             admin.new_task_button.click()
             wait_for(lambda: not admin.mutating and not admin.loading and admin.card_lists[0].count() == 1)
             self.assertEqual(auth.call_count, 2)
+            self.assertEqual(admin.redmine_login, 'tester-redmine')
             kris.assert_called_once_with(admin.redmine_client, [23018], 49)
             basis.assert_called_once_with(admin.redmine_client, 88, {'ТИ(200)-0123-04'})
         member.refresh()
