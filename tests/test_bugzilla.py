@@ -1,6 +1,10 @@
+from datetime import datetime
+from gzip import compress
+from io import BytesIO
 import json
 import unittest
 from unittest.mock import MagicMock, patch
+from xmlrpc import client
 
 from kanban import bugzilla
 
@@ -20,25 +24,34 @@ class BugzillaTest(unittest.TestCase):
         connect.return_value.close.assert_called_once_with()
 
     @patch('kanban.bugzilla.HTTPSConnection')
-    def test_authenticated_read_sends_credentials_only_in_request_body(self, connect):
+    def test_authenticated_read_uses_xmlrpc_and_preserves_bug_fields(self, connect):
         response = connect.return_value.getresponse.return_value.__enter__.return_value
         response.status = 200
-        raw = '{"result":{"bugs":[{"id":42,"summary":"Тест"}]},"error":null,"id":1}\n'
-        response.read.return_value = raw.encode('utf-8')
+        response.getheader.return_value = 'gzip'
+        payload = {'bugs': [{'id': 42, 'summary': 'Тест\x1b', 'created': datetime(2026, 1, 2, 3, 4),
+                             'custom': [1, 2], 'binary': b'abc'}]}
+        raw = client.dumps((payload,), methodresponse=True, encoding='utf-8').encode('utf-8')
+        response.read.side_effect = BytesIO(compress(raw)).read
         url = 'https://bugs.example.test/bugzilla/'
-        self.assertEqual(bugzilla.read_bug(url, 42, login='user@example.test', password='sample&password'), raw)
+        result = bugzilla.read_bug(url, 42, login='user@example.test', password='sample&password')
+        self.assertEqual(json.loads(result), {'bugs': [{'id': 42, 'summary': 'Тест', 'created': '2026-01-02T03:04:00',
+                                                       'custom': [1, 2], 'binary': 'YWJj'}]})
 
         request = connect.return_value.request.call_args
-        self.assertEqual(request.args, ('POST', '/bugzilla/jsonrpc.cgi'))
-        self.assertEqual(request.kwargs['headers']['Content-Type'], 'application/json')
-        self.assertEqual(json.loads(request.kwargs['body']), {
-            'jsonrpc': '2.0', 'id': 1, 'method': 'Bug.get',
-            'params': {'ids': ['42'], 'Bugzilla_login': 'user@example.test', 'Bugzilla_password': 'sample&password'},
-        })
-        response.read.return_value = b'{"error":{"code":300,"message":"server error detail"},"id":1}'
+        self.assertEqual(request.args, ('POST', '/bugzilla/xmlrpc.cgi'))
+        self.assertEqual(request.kwargs['headers']['Content-Type'], 'text/xml')
+        self.assertEqual(client.loads(request.kwargs['body']),
+                         (({'ids': ['42'], 'login': 'user@example.test', 'password': 'sample&password'},), 'Bug.get'))
+
+        response.getheader.return_value = ''
+        response.read.side_effect = None
+        response.read.return_value = client.dumps(client.Fault(300, 'server error detail')).encode('utf-8')
         with self.assertRaisesRegex(bugzilla.BugzillaError, 'не приняла логин или пароль') as error:
             bugzilla.read_bug(url, 42, login='user@example.test', password='sample&password')
         self.assertNotIn('server error detail', str(error.exception))
+        response.read.return_value = b'<html>Login</html>'
+        with self.assertRaisesRegex(bugzilla.BugzillaError, 'некорректный ответ XML-RPC'):
+            bugzilla.read_bug(url, 42, login='user@example.test', password='sample&password')
 
     @patch('kanban.bugzilla.HTTPConnection')
     def test_read_bug_reports_http_and_data_errors(self, connect):

@@ -9,7 +9,6 @@ def launch():
     log = Path(tempfile.gettempdir()) / 'kanban-errors.log'
     logging.basicConfig(filename=str(log), level=logging.ERROR)
     try:
-        # Do not rely on the working directory or a system Python installation.
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         from kanban.__main__ import main
         return main()

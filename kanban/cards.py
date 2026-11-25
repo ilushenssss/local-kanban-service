@@ -63,7 +63,6 @@ def title_font(base_font):
 
 
 def title_extra_height(metrics):
-    # Reserve two lines and leave six pixels before the metadata badges.
     return max(0, metrics.height() + metrics.lineSpacing() + 6 - 38)
 
 
@@ -92,7 +91,6 @@ def details_document(task, width):
 class CardDelegate(QStyledItemDelegate):
     def basis_layout(self, task, option):
         cards = self.parent()
-        # Reserve the scrollbar width so the row count stays stable when it appears.
         width = (cards.maximumViewportSize().width() - cards.verticalScrollBar().sizeHint().width()
                  - 2 * cards.spacing() - 28)
         values = task['issue_references'].get('basis', [])
@@ -225,7 +223,6 @@ class CardDelegate(QStyledItemDelegate):
         else:
             badge('Без срока', TOKENS['secondary'], TOKENS['hover'], kind='date')
         badge(priority, fg, bg, 'priority')
-        # Participant initials remain readable when no photo exists in the model.
         for i,name in enumerate(names[:2]):
             r = QRect(x+20+i*22, y+61, 18, 18)
             p.setPen(Qt.NoPen);p.setBrush(QColor(avatar_color(name)));p.drawEllipse(r)
@@ -320,7 +317,6 @@ class CardDelegate(QStyledItemDelegate):
             if text_width is None:
                 caption = painter.fontMetrics().elidedText(caption, Qt.ElideRight, label_rect.width())
             elif text_width > label_rect.width():
-                # Oversized references remain on one line at the shared chip height.
                 painter.save()
                 painter.translate(label_rect.topLeft())
                 painter.scale(label_rect.width() / text_width, 1)
@@ -521,8 +517,6 @@ class Cards(QListWidget):
     def startDrag(self, supported_actions):
         if not self.selectedIndexes() or self.currentItem().data(Qt.UserRole).get('redmine_id'):
             return
-        # Own QDrag lifecycle: QListWidget.startDrag may delete source rows after
-        # MoveAction, although persistence and repaint are handled asynchronously.
         self.dragging.emit(True)
         try:
             drag = QDrag(self)
@@ -651,7 +645,6 @@ def update_cards(lists, tasks_by_column, counts, expanded_ids):
                 if task.get('redmine_id'):
                     set_card_notice(item, counts.get(tid, 0))
             if item.data(EXPANDED_ROLE) and item.data(DETAILS_ROLE) is None:
-                # Signals are blocked during reconciliation.
                 cards.blockSignals(False)
                 cards.details_requested.emit(item)
                 cards.blockSignals(True)

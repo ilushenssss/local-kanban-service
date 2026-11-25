@@ -76,7 +76,6 @@ class PersonalBoardsTest(unittest.TestCase):
             with self.assertRaises(AccessDenied):
                 action()
         self.assertEqual(self.alice.tasks(self.bid), [])
-        # Even a stale/incorrect membership row cannot make a private board visible.
         with self.admin.connection() as c:
             c.execute('INSERT INTO board_members(board_id,user_id) VALUES(?,?)', (self.bid, self.bob_id))
             c.commit()

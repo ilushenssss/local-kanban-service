@@ -19,13 +19,11 @@ from .redmine import TI_NUMBER, basis_number, issue_label, status_key, ti_sort_k
 SCHEMA_VERSION = 15
 
 
-# Manual acknowledgements are individual. Opening a conversation still advances its read cursor.
 TASK_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:task:' || :uid || ':' || n.id)"
 CHAT_NOTICE_UNREAD = " AND NOT EXISTS (SELECT 1 FROM settings WHERE key='notice_read:chat:' || :uid || ':' || m.id)"
 
 
 def mention_logins(text):
-    # Brackets allow Windows logins containing spaces or punctuation.
     return {quoted or simple for quoted, simple in
             re.findall(r'(?<![\w@])@(?:\[([^\]\r\n]+)\]|([\w-]+(?:[.\\][\w-]+)*))', text)}
 
@@ -551,7 +549,6 @@ class Store:
         try:
             yield
         finally:
-            # Never remove another writer's lock.
             if json.loads(self.lock.read_text(encoding='utf-8')).get('token') == token:
                 self.lock.unlink()
 
@@ -941,8 +938,6 @@ class Store:
             if any(target not in supplied for target in removed.values()):
                 raise ValueError('Выберите оставшуюся колонку для переноса задач')
             if removed:
-                # Preserve the high-water mark before deleting IDs; stale forms must
-                # never point to a different newly created column with a reused ID.
                 self.next_column_id(c)
             for source, target in removed.items():
                 if c.execute('SELECT 1 FROM redmine_links WHERE board_id=? AND column_id=?', (board_id, source)).fetchone():
@@ -960,7 +955,6 @@ class Store:
                     c.execute('UPDATE columns SET name=?,position=?,is_done=?,wip_limit=? WHERE id=?', (x['name'].strip(), i, int(x['is_done']), x.get('wip_limit'), x['id']))
                 else:
                     c.execute('INSERT INTO columns(id,board_id,name,position,is_done,wip_limit) VALUES(?,?,?,?,?,?)', (self.next_column_id(c), board_id, x['name'].strip(), i, int(x['is_done']), x.get('wip_limit')))
-            # Completion semantics also apply when the completion column is reconfigured.
             for row in c.execute('SELECT t.*, col.is_done FROM tasks t JOIN columns col ON col.id=t.column_id WHERE t.board_id=?', (board_id,)).fetchall():
                 completed = row['completed_at'] or now() if row['is_done'] else None
                 if completed != row['completed_at']:
@@ -1353,7 +1347,6 @@ class Store:
     def attach(self, task_id, source, request_id=None):
         source = Path(source)
         request_id = request_id or uuid.uuid4().hex
-        # A stable request ID also names the immutable destination; interrupted uploads can be retried.
         internal = hashlib.sha256(request_id.encode()).hexdigest()
         def apply(c, uid):
             d = self.detail_in(c, task_id)

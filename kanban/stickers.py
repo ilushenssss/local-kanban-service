@@ -11,7 +11,6 @@ MAX_PNG = 2 * 1024 * 1024
 
 def prepare_sticker(source):
     if sys.platform == 'win32':
-        # The lightweight update ships the matching Qt 5.15.2 WebP codec.
         QCoreApplication.addLibraryPath(str(Path(__file__).parent / 'qt_plugins'))
     if len(source) > MAX_SOURCE:
         raise ValueError('Изображение превышает 10 МБ')

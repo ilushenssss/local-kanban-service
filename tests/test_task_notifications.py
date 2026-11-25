@@ -123,13 +123,11 @@ class TaskNotificationsTest(unittest.TestCase):
         self.create()
         self.creator.set_board_access(self.board, [self.bid], self.creator.profile()['id'])
         self.assertEqual(self.alice.task_updates(0)['events'], [])
-        # Archived boards do not generate visible notifications.
         self.creator.set_board_access(self.board, [self.aid, self.bid], self.creator.profile()['id'])
         self.creator.board_action('Рабочая доска', self.board, archive=True)
         self.assertEqual(self.alice.task_updates(0)['events'], [])
         private = self.alice.board_action('Личное', personal=True)
         tid = self.alice.save_task({'board_id': private, 'column_id': self.alice.columns(private)[0]['id'], 'title': 'Личная', 'assignees': ['alice']})['id']
-        # Even a malformed historical recipient cannot bypass owner-only visibility.
         with self.creator.connection() as c:
             hid = c.execute('SELECT id FROM task_history WHERE task_id=?', (tid,)).fetchone()[0]
             c.execute('INSERT INTO task_notifications(history_id,user_id) VALUES(?,?)', (hid, self.creator.profile()['id']))

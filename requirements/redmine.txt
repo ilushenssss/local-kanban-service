@@ -1,4 +1,3 @@
-# Python 3.8-compatible Windows wheels for the optional Redmine client.
 python-redmine==2.5.0
 requests==2.32.4
 urllib3==2.2.3

@@ -27,7 +27,6 @@ class StickerInput(MessageEdit):
 
 class StickerTimeline(QTextBrowser):
     def loadResource(self, kind, url):
-        # All images are verified bytes inserted into QTextDocument by Messenger.
         return None
 
 

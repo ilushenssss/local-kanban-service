@@ -43,7 +43,6 @@ def choose_option(combo, value, mouse=False):
             ancestor.ensureWidgetVisible(combo)
         ancestor = ancestor.parentWidget()
     APP.processEvents()
-    # Click the field body, as a user does; native combo owns the whole hit area.
     QTest.mouseMove(combo, combo.rect().center())
     QTest.mouseClick(combo, Qt.LeftButton, pos=combo.rect().center())
     QTest.qWait(30)
@@ -534,7 +533,6 @@ class UITest(unittest.TestCase):
         wait_for(lambda: d.comments.verticalScrollBar().value() == d.comments.verticalScrollBar().maximum())
         self.assertFalse(d.task_page.findChildren(QScrollArea))
         self.assertIsInstance(d.tabs.widget(0), type(d.task_page))
-        # Updates preserve deliberate reading of earlier messages.
         d.comments.verticalScrollBar().setValue(0)
         colleague.comment(self.result['id'], 'Новое сообщение после открытия')
         d.refresh_extras()
@@ -788,7 +786,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(colleague.redmine_url, 'http://new-redmine.example.test')
         self.assertEqual(colleague.redmine_statuses, {'открыт': 'ТИ открыто'})
 
-    def test_bugzilla_export_saves_the_original_response(self):
+    def test_bugzilla_export_saves_the_json_response(self):
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'tester')):
             window = MainWindow(str(self.store.folder))
             self.windows.append(window)
@@ -799,7 +797,7 @@ class UITest(unittest.TestCase):
             window.edit_bugzilla_url()
             wait_for(lambda: self.store.bugzilla_url() == url and not window.mutating and not window.loading)
 
-        raw = '{ "result": {"bugs": [{"id": 42, "summary": "Задача"}]}, "id": 1 }\n'
+        raw = '{ "bugs": [{"id": 42, "summary": "Задача"}] }\n'
         target = Path(self.tmp.name) / 'bugzilla-42.json'
         previews = []
         password_modes = []
@@ -1799,7 +1797,6 @@ class UITest(unittest.TestCase):
         self.assertEqual(d.labels.values(), ['На проверку'])
         self.assertIsNone(d.due.value())
         self.assertTrue(d.due.editor.isEnabled())
-        # Empty deadline opens today's month immediately, with no enabling checkbox.
         QTest.mouseClick(d.due.editor, Qt.LeftButton, pos=QPoint(d.due.editor.width() - 10, d.due.editor.height() // 2))
         wait_for(lambda: d.due.editor.calendarWidget().isVisible())
         self.assertEqual(d.due.editor.calendarWidget().yearShown(), QDate.currentDate().year())
@@ -1824,7 +1821,6 @@ class UITest(unittest.TestCase):
         self.assertEqual(d.checklist.list.count(), 1)
         self.assertTrue(d.isVisible())
         d.checklist.list.item(0).setCheckState(Qt.Checked)
-        # An unfinished input is included on Save rather than being silently lost.
         d.checklist.entry.setText('Второй пункт')
         d.priority.setCurrentText('Срочный')
         APP.processEvents()
@@ -1859,7 +1855,6 @@ class UITest(unittest.TestCase):
         self.assertFalse(w.dialogs)
         cards.grab().save(str(Path(__file__).resolve().parent.parent / 'docs/screenshots/card-expanded.png'))
         self.assertEqual(self.store.detail(task['id']), original)
-        # Force a new board snapshot, then verify view state is retained.
         self.store.comment(task['id'], 'Обновление обсуждения')
         w.refresh()
         wait_for(lambda: not w.loading and not w.jobs)

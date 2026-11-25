@@ -336,7 +336,6 @@ class Notifications(QObject):
         store = getattr(self.window, 'store', None)
         if store is None:
             return
-        # Use the same access and read-state checks as the inbox.
         def read():
             candidates = {event['id'] for event in events}
             return [event for event in store.task_updates(min(candidates) - 1)['events'] if event['id'] in candidates]

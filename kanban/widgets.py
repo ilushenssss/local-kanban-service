@@ -148,7 +148,6 @@ class RegistrySelection(QWidget):
         self.render()
 
     def render(self):
-        # Block only combo signals; model row insertion/removal signals remain intact.
         self.combo.blockSignals(True)
         self.combo.clear()
         available = [(value, label) for value, label in self.options if value not in self.chosen]

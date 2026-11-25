@@ -44,7 +44,6 @@ PRIORITIES = {
 
 
 def label_colors(name):
-    # Stable palette assignment without mutating labels or their stored values.
     key = int(hashlib.sha256(name.encode('utf-8')).hexdigest(), 16)
     return STICKERS[key % len(STICKERS)]
 
@@ -138,7 +137,6 @@ QLineEdit, QTextEdit, QPlainTextEdit, QComboBox, QDateEdit, QSpinBox, QListWidge
  background: %(background)s; border: 1px solid %(field_border)s; border-radius: 8px; padding: 7px 10px;
  selection-background-color: %(selection)s; selection-color: %(selected_text)s; }
 QLineEdit:focus, QTextEdit:focus, QPlainTextEdit:focus, QSpinBox:focus, QComboBox:focus, QDateEdit:focus, QListWidget:focus { border-color: %(accent)s; }
-/* Reserve a full click target, with a small centered chevron and no native bevel. */
 QComboBox, QDateEdit { padding-right: 36px; }
 QComboBox::drop-down, QDateEdit::drop-down {
  subcontrol-origin: border; subcontrol-position: top right; width: 32px;
@@ -242,5 +240,4 @@ def apply_theme(app, dark=False):
 
 
 def theme_settings():
-    # Keep the legacy settings identity so TeamSync retains theme preferences.
     return QSettings('LocalKanban', 'Kanban')

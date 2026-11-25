@@ -19,7 +19,6 @@ class Chart(QWidget):
         self.set_rows([])
 
     def set_rows(self, rows, center=''):
-        # row: label, [(value, color)], textual value. Segments never overlap.
         self.rows, self.center = rows, center
         height = max(240, 82 + len(rows) * 58) if not self.ring else 270
         self.setFixedHeight(height)

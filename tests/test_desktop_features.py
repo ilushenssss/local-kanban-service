@@ -94,7 +94,6 @@ class DesktopFeaturesTest(unittest.TestCase):
             n.poll()
             self.assertEqual(n.task_cursor, 0)
             task = creator.save_task({'board_id': board, 'column_id': creator.columns(board)[0]['id'], 'title': 'Новая задача', 'assignees': ['alice']})['id']
-            # A failed poll keeps its cursor, so the next poll recovers the event.
             with patch.object(self.window.store, 'notification_snapshot', side_effect=OSError('Network')):
                 n.poll()
             self.assertEqual(n.task_cursor, 0)
@@ -167,7 +166,7 @@ class DesktopFeaturesTest(unittest.TestCase):
         block = editor.document().firstBlock()
         formats = block.layout().formats()
         self.assertEqual(len(formats), 2)
-        self.assertEqual(formats[0].start, 11)  # Emoji occupies two UTF-16 units.
+        self.assertEqual(formats[0].start, 11)
         self.assertEqual(formats[0].format.underlineStyle(), QTextCharFormat.SpellCheckUnderline)
         self.assertEqual(editor.toPlainText(), '😀 Привет, опечятка hello heloo')
         preview = QWidget()

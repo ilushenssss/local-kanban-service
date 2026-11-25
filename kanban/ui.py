@@ -603,8 +603,6 @@ class TaskDialog(QDialog, Async):
         self.update_subscription_label()
         button('Закрыть', self.close, actions).setFixedWidth(100)
         root.addLayout(actions)
-        # Font/layout metrics may settle after the first paint. A user scroll
-        # cancels this one initial positioning pass.
         self.initial_scroll_timer = QTimer(self)
         self.initial_scroll_timer.setSingleShot(True)
         self.initial_scroll_timer.timeout.connect(self.scroll_chat_to_end)
@@ -689,8 +687,6 @@ class TaskDialog(QDialog, Async):
         self.work(lambda: self.store.mark_task_notifications_read(self.data['id'], snapshot), done)
 
     def scroll_chat_to_end(self):
-        # Resolve the layout at the viewport width before reading its range.
-        # adjustSize() changes the document width and can trigger a later reflow.
         self.comments.document().documentLayout().documentSize()
         bar = self.comments.verticalScrollBar()
         bar.setValue(bar.maximum())
@@ -832,7 +828,6 @@ class TaskDialog(QDialog, Async):
             self.status.setText('Срок должен иметь формат ГГГГ-ММ-ДД')
             self.due.setFocus()
             return
-        # Resolve an uncertain previous commit first; keep newer edits in the form.
         if not self.retry:
             self.retry = (uuid.uuid4().hex, copy.deepcopy(p))
         rid, payload = self.retry
@@ -1372,7 +1367,6 @@ class MainWindow(QMainWindow, Async):
         self.narrow_search_layout.setContentsMargins(20, 0, 16, 8)
         workspace.addWidget(self.narrow_search_row)
         self.narrow_search_row.hide()
-        # Internal tab bar retains stable board IDs; tree is the visible navigation.
         self.board_tabs = QTabBar()
         self.board_tabs.hide()
         self.board_tabs.currentChanged.connect(self.select_board_tab)
@@ -1962,7 +1956,6 @@ class MainWindow(QMainWindow, Async):
         for widget in self.sidebar.findChildren(QWidget):
             if widget is self.collapse_button:
                 continue
-            # Only direct layout children; child controls follow their parents.
             if widget.parentWidget() is self.sidebar:
                 widget.setVisible(not collapsed)
         self.boards_list.hide()
@@ -2261,7 +2254,6 @@ class MainWindow(QMainWindow, Async):
         self.drag_active = active
         if not active and self.refresh_deferred:
             self.refresh_deferred = False
-            # Run after startDrag/dropEvent have returned to Qt.
             self.debounce.start(0)
 
     def refresh(self):
@@ -2766,7 +2758,6 @@ class MainWindow(QMainWindow, Async):
                 return
 
         def apply(rid):
-            # Drop the password captured by the retry closure once a client is made.
             nonlocal client, credentials
             current = self.store.redmine_settings()
             if current is not None and (current['url'] != url or current['statuses'] != statuses):
@@ -2782,7 +2773,6 @@ class MainWindow(QMainWindow, Async):
             except redmine.RedmineAuthError:
                 raise
             except ValueError as error:
-                # Successful authentication is reusable even when the issue cannot be imported.
                 return {'redmine_client': client, 'redmine_errors': [str(error)]}
 
         self.mutate(apply, success, busy_message=busy_message)
@@ -3216,7 +3206,6 @@ class MainWindow(QMainWindow, Async):
             self.mutate(lambda rid: self.store.save_columns(bid, values, rid, removed=d.removed))
 
     def move_task(self, task_id, column_id, before_id=None):
-        # Use the version shown on screen, so a stale drag cannot overwrite a colleague's edit.
         task = next((cards.item(i).data(Qt.UserRole) for cards in self.card_lists for i in range(cards.count()) if cards.item(i).data(Qt.UserRole)['id'] == task_id), None)
         if not task or task.get('redmine_id'):
             return
