@@ -559,6 +559,41 @@ class UITest(unittest.TestCase):
         QTimer.singleShot(20, close_viewer)
         m.view_sticker(QUrl('sticker:1'))
 
+    def test_missing_sticker_does_not_block_reading_and_can_be_reloaded(self):
+        from test_stickers import image_bytes
+
+        member = Store(self.store.folder, 'colleague')
+        sticker_id = self.store.team_send_sticker(image_bytes(), board_id=self.bid)
+        latest = self.store.team_send('Сообщение после стикера', board_id=self.bid)
+        with self.store.connection() as connection:
+            filename = connection.execute('SELECT stored_name FROM team_stickers WHERE message_id=?',
+                                          (sticker_id,)).fetchone()[0]
+        path = self.store.folder / 'attachments' / filename
+        data = path.read_bytes()
+        path.unlink()
+        self.assertEqual(member.team_chat(board_id=self.bid)['unread'], 2)
+
+        with patch('kanban.ui.Store', return_value=member):
+            window = MainWindow(str(self.store.folder))
+            self.windows.append(window)
+            window.show()
+            wait_for(lambda: window.board_id == self.bid and not window.loading)
+        chat = window.messenger
+        wait_for(lambda: 'Файл стикера отсутствует' in (chat.markup or ''))
+        self.assertEqual(member.team_chat(board_id=self.bid)['unread'], 2)
+        window.activateWindow()
+        chat.open_chat()
+        wait_for(lambda: chat.read_cursor == latest and chat.bubble.unread == 0)
+        self.assertEqual(member.team_chat(board_id=self.bid)['unread'], 0)
+        self.assertIn('Сообщение после стикера', chat.markup)
+
+        wait_for(lambda: not chat.loading)
+        path.write_bytes(data)
+        chat.hide()
+        chat.open_chat()
+        wait_for(lambda: sticker_id in chat.stickers)
+        self.assertNotIn('Файл стикера отсутствует', chat.markup)
+
     def test_employee_catalog_restricts_open_app_and_restores_access(self):
         with patch('kanban.ui.Store', side_effect=lambda folder: Store(folder, 'colleague')):
             w = MainWindow(str(self.store.folder))

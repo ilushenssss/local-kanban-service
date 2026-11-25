@@ -94,6 +94,7 @@ class Messenger(QWidget):
         self.retry = None
         self.markup = None
         self.stickers = {}
+        self.missing_stickers = set()
         self.sticker = None
         self.sticker_retry = None
         self.preparing = False
@@ -201,6 +202,7 @@ class Messenger(QWidget):
         if not self.active:
             return
         self.show()
+        self.missing_stickers.clear()
         self.reposition()
         self.end()
         self.poll()
@@ -228,17 +230,22 @@ class Messenger(QWidget):
             self.messages.extend(result['messages'])
             self.avatars = result['avatars']
             self.stickers.update(result.get('stickers', {}))
+            self.missing_stickers.update(result['missing_stickers'])
             self.update_unread(result['unread'])
             self.render()
             self.mark_read()
-        missing = [m['id'] for m in self.messages if m.get('kind') == 'sticker' and m['id'] not in self.stickers]
+        missing = [m['id'] for m in self.messages if m.get('kind') == 'sticker'
+                   and m['id'] not in self.stickers and m['id'] not in self.missing_stickers]
         def read():
             result = store.team_chat(after, board_id=self.board_id)
             ids = missing + [m['id'] for m in result['messages'] if m.get('kind') == 'sticker']
             result['stickers'] = {}
+            result['missing_stickers'] = set()
             for mid in ids:
                 try:
                     result['stickers'][mid] = store.team_sticker(mid)
+                except FileNotFoundError:
+                    result['missing_stickers'].add(mid)
                 except (OSError, ValueError):
                     result['image_errors'] = True
             return result
@@ -255,6 +262,8 @@ class Messenger(QWidget):
             mid = entry['id']
             data = self.stickers.get(mid)
             if data is None:
+                if mid in self.missing_stickers:
+                    return 'Файл стикера отсутствует'
                 return 'Стикер недоступен — повторная загрузка…'
             image = QImage.fromData(data, 'PNG')
             url = QUrl('sticker:{}'.format(mid))
@@ -280,8 +289,6 @@ class Messenger(QWidget):
             return
         bar = self.timeline.verticalScrollBar()
         if bar.value() < bar.maximum()-4:
-            return
-        if any(m.get('kind') == 'sticker' and m['id'] not in self.stickers for m in self.messages):
             return
         latest = self.messages[-1]['id']
         if latest <= self.read_cursor:

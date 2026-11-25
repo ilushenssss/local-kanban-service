@@ -2616,6 +2616,7 @@ class MainWindow(QMainWindow, Async):
                     chat.messages.clear()
                     chat.avatars.clear()
                     chat.stickers.clear()
+                    chat.missing_stickers.clear()
                     chat.timeline.clear()
                     chat.markup = None
             self.boards_list.blockSignals(True)
