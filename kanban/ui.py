@@ -1715,7 +1715,7 @@ class MainWindow(QMainWindow, Async):
             card = bugzilla.board_card(raw, number, employees)
             store.save_bugzilla_cards(board_id, config, {number: card})
             notice = ('Баг добавлен во вкладку «Баги».' if card is not None else
-                      'Баг не добавлен на доску. Исполнитель не совпадает со списком employees.json.')
+                      'Баг не добавлен на доску. Закрытые баги и баги других исполнителей исключаются.')
             return raw, store.bugzilla_board_snapshot(board_id), notice
 
         self.bugzilla_loading = True

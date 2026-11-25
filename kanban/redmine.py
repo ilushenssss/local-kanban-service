@@ -577,7 +577,8 @@ def issue_label(tracker_name, issue_id, kris_progress=None):
     return (kris_progress or {}).get('subject') or tracker_name or 'ТИ-{}'.format(issue_id)
 
 
-TI_NUMBER = re.compile(r'\bти\s*[-‑–—]\s*([0-9]+)(?:\s*[рp]\s*([0-9]+))?', re.IGNORECASE)
+TI_NUMBER = re.compile(r'\bти\s*[-‑–—]\s*([0-9]+)(?:[-‑–—][0-9]{2}(?![0-9]))?(?:\s*[рp]\.?\s*([0-9]+))?',
+                       re.IGNORECASE)
 
 
 def ti_sort_key(task):

@@ -17,14 +17,16 @@ class BugzillaTest(unittest.TestCase):
             {'id': 42, 'summary': 'Обновлённый заголовок', 'assigned_to': 'Anna@example.test'},
             {'id': 7, 'assigned_to': 'other@example.test'},
             {'id': 142, 'assigned_to': 'anna@example.test'},
+            {'id': 8, 'assigned_to': 'anna@example.test', 'status': 'Закрыто'},
         ], 'faults': [{'id': '9', 'faultCode': 102}]}
-        cards = bugzilla.refresh_board_bugs('https://bugs.example.test', ['42', '7', '9'], ['anna'],
+        cards = bugzilla.refresh_board_bugs('https://bugs.example.test', ['42', '7', '8', '9'], ['anna'],
                                            login='user@example.test', password='sample')
         self.assertEqual(cards, {'42': {'id': 42, 'summary': 'Обновлённый заголовок',
                                         'cf_event_1': None, 'cf_cr_num': None}})
         args = request.call_args.args
         self.assertEqual(args[1], 'Bug.get')
-        self.assertEqual(args[2]['ids'], ['42', '7', '9'])
+        self.assertEqual(args[2]['ids'], ['42', '7', '8', '9'])
+        self.assertIn('status', args[2]['include_fields'])
         self.assertTrue(args[2]['permissive'])
         old_card = {'id': 9, 'summary': 'Доступен коллеге'}
         shared = bugzilla.refresh_board_bugs('https://bugs.example.test', ['42', '7', '9'], ['anna'],
@@ -38,11 +40,12 @@ class BugzillaTest(unittest.TestCase):
              'cf_cr_num': 0, 'summary': 'Проверка'},
             {'id': 43, 'assigned_to': 'other@example.test'},
             {'id': 44, 'assigned_to': None},
+            {'id': 45, 'assigned_to': 'anna@example.test', 'status': ' ЗАКРЫТО '},
         ]})
         self.assertEqual(bugzilla.board_card(raw, '42', [' anna.ivanova ']), {
             'id': 42, 'cf_event_1': ['A', 'B'], 'cf_cr_num': 0, 'summary': 'Проверка',
         })
-        for number in ('43', '44', '142'):
+        for number in ('43', '44', '45', '142'):
             self.assertIsNone(bugzilla.board_card(raw, number, ['anna']))
         self.assertIsNone(bugzilla.board_card(raw, '42', []))
 
@@ -59,7 +62,7 @@ class BugzillaTest(unittest.TestCase):
                                                                 {'name': '2.0-218 И-02'}]},
                           {'name': 'Другая система', 'versions': [{'name': '2.0-218 И-01'}]}]},
             {'bugs': [bug, dict(bug, id=43, product='Другая система'), dict(bug, id=44, version='2.0-219'),
-                      dict(bug, id=45, assigned_to='other@example.test')]},
+                      dict(bug, id=45, assigned_to='other@example.test'), dict(bug, id=47, status='закрыто')]},
             {'bugs': [dict(bug, id=46, version='2.0-218 И-02', assigned_to='bob@example.test')]},
         ]
         response.read.side_effect = [client.dumps((reply,), methodresponse=True, encoding='utf-8').encode()
@@ -81,6 +84,7 @@ class BugzillaTest(unittest.TestCase):
             self.assertEqual(params['product'], 'Система ПРОЕКТ')
             self.assertEqual(params['limit'], 0)
             self.assertIn('cf_cr_num', params['include_fields'])
+            self.assertIn('status', params['include_fields'])
             versions.append(params['version'])
         self.assertEqual(versions, ['2.0-218 И-01', '2.0-218 И-02'])
         self.assertEqual(connect.return_value.connect.call_count, len(replies))

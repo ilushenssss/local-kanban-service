@@ -61,6 +61,21 @@ def reference_ids(value):
     return {number.lstrip('0') for number in re.findall(r'[0-9]+', value)}
 
 
+def is_closed(bug):
+    return str(bug.get('status') or '').strip().casefold() in {'закрыто', 'closed'}
+
+
+def release_ti_keys(bug):
+    action = bug.get('cf_event_1')
+    actions = action if isinstance(action, list) else [action]
+    if not any(' '.join(str(value).casefold().split()) in {'выпуск ти', 'выпуск редакции ти'}
+               for value in actions):
+        return set()
+    return {(int(match[1]), int(match[2]) if match[2] else None) for match in re.finditer(
+        r'(?:\bти\s*|(?<!\w))[-‑–—]\s*([0-9]+)(?:\s*[рp]\.?\s*([0-9]+))?(?!\w)',
+        str(bug.get('cf_cr_num') or ''), re.IGNORECASE)}
+
+
 def employee_names(employees):
     return tuple(name.strip().casefold() for name in employees if name.strip())
 
@@ -78,7 +93,8 @@ def card_fields(bug):
 def board_card(raw, number, employees):
     names = employee_names(employees)
     for bug in json.loads(raw)['bugs']:
-        if isinstance(bug, dict) and str(bug.get('id')) == number and matches_employee(bug, names):
+        if (isinstance(bug, dict) and str(bug.get('id')) == number
+                and not is_closed(bug) and matches_employee(bug, names)):
             return card_fields(bug)
     return None
 
@@ -92,7 +108,7 @@ def load_board_cache(path):
         return {}
     return {number: card_fields(card) for number, card in cards.items()
             if number.isascii() and number.isdecimal() and isinstance(card, dict)
-            and str(card.get('id')).lstrip('0') == number}
+            and str(card.get('id')).lstrip('0') == number and not is_closed(card)}
 
 
 def xml_value_to_json(value):
@@ -197,10 +213,11 @@ def search_board_bugs(url, project, board, employees, *, login, password):
             if board_key not in version.casefold():
                 continue
             params = {'product': item['name'], 'version': version, 'limit': 0,
-                      'include_fields': ['id', 'product', 'version', 'assigned_to', 'summary', 'cf_event_1', 'cf_cr_num']}
+                      'include_fields': ['id', 'product', 'version', 'assigned_to', 'status',
+                                         'summary', 'cf_event_1', 'cf_cr_num']}
             result = xml_request(parts, 'Bug.search', params, login, password, response_timeout=BULK_RESPONSE_TIMEOUT)
             for bug in response_list(result, 'bugs'):
-                if (project_key in str(bug.get('product') or '').casefold()
+                if (not is_closed(bug) and project_key in str(bug.get('product') or '').casefold()
                         and board_key in str(bug.get('version') or '').casefold() and matches_employee(bug, names)):
                     cards[bug_number(bug['id'])] = card_fields(bug)
     return dict(sorted(cards.items(), key=lambda item: (len(item[0]), item[0])))
@@ -214,19 +231,19 @@ def refresh_board_bugs(url, numbers, employees, *, login, password, keep_unavail
     for offset in range(0, len(numbers), 100):
         batch = numbers[offset:offset + 100]
         params = {'ids': batch, 'permissive': True,
-                  'include_fields': ['id', 'assigned_to', 'summary', 'cf_event_1', 'cf_cr_num']}
+                  'include_fields': ['id', 'assigned_to', 'status', 'summary', 'cf_event_1', 'cf_cr_num']}
         response = xml_request(parts, 'Bug.get', params, login, password)
         for fault in response.get('faults', []):
             code = fault.get('faultCode')
             if code not in (100, 101, 102):
                 raise BugzillaError('Bugzilla не смогла обновить часть сохранённых багов.')
             number = str(fault.get('id'))
-            if code == 102 and keep_unavailable and number in keep_unavailable:
+            if code == 102 and keep_unavailable and number in keep_unavailable and not is_closed(keep_unavailable[number]):
                 cards[number] = keep_unavailable[number]
         requested = set(batch)
         for bug in response_list(response, 'bugs'):
             number = bug_number(bug['id'])
-            if number in requested and matches_employee(bug, names):
+            if number in requested and not is_closed(bug) and matches_employee(bug, names):
                 cards[number] = card_fields(bug)
     return cards
 

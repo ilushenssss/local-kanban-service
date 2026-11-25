@@ -1,10 +1,9 @@
 import json
-from math import ceil
 
-from PyQt5.QtCore import QRect, QSize, Qt
-from PyQt5.QtGui import QAbstractTextDocumentLayout, QColor, QFontMetrics, QPalette
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget
-from .bugzilla import xml_value_to_json
+from PyQt5.QtCore import QPointF, QRect, QSize, Qt
+from PyQt5.QtGui import QColor, QFontMetrics, QTextLayout, QTextOption
+from PyQt5.QtWidgets import QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from .bugzilla import is_closed, xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
 from .theme import STICKERS, TOKENS
 
@@ -15,64 +14,85 @@ def field_text(value):
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=xml_value_to_json)
 
 
+class BugzillaGrid(QListWidget):
+    card_height = 90
+    gap = 8
+
+    def __init__(self):
+        super().__init__()
+        self.setViewMode(QListWidget.IconMode)
+        self.setFlow(QListWidget.LeftToRight)
+        self.setWrapping(True)
+        self.setMovement(QListWidget.Static)
+        self.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+
+    def resizeEvent(self, event):
+        width = self.maximumViewportSize().width() - self.verticalScrollBar().sizeHint().width() - self.gap
+        columns = 2 if width >= 400 else 1
+        self.setGridSize(QSize(max(1, width // columns), self.card_height + self.gap))
+        super().resizeEvent(event)
+
+
 class BugzillaCard(ProjectCardDelegate):
-    side_padding = 8
-    badge_padding = 5
-    badge_extra_height = 6
-    row_gap = 3
-
-    def details_offset(self, option, number, width):
-        number_width = QFontMetrics(self.heading_font(option)).horizontalAdvance(number)
-        return max(width * 2 // 5, number_width + 10)
-
-    def detail_rows(self, option, lines, width):
-        for row, value in enumerate(lines):
-            badge = row > 0
-            inset = self.badge_padding if badge else 0
-            document = self.body_document(option, [value], max(1, width - 2 * inset))
-            height = ceil(document.size().height()) + (self.badge_extra_height if badge else 0)
-            yield document, height
-
     def sizeHint(self, option, index):
-        card = index.data(Qt.UserRole)
-        if card is None:
-            return QSize(0, 66)
-        number, lines, _ = card
-        view = self.parent()
-        width = max(1, view.viewport().width() - 2 * (view.spacing() + self.side_padding) - 4)
-        details_width = width - self.details_offset(option, number, width)
-        height = sum(height for _, height in self.detail_rows(option, lines, details_width))
-        return QSize(0, max(66, 22 + height + 2 * self.row_gap))
+        grid = self.parent()
+        return QSize(max(1, grid.gridSize().width() - grid.gap), grid.card_height)
 
     def paint(self, painter, option, index):
-        number, lines, linked = index.data(Qt.UserRole)
+        number, (title, ti, action), linked = index.data(Qt.UserRole)
         painter.save()
         box = self.paint_surface(painter, option, linked)
-        x, y = box.x() + self.side_padding, box.y() + 8
-        width = box.width() - 2 * self.side_padding
-        offset = self.details_offset(option, number, width)
+        left, top = box.x() + 8, box.y() + 9
+        width = box.width() - 16
+        if width < 32:
+            painter.restore()
+            return
+
         painter.setFont(self.heading_font(option))
         painter.setPen(QColor(TOKENS['text']))
-        painter.drawText(QRect(x, y, offset, 22), Qt.AlignTop | Qt.AlignLeft, number)
-        details_width = max(1, width - offset)
-        ti_colors = STICKERS[0] if lines[1] == '—' else (TOKENS['secondary'], TOKENS['hover'])
-        colors = ((TOKENS['text'], None, None), (*ti_colors, None),
-                  (TOKENS['secondary'], TOKENS['properties'], TOKENS['field_border']))
-        context = QAbstractTextDocumentLayout.PaintContext()
-        x += offset
-        y += 1
-        for (document, height), (foreground, background, border) in zip(
-                self.detail_rows(option, lines, details_width), colors):
-            inset = self.badge_padding if background else 0
-            if background:
-                badge_width = min(details_width, ceil(document.idealWidth()) + 2 * inset)
-                self.paint_badge_background(painter, QRect(x, y, badge_width, height), background, border)
-            context.palette.setColor(QPalette.Text, QColor(foreground))
-            painter.save()
-            painter.translate(x + inset, y + (self.badge_extra_height // 2 if background else 0))
-            document.documentLayout().draw(painter, context)
-            painter.restore()
-            y += height + self.row_gap
+        metrics = painter.fontMetrics()
+        number_width = min(metrics.horizontalAdvance(number), width // 3)
+        painter.drawText(QRect(left, top, number_width, 18), Qt.AlignTop | Qt.AlignLeft,
+                         metrics.elidedText(number, Qt.ElideRight, number_width))
+
+        font = self.body_font(option)
+        metrics = QFontMetrics(font)
+        title_x = left + number_width + 8
+        title_width = width - number_width - 8
+        layout = QTextLayout(title, font)
+        wrap = QTextOption()
+        wrap.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        layout.setTextOption(wrap)
+        layout.beginLayout()
+        offset = 0
+        y = top
+        for _ in range(2):
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(title_width)
+            line.setPosition(QPointF(0, y - top))
+            offset = line.textStart() + line.textLength()
+            y += metrics.lineSpacing()
+        layout.endLayout()
+        layout.draw(painter, QPointF(title_x, top))
+        painter.setFont(font)
+        painter.drawText(QRect(title_x, y, title_width, metrics.height()), Qt.AlignTop | Qt.AlignLeft,
+                         metrics.elidedText(title[offset:], Qt.ElideRight, title_width))
+
+        badge_y = box.bottom() - 25
+        ti_colors = STICKERS[0] if ti == '—' else (TOKENS['secondary'], TOKENS['hover'])
+        ti_width = min(metrics.horizontalAdvance(ti) + 12, width // 2)
+        for value, x, available, (foreground, background), border in (
+            (ti, left, ti_width, ti_colors, None),
+            (action, left + ti_width + 5, width - ti_width - 5,
+             (TOKENS['secondary'], TOKENS['properties']), TOKENS['field_border']),
+        ):
+            span = min(available, metrics.horizontalAdvance(value) + 12)
+            rect = QRect(x, badge_y, span, 20)
+            self.paint_badge_background(painter, rect, background, border)
+            painter.setPen(QColor(foreground))
+            painter.drawText(rect, Qt.AlignCenter, metrics.elidedText(value, Qt.ElideRight, max(0, span - 10)))
         painter.restore()
 
 
@@ -111,11 +131,10 @@ class BugzillaPage(QWidget):
         columns.setSpacing(18)
         self.columns = []
         for title in ('Не привязаны', 'Привязаны'):
-            panel, cards = project_card_column(title, BugzillaCard, minimum_width=150)
-            cards.setSpacing(5)
+            panel, cards = project_card_column(title, BugzillaCard, minimum_width=150, list_type=BugzillaGrid)
+            cards.setSpacing(0)
             columns.addWidget(panel, 1)
             self.columns.append(cards)
-        columns.addStretch(2)
         self.scroll.setWidget(canvas)
         layout.addWidget(self.scroll, 1)
         self.show_cards(())
@@ -128,7 +147,7 @@ class BugzillaPage(QWidget):
         self.progress.setVisible(loading)
 
     def show_cards(self, cards, linked=()):
-        snapshot = tuple(cards)
+        snapshot = tuple(card for card in cards if not is_closed(card))
         linked = frozenset(linked)
         if snapshot == self.snapshot and linked == self.linked:
             return
@@ -140,7 +159,10 @@ class BugzillaPage(QWidget):
         for bug in snapshot:
             is_linked = str(bug['id']).lstrip('0') in linked
             number = str(bug['id'])
-            lines = [field_text(bug['summary']),
+            title = ' '.join(field_text(bug['summary']).split())
+            if len(title) > 100:
+                title = title[:99].rstrip() + '…'
+            lines = [title,
                      field_text(bug['cf_cr_num']),
                      field_text(bug['cf_event_1'])]
             item = QListWidgetItem(self.columns[int(is_linked)])

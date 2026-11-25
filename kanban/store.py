@@ -397,7 +397,11 @@ class Store:
         key = f'bugzilla_cards:{board_id}'
         row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
         snapshot = json.loads(row[0]) if row else None
-        return snapshot if snapshot and snapshot['config'] == config else None
+        if not snapshot or snapshot['config'] != config:
+            return None
+        snapshot['cards'] = {number: card for number, card in snapshot['cards'].items()
+                             if not bugzilla.is_closed(card)}
+        return snapshot
 
     def bugzilla_board_snapshot(self, board_id):
         with self.connection() as c:
@@ -409,7 +413,8 @@ class Store:
             return self.bugzilla_cards_in(c, board_id, self.bugzilla_settings_in(c))
 
     def save_bugzilla_cards(self, board_id, config, cards, *, replace=False, revision=None, board_name=None):
-        cards = {number: bugzilla.card_fields(card) if card is not None else None for number, card in cards.items()}
+        cards = {number: bugzilla.card_fields(card) if card is not None and not bugzilla.is_closed(card) else None
+                 for number, card in cards.items()}
         cards = json.loads(json.dumps(cards, ensure_ascii=False, default=bugzilla.xml_value_to_json))
 
         def apply(c, uid):
@@ -1261,6 +1266,12 @@ class Store:
     def project_board(board):
         return not board['personal'] and not board['archived'] and ' / ' in board['name']
 
+    @staticmethod
+    def linked_bug_ids(entries):
+        return {number for entry in entries
+                for value in json.loads(entry['issue_references']).get('bugs', [])
+                for number in bugzilla.reference_ids(value)}
+
     def board_snapshot(self, board_id, filters, view):
         with self.connection() as c:
             c.execute('BEGIN')
@@ -1282,12 +1293,8 @@ class Store:
                     tasks = self.identification_in(c, board, actor)
             elif view == 'bugs' and selected is not None:
                 tasks = self.bugzilla_cards_in(c, selected, catalogs['bugzilla'])
-                catalogs['linked_bug_ids'] = {
-                    number for (references,) in c.execute(
-                        'SELECT issue_references FROM redmine_links WHERE board_id=?', (selected,))
-                    for value in json.loads(references).get('bugs', [])
-                    for number in bugzilla.reference_ids(value)
-                }
+                catalogs['linked_bug_ids'] = self.linked_bug_ids(c.execute(
+                    'SELECT issue_references FROM redmine_links WHERE board_id=?', (selected,)))
             elif selected is not None:
                 board = next(b for b in boards if b['id'] == selected)
                 tasks = self.cards_in(c, selected, {} if view == 'statistics' else filters)
@@ -1303,9 +1310,17 @@ class Store:
                     query = (filters.get('query') or '').casefold()
                     basis_project = self.redmine_basis_project_in(c, selected)
                     bug_snapshot = self.bugzilla_cards_in(c, selected, catalogs['bugzilla']) if view == 'board' else None
-                    bug_ids = set(bug_snapshot['cards']) if bug_snapshot else set()
+                    bugs = bug_snapshot['cards'] if bug_snapshot else {}
+                    entries = c.execute('SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id',
+                                        (selected,)).fetchall()
+                    unlinked_by_ti = {}
+                    if bugs:
+                        for number in bugs.keys() - self.linked_bug_ids(entries):
+                            for key in bugzilla.release_ti_keys(bugs[number]):
+                                unlinked_by_ti.setdefault(key, set()).add(number)
+                    opened = {column['id'] for column in columns if status_key(column['name']) == 'ти открыто'}
                     redmine_cards = []
-                    for entry in c.execute('SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id', (selected,)):
+                    for entry in entries:
                         col = entry['column_id']
                         totals[col] = totals.get(col, 0) + 1
                         if (filters.get('archived') or filters.get('assignee') or filters.get('label')
@@ -1320,7 +1335,13 @@ class Store:
                             if not any(query in (name + suffix).casefold() for name in (label, tracker)):
                                 continue
                         card['linked_bugs'] = [value for value in card['issue_references'].get('bugs', [])
-                                               if bug_ids and bugzilla.reference_ids(value) & bug_ids]
+                                               if bugs and bugzilla.reference_ids(value) & bugs.keys()]
+                        if unlinked_by_ti and col not in opened:
+                            missing, number, revision, *_ = ti_sort_key(card)
+                            if not missing:
+                                unlinked = (unlinked_by_ti.get((number, None), set())
+                                            | unlinked_by_ti.get((number, revision), set()))
+                                card['unlinked_bugs'] = sorted(unlinked, key=int)
                         redmine_cards.append(dict(card, id=-entry['issue_id'], redmine_id=entry['issue_id'],
                                                   number=entry['issue_id'], version=entry['revision'], archived=False,
                                                   assignees=[], assignee_names=[], labels=[], due_date=None,

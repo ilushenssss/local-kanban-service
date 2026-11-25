@@ -104,7 +104,7 @@ class CardDelegate(QStyledItemDelegate):
             rows = chip_rows(task['approvals'], DEPARTMENT_CHIPS_PER_ROW)
             approval_height = 19 + rows * CHIP_PITCH if rows else 0
             _, basis_height = self.basis_layout(task, option)
-            bugs = task['issue_references'].get('bugs', [])
+            bugs = task['issue_references'].get('bugs', []) + task.get('unlinked_bugs', [])
             reference_height = 2 * REFERENCE_LABEL_HEIGHT + basis_height + chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
             title_height = 2 * QFontMetrics(redmine_title_font(option.font)).lineSpacing()
             coding_height = len(kris_coding_lines(task.get('kris_progress'))) * CODING_LINE_HEIGHT
@@ -383,15 +383,17 @@ class CardDelegate(QStyledItemDelegate):
             palette = DEPARTMENT_PALETTE['green' if status_key(status) == 'ти утверждено' else 'red'] if status else None
             chip(value, rect.translated(x, y), palette=palette, text_width=text_width)
         y += basis_height
-        bugs = task['issue_references'].get('bugs', [])
+        unlinked_bugs = task.get('unlinked_bugs', [])
+        bugs = task['issue_references'].get('bugs', []) + unlinked_bugs
         text('Баги' if bugs else 'Баги —', x, y, width)
         y += REFERENCE_LABEL_HEIGHT
         span = (width - CHIP_GAP * (BUG_CHIPS_PER_ROW - 1)) // BUG_CHIPS_PER_ROW
-        linked_bugs = set(task.get('linked_bugs', ()))
+        palettes = dict.fromkeys(task.get('linked_bugs', ()), DEPARTMENT_PALETTE['green'])
+        palettes.update(dict.fromkeys(unlinked_bugs, DEPARTMENT_PALETTE['red']))
         for index, value in enumerate(bugs):
             row, column = divmod(index, BUG_CHIPS_PER_ROW)
-            palette = DEPARTMENT_PALETTE['green'] if value in linked_bugs else None
-            chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT), palette=palette)
+            chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT),
+                 palette=palettes.get(value))
         y += chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
         text('КРИС ТИ', x, y, width-106)
         text(kris_progress_text(progress), x+width-100, y, 100, align=Qt.AlignRight)

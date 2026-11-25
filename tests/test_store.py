@@ -86,6 +86,38 @@ class StoreTest(unittest.TestCase):
         with self.assertRaises(AccessDenied):
             member.bugzilla_board_snapshot(board)
 
+    def test_unlinked_release_bugs_match_ti_revision_outside_open_column(self):
+        board = self.s.board_action('Проект / Релиз', column_names=['Проект ТИ', 'ТИ открыто'])
+        draft, opened = (column['name'] for column in self.s.columns(board))
+        for issue, tracker, column, references in (
+            (601, 'ТИ-1156-26 р.6', draft, []), (602, 'ТИ-1156-26 р.7', draft, []),
+            (603, 'ТИ-1156-26 р.6', opened, []), (604, 'ТИ-11560', draft, ['BZ #00045']),
+        ):
+            self.s.link_redmine_issue(board, issue, tracker, column, column, tracker_name=tracker,
+                                      issue_references={'bugs': references})
+        config = {'url': 'https://bugs.example.test', 'domain': 'example.test'}
+        self.s.set_connection_settings(bugzilla_config=config)
+        bugs = {
+            str(number): {'id': number, 'cf_cr_num': ti, 'cf_event_1': action, 'status': status}
+            for number, ti, action, status in (
+                (41, 'ТИ-1156р6', 'Выпуск редакции ТИ', 'Открыто'),
+                (42, '-1156р6', 'Выпуск ТИ', 'Открыто'),
+                (43, '-1156', 'Выпуск ТИ', 'Открыто'),
+                (44, '-1156р6', 'Проверить', 'Открыто'),
+                (45, '-1156р6', 'Выпуск ТИ', 'Открыто'),
+                (46, '-1156р6', 'Выпуск ТИ', 'Закрыто'),
+            )
+        }
+        self.s.save_bugzilla_cards(board, config, bugs)
+        saved = self.s.bugzilla_board_snapshot(board)
+        self.assertNotIn('46', saved['cards'])
+        self.assertEqual(self.s.board_snapshot(board, {}, 'bugs')[5]['linked_bug_ids'], {'45'})
+        cards = self.s.board_snapshot(board, {'query': '1156-26'}, 'board')[3]
+        self.assertEqual({card['issue_id']: card.get('unlinked_bugs', []) for card in cards},
+                         {601: ['41', '42', '43'], 602: ['43'], 603: []})
+        self.s.save_bugzilla_cards(board, config, {'41': dict(bugs['41'], status=' Закрыто ')})
+        self.assertNotIn('41', self.s.bugzilla_board_snapshot(board)['cards'])
+
     def test_shared_redmine_cards_and_status_updates(self):
         board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
         member = Store(self.s.folder, 'bob')
