@@ -298,7 +298,7 @@ class Store:
             c.execute('BEGIN')
             role = self.actor(c)['role']
             admin = role == 'admin'
-            fields = 'u.*' if admin else 'u.display_name,u.restricted'
+            fields = 'u.*' if admin else 'u.id,u.display_name,u.restricted'
             users = [dict(row) for row in c.execute(
                 "SELECT " + fields + ",s.value AS avatar FROM users u "
                 "LEFT JOIN settings s ON s.key='avatar:' || u.id "
@@ -308,13 +308,39 @@ class Store:
     def employee_profile(self, user_id):
         with self.connection() as c:
             c.execute('BEGIN')
-            role = self.actor(c)['role']
-            row = c.execute('''SELECT u.display_name,s.value AS avatar FROM users u
+            actor = self.actor(c)
+            row = c.execute('''SELECT u.display_name,s.value AS avatar, u.id<>? AND u.restricted=0 AS can_message FROM users u
                 LEFT JOIN settings s ON s.key='avatar:' || u.id
-                WHERE u.id=? AND (u.restricted=0 OR ?)''', (user_id, role != 'employee')).fetchone()
+                WHERE u.id=? AND (u.restricted=0 OR ?)''', (actor['id'], user_id, actor['role'] != 'employee')).fetchone()
             if row is None:
                 raise AccessDenied('Профиль сотрудника недоступен')
             return dict(row)
+
+    def publish_private_chat(self, endpoint, *, renew=False):
+        with self.exclusive(), self.connection() as c:
+            c.execute('BEGIN IMMEDIATE')
+            user_id = self.actor(c)['id']
+            key = f'private_chat:{user_id}'
+            row = c.execute('SELECT value FROM settings WHERE key=?', (key,)).fetchone()
+            if renew and (row is None or json.loads(row[0])['session'] != endpoint['session']):
+                return None
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                      (key, json.dumps(dict(endpoint, expires=time.time() + 180))))
+            c.commit()
+            return user_id
+
+    def private_chat_peer(self, user_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            self.actor(c)
+            row = c.execute('''SELECT u.display_name, s.value FROM users u
+                JOIN settings s ON s.key='private_chat:' || u.id
+                WHERE u.id=? AND u.restricted=0''', (user_id,)).fetchone()
+            if row:
+                endpoint = json.loads(row['value'])
+                if endpoint['expires'] > time.time():
+                    return endpoint, row['display_name']
+            raise ValueError('Сотрудник сейчас недоступен для личной переписки.')
 
     def set_role(self, user_id, role, request_id=None):
         if role not in ('admin', 'manager', 'employee'):

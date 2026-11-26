@@ -24,7 +24,8 @@ from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
 from .messenger import Messenger
-from .people import open_employee_profile
+from .people import EmployeeList, open_employee_profile
+from .private_chat import PrivateChats
 from .notifications import Notifications
 from .board_badges import BoardBadgeDelegate
 from .avatars import avatar_image, avatar_resources
@@ -150,12 +151,12 @@ class CatalogDialog(QDialog, Async):
         self.retry = None
         self.delete_retry = None
         self.setWindowTitle('Сотрудники' if kind == 'users' else 'Метки доски')
-        self.resize(540, 540)
+        self.resize(QSize(780, 640) if kind == 'users' else QSize(540, 540))
         root = QVBoxLayout(self)
         heading = QLabel(self.windowTitle())
         heading.setObjectName('Heading')
         root.addWidget(heading)
-        self.list = QListWidget()
+        self.list = EmployeeList() if kind == 'users' else QListWidget()
         self.edit_intro = QLabel('Отметка «Ограничить доступ» блокирует вход в TeamSync. Снимите отметку, чтобы восстановить доступ.' if kind == 'users' else 'Метки доступны всем задачам этой доски.')
         self.edit_intro.setObjectName('Muted')
         self.edit_intro.setWordWrap(True)
@@ -163,6 +164,7 @@ class CatalogDialog(QDialog, Async):
         if kind == 'users':
             self.list.setIconSize(QSize(36, 36))
             self.list.itemChanged.connect(self.change_restriction)
+            self.list.profile_requested.connect(self.open_profile)
         root.addWidget(self.list, 1)
         self.edit_form = QWidget()
         form = QFormLayout(self.edit_form)
@@ -192,6 +194,19 @@ class CatalogDialog(QDialog, Async):
             for control in (self.edit_intro, self.edit_form, self.save_button, self.edit_button):
                 control.hide()
         self.load()
+
+    def open_profile(self, item):
+        user_id = item.data(Qt.UserRole)['id']
+        window = self.parentWidget()
+        open_chat = getattr(window, 'open_private_chat', None)
+
+        def start_chat(peer_id, name):
+            self.reject()
+            if not self.isVisible():
+                open_chat(peer_id, name)
+
+        open_employee_profile(QUrl(f'employee:{user_id}'), self, self.store, self.work, self.status,
+                              start_chat if open_chat else None)
 
     def load(self):
         self.save_button.setEnabled(False)
@@ -576,8 +591,8 @@ class TaskDialog(QDialog, Async):
         self.comments = QTextBrowser()
         self.comments.setOpenLinks(False)
         self.comments.setOpenExternalLinks(False)
-        self.comments.anchorClicked.connect(
-            lambda url: open_employee_profile(url, self, self.store, self.work, self.status))
+        self.comments.anchorClicked.connect(lambda url: open_employee_profile(
+            url, self, self.store, self.work, self.status, getattr(self.parentWidget(), 'open_private_chat', None)))
         self.comments.setReadOnly(True)
         self.comments.setObjectName('ChatTimeline')
         comments_layout.addWidget(self.comments)
@@ -1275,6 +1290,7 @@ class MainWindow(QMainWindow, Async):
         self.sppi_view_board = None
         self.sppi_view_dirty = False
         self.store = None
+        self.private_chats = PrivateChats(self)
         self.access_restricted = False
         self.hidden_task_dialogs = set()
         self.board_id = None
@@ -2562,6 +2578,7 @@ class MainWindow(QMainWindow, Async):
         self.access_restricted = restricted
         self.centralWidget().setVisible(not restricted)
         if restricted:
+            self.private_chats.stop()
             self.redmine_client = None
             self.redmine_login = None
             self.reset_bugzilla_session()
@@ -2577,6 +2594,8 @@ class MainWindow(QMainWindow, Async):
             self.statusBar().showMessage(str(AccessRestricted()))
             self.statusBar().show()
         else:
+            if self.store:
+                self.private_chats.start(self.store)
             self.statusBar().hide()
             self.render_bugzilla_cards()
             visible = {self.board_tabs.tabData(i) for i in range(self.board_tabs.count())}
@@ -2607,6 +2626,7 @@ class MainWindow(QMainWindow, Async):
                 self.status.setText('Общая папка недоступна: ' + error_text(error) + '. Проверьте путь в «Настройки → Подключение…» и нажмите «Обновить».')
                 return
             self.store = store
+            self.private_chats.start(store)
             self.notifications.poll()
             self.refresh()
         def connect():
@@ -3021,6 +3041,10 @@ class MainWindow(QMainWindow, Async):
         dialog.changed.connect(self.refresh)
         dialog.exec_()
         self.refresh()
+
+    def open_private_chat(self, user_id, name):
+        if self.store is not None and not self.access_restricted:
+            self.private_chats.open(user_id, name)
 
     def exclusive_selection(self, source):
         if source.selectedItems():
@@ -3871,6 +3895,7 @@ class MainWindow(QMainWindow, Async):
         for chat in self.board_chats.values():
             chat.timer.stop()
         self.notifications.shutdown()
+        self.private_chats.stop()
         self.redmine_client = None
         self.redmine_login = None
         self.bugzilla_session = None

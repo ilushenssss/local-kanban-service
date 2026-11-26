@@ -396,7 +396,8 @@ class Messenger(QWidget):
 
     def view_profile(self, url):
         if self.active and self.window.store:
-            open_employee_profile(url, self, self.window.store, self.window.work, self.status)
+            open_employee_profile(url, self, self.window.store, self.window.work, self.status,
+                                  self.window.open_private_chat)
 
     def view_sticker(self, url):
         if url.scheme() != 'sticker':

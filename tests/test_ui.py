@@ -193,12 +193,60 @@ class UITest(unittest.TestCase):
             self.assertFalse(any(item.flags() & Qt.ItemIsUserCheckable for item in items))
             self.assertFalse(dialog.save_button.isVisible())
             self.assertFalse(dialog.edit_button.isVisible())
-            self.assertTrue(all(set(item.data(Qt.UserRole)) == {'display_name', 'restricted', 'avatar'} for item in items))
+            self.assertTrue(all(set(item.data(Qt.UserRole)) == {'id', 'display_name', 'restricted', 'avatar'} for item in items))
             with self.assertRaises(AccessDenied):
                 store.set_user_restricted(blocked, False)
         with self.assertRaises(AccessDenied):
             member.employee_profile(blocked)
         self.assertEqual(manager.employee_profile(blocked)['display_name'], 'another')
+
+    def test_employee_directory_opens_profile_and_sends_ephemeral_message(self):
+        from importlib.util import find_spec
+
+        if not find_spec('cryptography'):
+            self.skipTest('cryptography is required for private chats')
+        colleague = Store(self.store.folder, 'colleague')
+        windows = []
+        for store in (self.store, colleague):
+            with patch('kanban.ui.Store', return_value=store):
+                window = MainWindow(str(store.folder))
+                self.windows.append(window)
+                windows.append(window)
+                window.show()
+                wait_for(lambda: window.private_chats.ready and not window.jobs)
+        sender, receiver = windows
+        roster = CatalogDialog(self.store, self.bid, 'users', sender)
+        self.windows.append(roster)
+        roster.show()
+        wait_for(lambda: not roster.jobs)
+        self.assertGreaterEqual(roster.width(), 780)
+        self.assertGreaterEqual(roster.height(), 640)
+        item = next(roster.list.item(i) for i in range(roster.list.count())
+                    if roster.list.item(i).data(Qt.UserRole)['login'] == 'colleague')
+
+        def profile(dialog):
+            self.assertEqual(dialog.windowTitle(), 'Профиль сотрудника')
+            message = next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Написать сообщение')
+            message.click()
+            return dialog.result()
+
+        with patch.object(QDialog, 'exec_', new=profile):
+            roster.list.scrollToItem(item)
+            QTest.mouseClick(roster.list.viewport(), Qt.LeftButton, pos=roster.list.visualItemRect(item).center())
+            wait_for(lambda: bool(sender.private_chats.dialogs))
+        chat = sender.private_chats.dialogs[colleague.profile()['id']]
+        body = 'Личное сообщение, которое не осталось в базе'
+        chat.input.setPlainText(body)
+        QTest.keyClick(chat.input, Qt.Key_Return)
+        sender_id = self.store.profile()['id']
+        wait_for(lambda: sender_id in receiver.private_chats.dialogs and body in chat.timeline.toPlainText())
+        inbox = receiver.private_chats.dialogs[sender_id]
+        self.assertIn(body, inbox.timeline.toPlainText())
+        self.assertNotIn(body.encode(), self.store.db.read_bytes())
+        self.assertTrue(sender.close())
+        self.assertTrue(receiver.close())
+        self.assertFalse(sender.private_chats.dialogs)
+        self.assertFalse(receiver.private_chats.dialogs)
 
     def test_newer_database_reports_required_client_update(self):
         newer = SCHEMA_VERSION + 1

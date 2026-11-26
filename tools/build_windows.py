@@ -14,6 +14,9 @@ WHEELS = {
     'PyQt5-5.15.11-cp38-abi3-win_amd64.whl': 'bdde598a3bb95022131a5c9ea62e0a96bd6fb28932cc1619fd7ba211531b7517',
     'PyQt5_Qt5-5.15.2-py3-none-win_amd64.whl': '750b78e4dba6bdf1607febedc08738e318ea09e9b10aea9ff0d73073f11f6962',
     'PyQt5_sip-12.15.0-cp38-cp38-win_amd64.whl': 'f600ae6f03e4bff91153c0dc7ebe52f90bd2b6afda58fd580e6990b3b951adc0',
+    'cryptography-46.0.7-cp38-abi3-win_amd64.whl': '506c4ff91eff4f82bdac7633318a526b1d1309fc07ca76a3ad182cb5b686d6d3',
+    'cffi-1.17.1-cp38-cp38-win_amd64.whl': '78122be759c3f8a014ce010908ae03364d00a1f81ab5c7f4a7a5120607ea56e1',
+    'pycparser-2.23-py3-none-any.whl': 'e5c6e8d3fbad53479cab09ac03729e0a9faf2bee3db8208a550daf5af81a5934',
 }
 
 
@@ -23,7 +26,10 @@ def build():
         raise SystemExit('environment/python already exists. Preserve or remove it explicitly before rebuilding.')
     wheels = ROOT / 'wheelhouse'
     wheels.mkdir(exist_ok=True)
-    subprocess.check_call([sys.executable, '-m', 'pip', 'download', '--only-binary=:all:', '--no-deps', '--platform', 'win_amd64', '--python-version', '3.8', '--implementation', 'cp', '--abi', 'cp38', '--abi', 'abi3', '-d', str(wheels), '-r', str(ROOT / 'requirements' / 'runtime.txt')])
+    subprocess.check_call([sys.executable, '-m', 'pip', 'download', '--only-binary=:all:', '--no-deps',
+                           '--require-hashes', '--platform', 'win_amd64', '--python-version', '3.8',
+                           '--implementation', 'cp', '--abi', 'cp38', '--abi', 'abi3', '-d', str(wheels),
+                           '-r', str(ROOT / 'requirements' / 'windows.lock')])
     for name, expected in WHEELS.items():
         if hashlib.sha256((wheels / name).read_bytes()).hexdigest() != expected:
             raise SystemExit('Wheel checksum mismatch: ' + name)
