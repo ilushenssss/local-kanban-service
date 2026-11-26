@@ -395,8 +395,9 @@ class Store:
             self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
-        elif operation in ('redmine_link', 'redmine_unlink', 'redmine_refresh', 'redmine_identification', 'bugzilla_cards'):
-            permission = {'redmine_link': 'create_task', 'redmine_unlink': 'archive_task'}.get(operation, 'read')
+        elif operation in ('redmine_link', 'redmine_unlink', 'redmine_archive', 'redmine_refresh', 'redmine_identification', 'bugzilla_cards'):
+            permission = {'redmine_link': 'create_task', 'redmine_unlink': 'archive_task',
+                          'redmine_archive': 'archive_task'}.get(operation, 'read')
             self.require(c, permission, payload[0])
             board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (payload[0],)).fetchone()
             if not board or not self.project_board(board):
@@ -456,6 +457,18 @@ class Store:
             if not board or not self.project_board(board):
                 raise ValueError('Баги доступны только на активной проектной доске.')
             return self.bugzilla_cards_in(c, board_id, self.bugzilla_settings_in(c))
+
+    def require_bugzilla_comment(self, board_id, config, number):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            self.require(c, 'create_task', board_id)
+            self.active_board(c, board_id)
+            board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (board_id,)).fetchone()
+            if not self.project_board(board) or self.bugzilla_settings_in(c) != config:
+                raise AccessDenied('Проверьте проектную доску и настройки Bugzilla.')
+            snapshot = self.bugzilla_cards_in(c, board_id, config)
+            if not snapshot or number not in snapshot['cards']:
+                raise AccessDenied('Баг больше не доступен на этой доске.')
 
     def save_bugzilla_cards(self, board_id, config, cards, *, replace=False, revision=None, board_name=None):
         cards = {number: bugzilla.card_fields(card) if card is not None and not bugzilla.is_closed(card) else None
@@ -1070,7 +1083,18 @@ class Store:
 
     @staticmethod
     def columns_in(c, board_id):
-        return [dict(r) for r in c.execute('SELECT * FROM columns WHERE board_id=? ORDER BY position,id', (board_id,))]
+        rows = c.execute("""SELECT c.*, s.value AS hidden_details
+            FROM columns c LEFT JOIN settings s ON s.key='ti_hidden_details:' || c.board_id
+            WHERE c.board_id=? ORDER BY c.position,c.id""", (board_id,)).fetchall()
+        hidden = set(json.loads(rows[0]['hidden_details'])) if rows and rows[0]['hidden_details'] else set()
+        columns = []
+        for row in rows:
+            column = dict(row)
+            del column['hidden_details']
+            if column['id'] in hidden:
+                column['show_ti_details'] = False
+            columns.append(column)
+        return columns
 
     def save_columns(self, board_id, columns, request_id=None, removed=None):
         removed = {int(k): int(v) for k, v in (removed or {}).items()}
@@ -1080,6 +1104,10 @@ class Store:
             raise ValueError('Выберите одну колонку завершения')
         def apply(c, uid):
             self.active_board(c, board_id)
+            board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (board_id,)).fetchone()
+            project = self.project_board(board)
+            write_details = project and any('show_ti_details' in column for column in columns)
+            hidden_details = []
             existing = {r['id'] for r in c.execute('SELECT id FROM columns WHERE board_id=?', (board_id,))}
             supplied = [x['id'] for x in columns if x.get('id')]
             if (set(supplied) | set(removed)) != existing or len(supplied) != len(set(supplied)) or set(supplied) & set(removed):
@@ -1100,10 +1128,16 @@ class Store:
                     self.history(c, row['id'], uid, 'Удаление колонки и перенос задач', {'column_name': [source_name, target_name]})
                 c.execute('DELETE FROM columns WHERE id=?', (source,))
             for i, x in enumerate(columns):
+                column_id = x.get('id') or self.next_column_id(c)
                 if x.get('id'):
-                    c.execute('UPDATE columns SET name=?,position=?,is_done=?,wip_limit=? WHERE id=?', (x['name'].strip(), i, int(x['is_done']), x.get('wip_limit'), x['id']))
+                    c.execute('UPDATE columns SET name=?,position=?,is_done=?,wip_limit=? WHERE id=?', (x['name'].strip(), i, int(x['is_done']), x.get('wip_limit'), column_id))
                 else:
-                    c.execute('INSERT INTO columns(id,board_id,name,position,is_done,wip_limit) VALUES(?,?,?,?,?,?)', (self.next_column_id(c), board_id, x['name'].strip(), i, int(x['is_done']), x.get('wip_limit')))
+                    c.execute('INSERT INTO columns(id,board_id,name,position,is_done,wip_limit) VALUES(?,?,?,?,?,?)', (column_id, board_id, x['name'].strip(), i, int(x['is_done']), x.get('wip_limit')))
+                if write_details and not x.get('show_ti_details', True):
+                    hidden_details.append(column_id)
+            if write_details:
+                c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                          (f'ti_hidden_details:{board_id}', json.dumps(hidden_details)))
             for row in c.execute('SELECT t.*, col.is_done FROM tasks t JOIN columns col ON col.id=t.column_id WHERE t.board_id=?', (board_id,)).fetchall():
                 completed = row['completed_at'] or now() if row['is_done'] else None
                 if completed != row['completed_at']:
@@ -1253,16 +1287,48 @@ class Store:
             tasks[r['task_id']]['unread_count'] = r['total']
         return list(tasks.values())
 
-    def redmine_tasks(self, board_id, *, issue_id=None):
+    @staticmethod
+    def archived_ti_in(c, board_id):
+        row = c.execute('SELECT value FROM settings WHERE key=?', (f'ti_archive:{board_id}',)).fetchone()
+        return set(json.loads(row[0])) if row else set()
+
+    def set_ti_archived(self, board_id, issue_id, revision, archived, request_id=None):
+        def apply(c, uid):
+            self.active_board(c, board_id)
+            row = c.execute('''SELECT r.revision,col.name FROM redmine_links r
+                JOIN columns col ON col.id=r.column_id
+                WHERE r.board_id=? AND r.issue_id=?''', (board_id, issue_id)).fetchone()
+            if not row or row['revision'] != revision:
+                raise ValueError('Карточка изменилась. Обновите доску.')
+            issues = self.archived_ti_in(c, board_id)
+            if archived:
+                if status_key(row['name']) != 'ти открыто':
+                    raise ValueError('Архивировать ТИ можно только в колонке «ТИ открыто».')
+                issues.add(issue_id)
+            else:
+                issues.discard(issue_id)
+            c.execute('INSERT OR REPLACE INTO settings VALUES(?,?)',
+                      (f'ti_archive:{board_id}', json.dumps(sorted(issues))))
+            c.execute('UPDATE redmine_links SET revision=revision+1 WHERE board_id=? AND issue_id=?',
+                      (board_id, issue_id))
+            return archived
+
+        return self.write('redmine_archive', [board_id, issue_id, revision, archived], apply, request_id)
+
+    def redmine_tasks(self, board_id, *, issue_id=None, include_archived=False):
         with self.connection() as c:
             c.execute('BEGIN')
             self.require(c, 'read', board_id)
             self.active_board(c, board_id)
             basis_project = self.redmine_basis_project_in(c, board_id)
-            query = 'SELECT * FROM redmine_links WHERE board_id=?'
+            archived = self.archived_ti_in(c, board_id)
+            query, args = 'SELECT * FROM redmine_links WHERE board_id=?', [board_id]
             if issue_id is not None:
-                return [self.redmine_entry(row, basis_project) for row in c.execute(query + ' AND issue_id=?', (board_id, issue_id))]
-            return [self.redmine_entry(row, basis_project) for row in c.execute(query + ' ORDER BY issue_id', (board_id,))]
+                query += ' AND issue_id=?'
+                args.append(issue_id)
+            return [dict(self.redmine_entry(row, basis_project), archived=row['issue_id'] in archived)
+                    for row in c.execute(query + ' ORDER BY issue_id', args)
+                    if include_archived or row['issue_id'] not in archived]
 
     @staticmethod
     def redmine_entry(row, basis_project):
@@ -1307,6 +1373,8 @@ class Store:
 
     def unlink_redmine_issue(self, board_id, issue_id, revision, request_id=None):
         def apply(c, uid):
+            if issue_id in self.archived_ti_in(c, board_id):
+                raise ValueError('Сначала восстановите ТИ из архива.')
             row = c.execute('SELECT source, revision FROM redmine_links WHERE board_id=? AND issue_id=?',
                             (board_id, issue_id)).fetchone()
             if not row:
@@ -1329,7 +1397,10 @@ class Store:
             if sppi_project is not None and self.redmine_sppi_project_in(c, board_id) != sppi_project:
                 raise ValueError('Проект СППИ изменился. Обновите доску повторно.')
             errors = []
+            archived = self.archived_ti_in(c, board_id)
             for issue_id, revision, title, status, target_column, tracker_name, approvals, references, progress in updates:
+                if issue_id in archived:
+                    continue
                 try:
                     column_id = self.redmine_column(c, board_id, target_column)
                 except ValueError as error:
@@ -1370,6 +1441,8 @@ class Store:
             selected = board_id if board_id in ids else next(iter(ids), None)
             columns = self.columns_in(c, selected)
             catalogs = self.catalogs_in(c, selected, actor)
+            profile_avatar = dict(c.execute(AVATAR_IMAGES + '(?)', (actor['id'],))).get(self.login)
+            catalogs['profile'] = actor['display_name'], profile_avatar
             catalogs['redmine'] = self.redmine_settings_in(c)
             catalogs['bugzilla'] = self.bugzilla_settings_in(c)
             tasks, totals, personal = [], {}, []
@@ -1390,7 +1463,8 @@ class Store:
                 if view == 'board':
                     if any(filters.values()):
                         totals = dict(c.execute('''SELECT column_id,COUNT(*) FROM tasks
-                            WHERE board_id=? AND archived=0 GROUP BY column_id''', (selected,)))
+                            WHERE board_id=? AND archived=? GROUP BY column_id''',
+                                                (selected, bool(filters.get('archived')))))
                     else:
                         for task in tasks:
                             key = task['column_id']
@@ -1402,6 +1476,9 @@ class Store:
                     bugs = bug_snapshot['cards'] if bug_snapshot else {}
                     entries = c.execute('SELECT * FROM redmine_links WHERE board_id=? ORDER BY issue_id',
                                         (selected,)).fetchall()
+                    archived_ti = self.archived_ti_in(c, selected)
+                    archive_view = bool(filters.get('archived'))
+                    hidden_details = {column['id'] for column in columns if not column.get('show_ti_details', True)}
                     unlinked_by_ti = {}
                     if bugs:
                         for number in bugs.keys() - self.linked_bug_ids(entries):
@@ -1410,9 +1487,11 @@ class Store:
                     opened = {column['id'] for column in columns if status_key(column['name']) == 'ти открыто'}
                     redmine_cards = []
                     for entry in entries:
+                        if (entry['issue_id'] in archived_ti) != archive_view:
+                            continue
                         col = entry['column_id']
                         totals[col] = totals.get(col, 0) + 1
-                        if (filters.get('archived') or filters.get('assignee') or filters.get('label')
+                        if (filters.get('assignee') or filters.get('label')
                                 or filters.get('priority') or filters.get('overdue') or filters.get('due_from')
                                 or filters.get('due_to')):
                             continue
@@ -1432,7 +1511,8 @@ class Store:
                                             | unlinked_by_ti.get((number, revision), set()))
                                 card['unlinked_bugs'] = sorted(unlinked, key=int)
                         redmine_cards.append(dict(card, id=-entry['issue_id'], redmine_id=entry['issue_id'],
-                                                  number=entry['issue_id'], version=entry['revision'], archived=False,
+                                                  number=entry['issue_id'], version=entry['revision'], archived=archive_view,
+                                                  show_ti_details=col not in hidden_details,
                                                   assignees=[], assignee_names=[], labels=[], due_date=None,
                                                   completed_at=None, priority='Обычный', unread_count=0))
                     tasks.extend(sorted(redmine_cards, key=ti_sort_key))

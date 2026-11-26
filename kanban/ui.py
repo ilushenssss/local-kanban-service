@@ -18,7 +18,7 @@ from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityComb
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
 from .identification import IdentificationPage
-from .bugzilla_page import BugzillaPage
+from .bugzilla_page import BugCommentDialog, BugzillaPage
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -1124,17 +1124,23 @@ class BoardCreateDialog(QDialog):
 
 
 class ColumnsDialog(QDialog):
-    def __init__(self, columns, parent=None):
+    def __init__(self, columns, parent=None, *, project=False):
         super().__init__(parent)
         self.setWindowTitle('Колонки')
         self.resize(720, 440)
         self.original = columns
+        self.project = project
         self.removed = {}
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel('Порядок строк задаёт порядок колонок. Лимит 0 — без ограничения.'))
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(['Название', 'Завершение', 'Лимит'])
+        headings = ['Название', 'Завершение', 'Лимит']
+        if project:
+            headings.append('Отображать подробную информацию')
+        self.table = QTableWidget(0, len(headings))
+        self.table.setHorizontalHeaderLabels(headings)
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        if project:
+            self.table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
         self.table.setSelectionBehavior(QTableWidget.SelectRows)
         self.table.setSelectionMode(QTableWidget.SingleSelection)
         layout.addWidget(self.table)
@@ -1177,13 +1183,18 @@ class ColumnsDialog(QDialog):
                 item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
                 item.setCheckState(Qt.Checked if c['is_done'] else Qt.Unchecked)
             self.table.setItem(row, i, item)
+        if self.project:
+            item = QTableWidgetItem()
+            item.setFlags(Qt.ItemIsEnabled | Qt.ItemIsSelectable | Qt.ItemIsUserCheckable)
+            item.setCheckState(Qt.Checked if c.get('show_ti_details', True) else Qt.Unchecked)
+            self.table.setItem(row, 3, item)
 
     def move(self, delta):
         row = self.table.currentRow()
         target = row + delta
         if row < 0 or target < 0 or target >= self.table.rowCount():
             return
-        for col in range(3):
+        for col in range(self.table.columnCount()):
             a = self.table.takeItem(row, col)
             b = self.table.takeItem(target, col)
             self.table.setItem(row, col, b)
@@ -1230,6 +1241,8 @@ class ColumnsDialog(QDialog):
                 raise ValueError('Лимит не может быть отрицательным')
             done = self.table.item(row, 1).checkState() == Qt.Checked
             values.append({'id': self.table.item(row, 0).data(Qt.UserRole), 'name': self.table.item(row, 0).text(), 'is_done': done, 'wip_limit': limit or None})
+            if self.project:
+                values[-1]['show_ti_details'] = self.table.item(row, 3).checkState() == Qt.Checked
         return values
 
 
@@ -1345,12 +1358,17 @@ class MainWindow(QMainWindow, Async):
         self.theme_button.setCheckable(True)
         self.theme_button.setChecked(theme_settings().value('dark', False, type=bool))
         self.theme_button.setText('Светлая тема' if self.theme_button.isChecked() else 'Тёмная тема')
-        profile = QLabel(getpass.getuser() + '\nЛокальное рабочее пространство')
-        profile.setObjectName('Profile')
-        profile.setTextFormat(Qt.PlainText)
-        profile.setWordWrap(True)
+        self.profile_button = QPushButton(getpass.getuser())
+        self.profile_button.setObjectName('Profile')
+        self.profile_button.setCursor(Qt.PointingHandCursor)
+        self.profile_button.setIconSize(QSize(30, 30))
+        self.profile_button.setAccessibleName('Мой профиль')
+        self.profile_button.setToolTip('Открыть настройки профиля')
+        self.profile_button.setEnabled(False)
+        self.profile_button.clicked.connect(self.open_avatar_settings)
+        self.profile_snapshot = None
         side.addSpacing(14)
-        side.addWidget(profile)
+        side.addWidget(self.profile_button)
         root.addWidget(sidebar)
         surface = QWidget()
         surface.setObjectName('content')
@@ -1449,8 +1467,8 @@ class MainWindow(QMainWindow, Async):
         self.project_sections.addTab(current_work, 'Текущие работы')
         self.identification_page = IdentificationPage(self.refresh_identification, self.refresh_identification_card)
         self.project_sections.addTab(self.identification_page, 'ИД')
-        self.bugzilla_page = BugzillaPage(self.export_bugzilla_bug, lambda: self.export_bugzilla_bug(mode='bulk'),
-                                         lambda: self.export_bugzilla_bug(mode='refresh'))
+        self.bugzilla_page = BugzillaPage(lambda: self.export_bugzilla_bug(mode='bulk'), self.open_bugzilla_page,
+                                         self.comment_bugzilla_bug, self.can_comment_bug)
         self.project_sections.addTab(self.bugzilla_page, 'Баги')
         self.project_sections.currentChanged.connect(self.project_section_changed)
         content = QVBoxLayout(current_work)
@@ -1460,9 +1478,12 @@ class MainWindow(QMainWindow, Async):
         ti_actions = QHBoxLayout(self.ti_actions)
         ti_actions.setContentsMargins(0, 0, 0, 0)
         ti_actions.setSpacing(8)
-        self.refresh_ti_button = button('Обновить по #ID', self.refresh_workspace, ti_actions)
+        self.refresh_ti_button = button('', self.refresh_workspace, ti_actions)
+        self.refresh_ti_button.setProperty('symbol', 'refresh')
+        self.refresh_ti_button.setIcon(symbol_icon('refresh'))
         self.refresh_ti_button.setToolTip('Обновить уже добавленные ТИ по их ID в Redmine')
-        self.import_sppi_button = button('Выгрузить из Redmine', self.import_sppi_ti, ti_actions)
+        self.refresh_ti_button.setAccessibleName(self.refresh_ti_button.toolTip())
+        self.import_sppi_button = button('Выгрузить', self.import_sppi_ti, ti_actions)
         self.import_sppi_button.setToolTip('Проверить проект СППИ, добавить новые ТИ и обновить загруженные')
         ti_actions.addStretch()
         self.ti_actions.hide()
@@ -1627,8 +1648,6 @@ class MainWindow(QMainWindow, Async):
                 action.setEnabled(permissions.get('admin', False))
             elif text == 'Выгрузить баг из Bugzilla…':
                 action.setEnabled(self.store is not None and not self.access_restricted and not self.bugzilla_loading)
-            elif text == 'Личные настройки…':
-                action.setEnabled(self.store is not None and not self.access_restricted)
             elif text == 'Подключение…':
                 action.setEnabled((self.store is None and self.installation_base is not None)
                                   or permissions.get('admin', False))
@@ -1660,7 +1679,6 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Архивировать доску', lambda: self.board_action('archive'))
         menu.addSeparator()
         menu.addAction('Обновить', self.refresh_workspace)
-        menu.addAction('Личные настройки…', self.open_avatar_settings)
         menu.addAction('Набор стандартных стикеров…', self.open_sticker_pack)
         menu.addAction('Подключение…', self.open_connection_settings)
         menu.addAction('Выгрузить баг из Bugzilla…', self.export_bugzilla_bug)
@@ -1668,6 +1686,9 @@ class MainWindow(QMainWindow, Async):
         menu.addAction('Часовой пояс…', self.change_timezone)
         menu.addAction('Резервная копия', self.backup)
         self.apply_menu_permissions(menu)
+        for action in menu.actions():
+            if not action.isSeparator() and not action.isEnabled():
+                action.setVisible(False)
         menu.exec_(self.mapToGlobal(self.rect().topRight()) - QPoint(240, -56))
 
     def open_sticker_pack(self):
@@ -1682,7 +1703,7 @@ class MainWindow(QMainWindow, Async):
         if store is None or self.access_restricted:
             return
         dialog = QDialog(self)
-        dialog.setWindowTitle('Личные настройки')
+        dialog.setWindowTitle('Мой профиль')
         dialog.setMinimumWidth(320)
         layout = QVBoxLayout(dialog)
         profile = QHBoxLayout()
@@ -1691,6 +1712,7 @@ class MainWindow(QMainWindow, Async):
         preview.setAlignment(Qt.AlignCenter)
         profile.addWidget(preview)
         description = QLabel()
+        description.setTextFormat(Qt.PlainText)
         description.setWordWrap(True)
         profile.addWidget(description, 1)
         layout.addLayout(profile)
@@ -1716,7 +1738,8 @@ class MainWindow(QMainWindow, Async):
             else:
                 preview.clear()
             preview.setAccessibleName('Текущий аватар' if current else 'Аватар отсутствует')
-            description.setText('Фото профиля' if current else 'Аватар не добавлен')
+            name = self.profile_snapshot[0] if self.profile_snapshot else store.login
+            description.setText(name + ('\nФото профиля' if current else '\nАватар не добавлен'))
 
         def run(action, *, saving=False):
             choose_button.setEnabled(False)
@@ -1731,6 +1754,7 @@ class MainWindow(QMainWindow, Async):
                     self.set_access_restricted(True)
                     return
                 if saving and error is None:
+                    self.update_profile_button(self.profile_snapshot[0] if self.profile_snapshot else store.login, result)
                     self.refresh()
                     self.messenger.poll()
                     for task in self.dialogs:
@@ -1766,6 +1790,17 @@ class MainWindow(QMainWindow, Async):
         finished = True
         dialog.deleteLater()
 
+    def update_profile_button(self, name, image):
+        if (name, image) == self.profile_snapshot:
+            return
+        self.profile_snapshot = (name, image)
+        metrics = self.profile_button.fontMetrics()
+        display = metrics.elidedText(name, Qt.ElideRight, 150 if image else 185)
+        self.profile_button.setText(display.replace('&', '&&'))
+        self.profile_button.setToolTip(name + '\nОткрыть настройки профиля')
+        self.profile_button.setIcon(QIcon(QPixmap.fromImage(avatar_image(image))) if image else QIcon())
+        self.profile_button.setEnabled(True)
+
     def export_bugzilla_bug(self, *, mode='single'):
         store = self.store
         if store is None or self.access_restricted or self.bugzilla_loading:
@@ -1779,9 +1814,6 @@ class MainWindow(QMainWindow, Async):
         config = self.bugzilla_config
         if not config['url'] or not config['domain']:
             self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
-            return
-        numbers = tuple(self.bugzilla_cards.get(board_id, ()))
-        if mode == 'refresh' and not numbers:
             return
         source_login = self.redmine_login or store.login
         username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
@@ -1815,8 +1847,7 @@ class MainWindow(QMainWindow, Async):
                 if board_id in self.board_items and result is not None:
                     self.bugzilla_cards[board_id] = result['cards']
                     self.render_bugzilla_cards()
-                    verb = 'Обновлено' if mode == 'refresh' else 'Выгружено'
-                    self.status.setText(f'{verb} багов из Bugzilla: {len(result["cards"])}')
+                    self.status.setText(f'Выгружено багов из Bugzilla: {len(result["cards"])}')
                 return
             raw, snapshot, notice = result
             if board_id in self.board_items and snapshot is not None:
@@ -1831,12 +1862,7 @@ class MainWindow(QMainWindow, Async):
             shared = store.bugzilla_board_snapshot(board_id) if board_id is not None else None
             if mode != 'single':
                 employees = installation.load_redmine_employees(self.redmine_config_base())
-                if mode == 'refresh':
-                    current = shared['cards'] if shared else {}
-                    cards = bugzilla.refresh_board_bugs(scope[0], tuple(current) if shared else numbers, employees,
-                                                         login=login, password=password, keep_unavailable=current)
-                else:
-                    cards = bugzilla.search_board_bugs(scope[0], project, board, employees, login=login, password=password)
+                cards = bugzilla.search_board_bugs(scope[0], project, board, employees, login=login, password=password)
                 store.save_bugzilla_cards(board_id, config, cards, replace=True,
                                           revision=shared['revision'] if shared else None, board_name=f'{project} / {board}')
                 return store.bugzilla_board_snapshot(board_id)
@@ -1858,12 +1884,80 @@ class MainWindow(QMainWindow, Async):
         self.status.setText('Запрос к Bugzilla…' if mode != 'single' else f'Загрузка бага #{number} из Bugzilla…')
         self.work(load, done)
 
+    def can_comment_bug(self):
+        return (self.store is not None and not self.access_restricted and self.board_id is not None
+                and self.board_id == self.project_sections_board and getattr(self, 'permissions', {}).get('create', False))
+
+    def open_bugzilla_page(self, number):
+        if self.access_restricted:
+            return
+        try:
+            url = bugzilla.bug_page_url(self.bugzilla_config['url'], number)
+        except bugzilla.BugzillaError as error:
+            self.status.setText(error_text(error))
+            return
+        if not QDesktopServices.openUrl(QUrl(url)):
+            self.status.setText('Не удалось открыть страницу бага в браузере.')
+
+    def comment_bugzilla_bug(self, number):
+        if not self.can_comment_bug():
+            return
+        board_id, store = self.board_id, self.store
+        config = self.bugzilla_config.copy()
+        if not config['url'] or not config['domain']:
+            self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
+            return
+        source_login = self.redmine_login or store.login
+        username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
+        login = f"{username}@{config['domain']}"
+        scope = (config['url'], login)
+
+        def send(dialog):
+            comment = dialog.text.toPlainText().strip()
+            if not comment or dialog.pending or self.store is not store or not self.can_comment_bug():
+                return
+            session = self.bugzilla_session
+            password = session[2] if session and session[:2] == scope else None
+            credentials = self.prompt_bugzilla_export(login, password, 'comment')
+            if credentials is None or self.access_restricted or self.store is not store:
+                return
+            password = credentials[1]
+            dialog.set_pending(True)
+            dialog.status.setText('Отправка…')
+
+            def submit():
+                store.require_bugzilla_comment(board_id, config, number)
+                return bugzilla.add_bug_comment(config['url'], number, comment, login=login, password=password)
+
+            def done(result, error):
+                from PyQt5 import sip
+                if sip.isdeleted(dialog):
+                    return
+                dialog.set_pending(False)
+                if error:
+                    if isinstance(error, bugzilla.BugzillaAuthError):
+                        self.reset_bugzilla_session()
+                    dialog.status.setText(error_text(error) + ' Текст сохранён в форме. Перед повтором проверьте страницу бага.')
+                    if isinstance(error, AccessRestricted):
+                        self.set_access_restricted(True)
+                    return
+                if self.store is store and self.bugzilla_config == config and (self.redmine_login or store.login) == source_login:
+                    self.bugzilla_session = (*scope, password)
+                self.status.setText(f'Комментарий к багу #{number} отправлен.')
+                dialog.accept()
+
+            self.work(submit, done)
+
+        dialog = BugCommentDialog(number, lambda: self.open_bugzilla_page(number), send, self)
+        dialog.exec_()
+        dialog.deleteLater()
+
     def prompt_bugzilla_export(self, login, password, mode):
         if mode != 'single' and password is not None:
             return None, password
         dialog = QDialog(self)
         dialog.setWindowTitle({'single': 'Выгрузить баг из Bugzilla', 'bulk': 'Выгрузить баги по фильтрам',
-                               'refresh': 'Обновить сохранённые баги'}[mode])
+                               'comment': 'Вход в Bugzilla'}[mode])
         dialog.setMinimumWidth(370)
         layout = QVBoxLayout(dialog)
         form = QFormLayout()
@@ -1899,7 +1993,7 @@ class MainWindow(QMainWindow, Async):
             dialog.accept()
 
         actions = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
-        actions.button(QDialogButtonBox.Ok).setText('Обновить' if mode == 'refresh' else 'Выгрузить')
+        actions.button(QDialogButtonBox.Ok).setText('Войти' if mode == 'comment' else 'Выгрузить')
         actions.button(QDialogButtonBox.Cancel).setText('Отмена')
         actions.accepted.connect(validate)
         actions.rejected.connect(dialog.reject)
@@ -2571,6 +2665,7 @@ class MainWindow(QMainWindow, Async):
             self.last_snapshot = snapshot
             boards, selected, columns, tasks, totals, catalogs, personal = result
             self.permissions = catalogs.get('permissions', {})
+            self.update_profile_button(*catalogs['profile'])
             self.apply_redmine_settings(catalogs.get('redmine'))
             self.apply_bugzilla_settings(catalogs['bugzilla'])
             self.users_button.setEnabled(True)
@@ -2977,16 +3072,37 @@ class MainWindow(QMainWindow, Async):
             layout.addWidget(scroll, 1)
             if self.can_unlink_redmine_task(current):
                 button('Убрать с доски', lambda: self.unlink_redmine_task(current, dialog), layout)
+            if self.can_archive_ti(current):
+                button('Восстановить' if current['archived'] else 'Архивировать',
+                       lambda: self.archive_ti(current, dialog), layout)
             button('Закрыть', dialog.accept, layout)
             dialog.resize(width, height)
             dialog.exec_()
             dialog.deleteLater()
 
-        self.work(lambda: self.store.redmine_tasks(task['board_id']), done)
+        self.work(lambda: self.store.redmine_tasks(task['board_id'], issue_id=task['redmine_id'],
+                                                   include_archived=True), done)
 
     def can_unlink_redmine_task(self, task):
         return (not self.access_restricted and task['board_id'] == self.board_id
-                and self.permissions.get('create', False) and task.get('source') in ('manual', 'legacy'))
+                and not task.get('archived') and self.permissions.get('create', False)
+                and task.get('source') in ('manual', 'legacy'))
+
+    def can_archive_ti(self, task):
+        return (not self.access_restricted and task['board_id'] == self.board_id
+                and self.permissions.get('create', False)
+                and (task.get('archived') or any(column['id'] == task['column_id']
+                    and redmine.status_key(column['name']) == 'ти открыто' for column in self.columns_data)))
+
+    def archive_ti(self, task, dialog=None):
+        if not self.can_archive_ti(task) or self.mutating or self.pending_action:
+            return
+        archived = not task['archived']
+        if dialog is not None:
+            dialog.accept()
+        self.mutate(lambda rid: self.store.set_ti_archived(task['board_id'], task['issue_id'],
+                                                           task['revision'], archived, rid),
+                    'ТИ перенесена в архив' if archived else 'ТИ восстановлена из архива')
 
     def unlink_redmine_task(self, task, dialog=None):
         if not self.can_unlink_redmine_task(task):
@@ -3237,7 +3353,7 @@ class MainWindow(QMainWindow, Async):
             raise ValueError('Укажите проект СППИ в настройках.')
         employees = installation.load_redmine_employees(self.redmine_config_base())
         source_id = self.redmine_project_id(sppi_project)
-        linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id)}
+        linked = {task['issue_id']: task for task in self.store.redmine_tasks(board_id, include_archived=True)}
         columns = {column['id']: column['name'] for column in self.store.columns(board_id)}
         errors = []
         attempted = set()
@@ -3246,6 +3362,8 @@ class MainWindow(QMainWindow, Async):
 
         def save(issue_id, parent_status=None, **options):
             attempted.add(issue_id)
+            if linked.get(issue_id, {}).get('archived'):
+                return
             try:
                 issue = redmine.read_issue(client, issue_id, skip_closed=True, responsible_cache=responsible_cache, **options)
             except redmine.RedmineAuthError:
@@ -3304,7 +3422,7 @@ class MainWindow(QMainWindow, Async):
         return updates, warnings + basis_warnings
 
     def refresh_ti_card(self, task):
-        if task['board_id'] == self.board_id == self.project_sections_board:
+        if not task.get('archived') and task['board_id'] == self.board_id == self.project_sections_board:
             self.sync_project_ti(task['redmine_id'])
 
     def sync_project_ti(self, issue_id=None):
@@ -3524,7 +3642,7 @@ class MainWindow(QMainWindow, Async):
     def edit_columns(self):
         if not self.board_id:
             return
-        d = ColumnsDialog(self.columns_data, self)
+        d = ColumnsDialog(self.columns_data, self, project=self.project_sections_board == self.board_id)
         if d.exec_() == QDialog.Accepted:
             try:
                 values = d.values()
@@ -3558,6 +3676,8 @@ class MainWindow(QMainWindow, Async):
         task = item.data(Qt.UserRole)
         if task.get('redmine_id'):
             menu.addAction('Открыть карточку', self.open_selected)
+            if self.can_archive_ti(task):
+                menu.addAction('Восстановить' if task['archived'] else 'Архивировать', lambda: self.archive_ti(task))
             if self.can_unlink_redmine_task(task):
                 menu.addAction('Убрать с доски', lambda: self.unlink_redmine_task(task))
             menu.exec_(cards.viewport().mapToGlobal(point))

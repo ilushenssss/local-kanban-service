@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import (QLabel, QListView, QListWidget, QListWidgetItem, QP
                              QHBoxLayout, QStyle, QStyledItemDelegate, QVBoxLayout, QWidget)
 
 from .redmine import status_key
-from .theme import STICKERS, TOKENS, card_refresh_rect, paint_card_refresh
+from .theme import STICKERS, TOKENS, card_refresh_rect, paint_card_refresh, symbol_icon
 
 
 COLUMN_TITLES = (
@@ -184,7 +184,10 @@ class IdentificationPage(QWidget):
         self.message.setWordWrap(True)
         self.message.setTextFormat(Qt.PlainText)
         controls.addWidget(self.message, 1)
-        self.refresh_button = QPushButton('Обновить из Redmine')
+        self.refresh_button = QPushButton(symbol_icon('refresh'), '')
+        self.refresh_button.setProperty('symbol', 'refresh')
+        self.refresh_button.setToolTip('Обновить ИД из Redmine')
+        self.refresh_button.setAccessibleName(self.refresh_button.toolTip())
         self.refresh_button.setEnabled(False)
         self.refresh_button.setCursor(Qt.PointingHandCursor)
         self.refresh_button.clicked.connect(refresh)

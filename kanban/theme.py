@@ -63,16 +63,33 @@ def paint_card_refresh(painter, rect):
     painter.setPen(Qt.NoPen)
     painter.setBrush(QColor(TOKENS['hover']))
     painter.drawRoundedRect(rect, 5, 5)
-    painter.setBrush(Qt.NoBrush)
-    painter.setPen(QPen(QColor(TOKENS['secondary']), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
-    center = QRectF(rect).center()
-    x, y = center.x(), center.y()
-    painter.drawArc(QRectF(x - 6, y - 6, 12, 12), 30 * 16, 300 * 16)
-    painter.drawPolyline(QPointF(x + 5.2, y - 7), QPointF(x + 5.2, y - 3), QPointF(x + 1.2, y - 3))
+    paint_refresh_glyph(painter, QRectF(rect).center())
     painter.restore()
 
 
+def paint_refresh_glyph(painter, center):
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(Qt.NoBrush)
+    painter.setPen(QPen(QColor(TOKENS['secondary']), 1.5, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    x, y = center.x(), center.y()
+    circle = QRectF(x - 6, y - 6, 12, 12)
+    painter.drawArc(circle, 30 * 16, 120 * 16)
+    painter.drawArc(circle, 210 * 16, 120 * 16)
+    for side in (-1, 1):
+        painter.drawPolyline(QPointF(x + side * 5.2, y - side * 7),
+                             QPointF(x + side * 5.2, y - side * 3),
+                             QPointF(x + side * 1.2, y - side * 3))
+
+
 def symbol_icon(name):
+    if name == 'refresh':
+        pixmap = QPixmap(40, 40)
+        pixmap.setDevicePixelRatio(2)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        paint_refresh_glyph(painter, QPointF(10, 10))
+        painter.end()
+        return QIcon(pixmap)
     if name == 'bell':
         pixmap = QPixmap(48, 48)
         pixmap.setDevicePixelRatio(2)
@@ -205,7 +222,7 @@ QLabel#ChatHeading { font-size: 14px; font-weight: 600; padding: 8px 12px; borde
 QWidget#side QLabel#appName { color: %(text)s; }
 QLabel#BoardName { font-size: 16px; font-weight: 600; }
 QLabel#Eyebrow { font-size: 11px; color: %(muted)s; letter-spacing: 1px; }
-QLabel#Profile { border-top: 1px solid %(border)s; padding-top: 16px; font-size: 12px; }
+QPushButton#Profile { text-align: left; font-size: 12px; padding: 7px 8px; }
 QLabel#CountBadge { background: %(hover)s; color: %(muted)s; border-radius: 9px; padding: 2px 6px; font-size: 12px; }
 QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 36px 7px 10px; }
 QTextEdit#ChatTimeline { border: none; background: %(background)s; padding: 12px; }

@@ -1,11 +1,12 @@
 import json
 
-from PyQt5.QtCore import QPointF, QRect, QSize, Qt
+from PyQt5.QtCore import QPointF, QRect, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QTextLayout, QTextOption
-from PyQt5.QtWidgets import QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QPushButton, QScrollArea, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
+                             QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
 from .bugzilla import is_closed, xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
-from .theme import STICKERS, TOKENS
+from .theme import STICKERS, TOKENS, symbol_icon
 
 
 def field_text(value):
@@ -15,6 +16,7 @@ def field_text(value):
 
 
 class BugzillaGrid(QListWidget):
+    comment_requested = pyqtSignal(str)
     card_height = 90
     gap = 8
 
@@ -31,6 +33,16 @@ class BugzillaGrid(QListWidget):
         columns = 2 if width >= 400 else 1
         self.setGridSize(QSize(max(1, width // columns), self.card_height + self.gap))
         super().resizeEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Enter, Qt.Key_Return) and self.currentItem():
+            if event.modifiers() == Qt.ControlModifier:
+                self.comment_requested.emit(self.currentItem().data(Qt.UserRole)[0])
+            else:
+                self.itemClicked.emit(self.currentItem())
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class BugzillaCard(ProjectCardDelegate):
@@ -97,24 +109,22 @@ class BugzillaCard(ProjectCardDelegate):
 
 
 class BugzillaPage(QWidget):
-    def __init__(self, export, export_all, refresh):
+    def __init__(self, refresh, open_bug, comment_bug, can_comment):
         super().__init__()
+        self.open_bug, self.comment_bug, self.can_comment = open_bug, comment_bug, can_comment
         self.snapshot = None
         self.linked = frozenset()
         self.loading = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 12)
         actions = QHBoxLayout()
-        self.export_button = QPushButton('По ID…')
-        self.export_button.setAccessibleName('Выгрузить баг по ID')
-        self.export_button.setToolTip('Выгрузить баг по ID')
-        self.export_all_button = QPushButton('Выгрузить по фильтрам')
-        self.refresh_button = QPushButton('Обновить')
-        for button, callback in ((self.export_button, export), (self.export_all_button, export_all),
-                                 (self.refresh_button, refresh)):
-            button.setCursor(Qt.PointingHandCursor)
-            button.clicked.connect(callback)
-            actions.addWidget(button)
+        self.refresh_button = QPushButton(symbol_icon('refresh'), '')
+        self.refresh_button.setProperty('symbol', 'refresh')
+        self.refresh_button.setToolTip('Выгрузить баги из Bugzilla по фильтрам')
+        self.refresh_button.setAccessibleName(self.refresh_button.toolTip())
+        self.refresh_button.setCursor(Qt.PointingHandCursor)
+        self.refresh_button.clicked.connect(refresh)
+        actions.addWidget(self.refresh_button)
         actions.addStretch()
         layout.addLayout(actions)
         self.progress = QLabel('Запрос к Bugzilla…')
@@ -133,6 +143,10 @@ class BugzillaPage(QWidget):
         for title in ('Не привязаны', 'Привязаны'):
             panel, cards = project_card_column(title, BugzillaCard, minimum_width=150, list_type=BugzillaGrid)
             cards.setSpacing(0)
+            cards.itemClicked.connect(lambda item: self.open_bug(item.data(Qt.UserRole)[0]))
+            cards.comment_requested.connect(self.comment_bug)
+            cards.setContextMenuPolicy(Qt.CustomContextMenu)
+            cards.customContextMenuRequested.connect(lambda point, cards=cards: self.bug_menu(cards, point))
             columns.addWidget(panel, 1)
             self.columns.append(cards)
         self.scroll.setWidget(canvas)
@@ -141,10 +155,19 @@ class BugzillaPage(QWidget):
 
     def set_loading(self, loading):
         self.loading = loading
-        self.export_button.setEnabled(not loading)
-        self.export_all_button.setEnabled(not loading)
-        self.refresh_button.setEnabled(not loading and bool(self.snapshot))
+        self.refresh_button.setEnabled(not loading)
         self.progress.setVisible(loading)
+
+    def bug_menu(self, cards, point):
+        item = cards.itemAt(point)
+        if item is None:
+            return
+        number = item.data(Qt.UserRole)[0]
+        menu = QMenu(cards)
+        menu.addAction('Открыть в Bugzilla', lambda: self.open_bug(number))
+        if self.can_comment():
+            menu.addAction('Написать комментарий…', lambda: self.comment_bug(number))
+        menu.exec_(cards.viewport().mapToGlobal(point))
 
     def show_cards(self, cards, linked=()):
         snapshot = tuple(card for card in cards if not is_closed(card))
@@ -169,7 +192,52 @@ class BugzillaPage(QWidget):
             item.setData(Qt.UserRole, (number, lines, is_linked))
             summary = '\n'.join([number, *lines])
             item.setData(Qt.AccessibleTextRole, summary)
-            item.setToolTip(summary)
+            item.setToolTip(summary + '\nНажмите, чтобы открыть в Bugzilla. Действия доступны в контекстном меню.')
+            item.setData(Qt.AccessibleDescriptionRole, 'Enter — открыть в Bugzilla. Действия доступны в контекстном меню.')
         for column, position in zip(self.columns, scroll_positions):
             column.verticalScrollBar().setValue(position)
-        self.refresh_button.setEnabled(not self.loading and bool(snapshot))
+
+
+class BugCommentDialog(QDialog):
+    def __init__(self, number, open_bug, send, parent):
+        super().__init__(parent)
+        self.pending = False
+        self.setWindowTitle(f'Комментарий к багу #{number}')
+        self.resize(480, 280)
+        layout = QVBoxLayout(self)
+        self.text = QPlainTextEdit()
+        self.text.setPlaceholderText('Напишите комментарий…')
+        self.text.setAccessibleName('Комментарий к багу')
+        layout.addWidget(self.text, 1)
+        self.status = QLabel()
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.status)
+        buttons = QHBoxLayout()
+        page = QPushButton('Открыть в Bugzilla')
+        page.clicked.connect(open_bug)
+        buttons.addWidget(page)
+        buttons.addStretch()
+        close = QPushButton('Закрыть')
+        close.clicked.connect(self.reject)
+        buttons.addWidget(close)
+        self.send_button = QPushButton('Отправить')
+        self.send_button.setObjectName('primary')
+        self.send_button.setEnabled(False)
+        self.text.textChanged.connect(self.update_send)
+        self.send_button.clicked.connect(lambda: send(self))
+        buttons.addWidget(self.send_button)
+        layout.addLayout(buttons)
+        self.text.setFocus()
+
+    def update_send(self):
+        self.send_button.setEnabled(not self.pending and bool(self.text.toPlainText().strip()))
+
+    def set_pending(self, pending):
+        self.pending = pending
+        self.text.setReadOnly(pending)
+        self.update_send()
+
+    def reject(self):
+        if not self.pending:
+            super().reject()

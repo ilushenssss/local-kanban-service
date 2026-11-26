@@ -11,6 +11,17 @@ from kanban import bugzilla
 
 
 class BugzillaTest(unittest.TestCase):
+    @patch('kanban.bugzilla.xml_request', return_value={'id': 9})
+    def test_comment_targets_only_the_requested_bug(self, request):
+        url = 'https://bugs.example.test/bugzilla/'
+        self.assertEqual(bugzilla.bug_page_url(url, '0042'), url + 'show_bug.cgi?id=42')
+        self.assertEqual(bugzilla.add_bug_comment(url, '0042', '  Текст  ', login='user', password='sample'), 9)
+        request.assert_called_once_with(bugzilla.parse_url(url), 'Bug.add_comment',
+                                        {'id': 42, 'comment': 'Текст'}, 'user', 'sample', '42')
+        with self.assertRaises(bugzilla.BugzillaError):
+            bugzilla.add_bug_comment(url, '42', ' ', login='user', password='sample')
+        request.assert_called_once()
+
     @patch('kanban.bugzilla.xml_request')
     def test_refresh_requests_only_saved_ids_and_filters_response(self, request):
         request.return_value = {'bugs': [

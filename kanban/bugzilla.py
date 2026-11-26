@@ -191,6 +191,24 @@ def response_list(payload, key):
     return values
 
 
+def bug_page_url(url, bug_id):
+    parts = parse_url(url)
+    number = bug_number(bug_id)
+    return parts._replace(path=parts.path.rstrip('/') + '/show_bug.cgi', query='id=' + number).geturl()
+
+
+def add_bug_comment(url, bug_id, comment, *, login, password):
+    number = bug_number(bug_id)
+    comment = comment.strip()
+    if not comment:
+        raise BugzillaError('Введите комментарий.')
+    result = xml_request(parse_url(url), 'Bug.add_comment', {'id': int(number), 'comment': comment},
+                         login, password, number)
+    if not result.get('id'):
+        raise BugzillaError('Bugzilla не подтвердила отправку. Проверьте комментарии на странице бага.')
+    return result['id']
+
+
 def search_board_bugs(url, project, board, employees, *, login, password):
     names = employee_names(employees)
     if not names:

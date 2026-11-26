@@ -74,6 +74,13 @@ class StoreTest(unittest.TestCase):
         snapshot = member.bugzilla_board_snapshot(board)
         self.assertEqual(snapshot['cards'], {'42': {'id': 42, 'summary': 'Баг', 'cf_event_1': None, 'cf_cr_num': None}})
         self.assertEqual(member.board_snapshot(board, {}, 'bugs')[3], snapshot)
+        self.s.require_bugzilla_comment(board, config, '42')
+        with self.assertRaises(AccessDenied):
+            member.require_bugzilla_comment(board, config, '42')
+        self.s.set_role(member.profile()['id'], 'manager')
+        member.require_bugzilla_comment(board, config, '42')
+        with self.assertRaises(AccessDenied):
+            member.require_bugzilla_comment(board, config, '99')
         with self.assertRaises(AccessDenied):
             outsider.bugzilla_board_snapshot(board)
         with self.assertRaises(AccessDenied):

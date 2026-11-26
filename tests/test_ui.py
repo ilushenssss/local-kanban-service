@@ -87,7 +87,7 @@ class UITest(unittest.TestCase):
     def test_employee_changes_own_avatar_on_existing_tasks_and_messages(self):
         from PyQt5.QtCore import QUrl
         from PyQt5.QtGui import QColor, QImage, QTextDocument
-        from PyQt5.QtWidgets import QLabel, QMenu
+        from PyQt5.QtWidgets import QLabel
 
         employee = Store(self.store.folder, 'colleague')
         self.store.set_role(employee.profile()['id'], 'employee')
@@ -120,16 +120,12 @@ class UITest(unittest.TestCase):
                 self.assertEqual(buttons['Удалить аватар'].isEnabled(), action == 'Выбрать фото…')
                 return QDialog.Accepted
 
-            def open_settings(menu, *_):
-                action = next(a for a in menu.actions() if a.text() == 'Личные настройки…')
-                self.assertTrue(action.isEnabled())
-                action.trigger()
-
-            with patch.object(QDialog, 'exec_', new=interact), patch.object(QMenu, 'exec_', new=open_settings), \
+            with patch.object(QDialog, 'exec_', new=interact), \
                  patch.object(QFileDialog, 'getOpenFileName', return_value=(picture, '')):
-                owner.settings_button.click()
+                owner.profile_button.click()
 
         settings('Выбрать фото…')
+        self.assertFalse(owner.profile_button.icon().isNull())
         image = Store(self.store.folder, 'colleague').own_avatar()
         self.assertIsNone(self.store.own_avatar())
         self.assertEqual(QImage.fromData(image).pixelColor(48, 48).name(), '#367bd1')
@@ -168,6 +164,7 @@ class UITest(unittest.TestCase):
         self.assertEqual(profiles, [observer.messenger, dialog])
 
         settings('Удалить аватар')
+        self.assertTrue(owner.profile_button.icon().isNull())
         observer.refresh()
         observer.messenger.poll()
         dialog.refresh_extras()
@@ -1021,7 +1018,7 @@ class UITest(unittest.TestCase):
              patch('kanban.bugzilla.read_bug', side_effect=[raw, raw, unmatched, BugzillaAuthError('Вход отклонён'), raw]) as fetch:
             card_counts = []
             for _ in range(5):
-                window.bugzilla_page.export_button.click()
+                window.export_bugzilla_bug()
                 wait_for(lambda: not window.bugzilla_loading)
                 card_counts.append(len(window.bugzilla_page.snapshot))
         self.assertEqual(card_counts, [1, 1, 0, 0, 1])
@@ -1044,7 +1041,7 @@ class UITest(unittest.TestCase):
         }}
         with patch('kanban.bugzilla.search_board_bugs', return_value=bulk) as search, \
              patch.object(QDialog, 'exec_') as prompt:
-            window.bugzilla_page.export_all_button.click()
+            window.bugzilla_page.refresh_button.click()
             wait_for(lambda: not window.bugzilla_loading)
             prompt.assert_not_called()
         search.assert_called_once_with(url, 'Разработка', 'Версия 1', ['anna'],
@@ -1072,7 +1069,8 @@ class UITest(unittest.TestCase):
         wait_for(lambda: not window.loading and window.project_sections_board == other)
         window.project_sections.setCurrentWidget(window.bugzilla_page)
         self.assertEqual(window.bugzilla_page.snapshot, ())
-        self.assertFalse(window.bugzilla_page.refresh_button.isEnabled())
+        self.assertTrue(window.bugzilla_page.refresh_button.isEnabled())
+        self.assertEqual(window.bugzilla_page.findChildren(QPushButton), [window.bugzilla_page.refresh_button])
         self.assertFalse(window.bugzilla_cache_path(board).exists())
         window.close()
 
@@ -1089,13 +1087,30 @@ class UITest(unittest.TestCase):
 
         updated = {'42': dict(bulk['42'], summary='Обновлённый заголовок')}
         with patch.object(reopened, 'prompt_bugzilla_export', return_value=(None, 'пример-пароля')) as prompt, \
-             patch('kanban.bugzilla.refresh_board_bugs', return_value=updated) as refresh:
+             patch('kanban.bugzilla.search_board_bugs', return_value=updated) as refresh:
             reopened.bugzilla_page.refresh_button.click()
             wait_for(lambda: not reopened.bugzilla_loading)
-        prompt.assert_called_once_with('colleague@example.test', None, 'refresh')
-        refresh.assert_called_once_with(url, ('42', '4'), ['anna'], login='colleague@example.test', password='пример-пароля',
-                                        keep_unavailable=bulk)
+        prompt.assert_called_once_with('colleague@example.test', None, 'bulk')
+        refresh.assert_called_once_with(url, 'Разработка', 'Версия 1', ['anna'],
+                                        login='colleague@example.test', password='пример-пароля')
         self.assertEqual(reopened.bugzilla_page.snapshot, tuple(updated.values()))
+        from PyQt5.QtGui import QDesktopServices
+        with patch.object(QDesktopServices, 'openUrl', return_value=True) as open_url:
+            card_list = next(cards for cards in reopened.bugzilla_page.columns if cards.count())
+            card_list.itemClicked.emit(card_list.item(0))
+            self.assertEqual(open_url.call_args.args[0].toString(), url + '/show_bug.cgi?id=42')
+
+        def comment(dialog):
+            self.assertFalse(dialog.send_button.isEnabled())
+            dialog.text.setPlainText('  Описание исправления  ')
+            dialog.send_button.click()
+            wait_for(lambda: dialog.result() == QDialog.Accepted)
+            return dialog.result()
+
+        with patch.object(QDialog, 'exec_', new=comment), patch('kanban.bugzilla.add_bug_comment', return_value=7) as send:
+            reopened.comment_bugzilla_bug('42')
+        send.assert_called_once_with(url, '42', 'Описание исправления',
+                                     login='colleague@example.test', password='пример-пароля')
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu
@@ -1397,6 +1412,49 @@ class UITest(unittest.TestCase):
         child_card = window.card_lists[0].item(2).toolTip()
         for entry in ('КРИС подзадачи #120', 'КРИС ТИ: 50% (1/2)', 'Основание: СП-120', 'Баги: 120', 'ОСЗ: Да'):
             self.assertIn(entry, child_card)
+
+    def test_project_column_details_and_ti_archive(self):
+        from kanban.ui import ColumnsDialog
+        board = self.store.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
+        self.store.link_redmine_issue(board, 101, 'Черновик', 'Проект ТИ', 'Проект ТИ')
+        self.store.link_redmine_issue(board, 102, 'Открытое ТИ', 'ТИ открыто', 'ТИ открыто',
+                                      issue_references={'bugs': ['42']},
+                                      approvals=[{'department': 'ОСП', 'status': 'Да'}])
+        with patch('kanban.ui.Store', return_value=self.store):
+            window = MainWindow(str(self.store.folder))
+            self.windows.append(window)
+            window.show()
+            wait_for(lambda: not window.loading and board in window.board_items)
+        window.select_tree_board(window.board_items[board], 0)
+        wait_for(lambda: not window.loading and window.project_sections_board == board)
+
+        def configure(dialog):
+            self.assertIsInstance(dialog, ColumnsDialog)
+            self.assertEqual(dialog.table.item(1, 3).checkState(), Qt.Checked)
+            dialog.table.item(1, 3).setCheckState(Qt.Unchecked)
+            return QDialog.Accepted
+
+        with patch.object(QDialog, 'exec_', new=configure):
+            window.edit_columns()
+        wait_for(lambda: not window.loading and not window.mutating
+                 and window.columns_data[1].get('show_ti_details') is False)
+        item = window.card_lists[1].item(0)
+        self.assertNotIn('Баги', item.toolTip())
+        self.assertNotIn('ОСП', item.toolTip())
+        task = item.data(Qt.UserRole)
+        self.assertTrue(window.can_archive_ti(task))
+        self.assertFalse(window.can_archive_ti(window.card_lists[0].item(0).data(Qt.UserRole)))
+        window.archive_ti(task)
+        wait_for(lambda: not window.loading and not window.mutating and window.card_lists[1].count() == 0)
+        self.assertEqual([task['issue_id'] for task in self.store.redmine_tasks(board)], [101])
+        window.archive_filter.setChecked(True)
+        wait_for(lambda: not window.loading and window.card_lists[1].count() == 1)
+        archived = window.card_lists[1].item(0).data(Qt.UserRole)
+        self.assertTrue(archived['archived'])
+        window.archive_ti(archived)
+        wait_for(lambda: not window.loading and not window.mutating and window.card_lists[1].count() == 0)
+        window.archive_filter.setChecked(False)
+        wait_for(lambda: not window.loading and window.card_lists[1].count() == 1)
 
     def test_ti_card_refresh_requests_only_the_selected_issue(self):
         from kanban.installation import save_folder

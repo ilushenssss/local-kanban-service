@@ -101,11 +101,14 @@ class CardDelegate(QStyledItemDelegate):
         if task.get('redmine_id'):
             if self.parent().redmine_is_compact(task):
                 return QSize(292, COMPACT_TI_HEIGHT)
-            rows = chip_rows(task['approvals'], DEPARTMENT_CHIPS_PER_ROW)
+            detailed = task.get('show_ti_details', True)
+            rows = chip_rows(task['approvals'], DEPARTMENT_CHIPS_PER_ROW) if detailed else 0
             approval_height = rows * CHIP_PITCH
             _, basis_height = self.basis_layout(task, option)
-            bugs = task['issue_references'].get('bugs', []) + task.get('unlinked_bugs', [])
-            reference_height = 2 * REFERENCE_LABEL_HEIGHT + basis_height + chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
+            reference_height = REFERENCE_LABEL_HEIGHT + basis_height
+            if detailed:
+                bugs = task['issue_references'].get('bugs', []) + task.get('unlinked_bugs', [])
+                reference_height += REFERENCE_LABEL_HEIGHT + chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
             title_height = 2 * QFontMetrics(redmine_title_font(option.font)).lineSpacing()
             coding_height = len(kris_coding_lines(task.get('kris_progress'))) * CHIP_PITCH
             return QSize(292, 94 + title_height + reference_height + approval_height + coding_height)
@@ -356,7 +359,10 @@ class CardDelegate(QStyledItemDelegate):
         compact = self.parent().redmine_is_compact(task)
         collapse_width = 28 if collapsible else 0
         control_width = collapse_width + 28
-        paint_card_refresh(painter, card_refresh_rect(option.rect, collapse_width))
+        if not task.get('archived'):
+            paint_card_refresh(painter, card_refresh_rect(option.rect, collapse_width))
+        else:
+            control_width = collapse_width
         if collapsible:
             control = self.ti_disclosure_rect(option.rect)
             painter.setPen(Qt.NoPen)
@@ -395,18 +401,19 @@ class CardDelegate(QStyledItemDelegate):
             palette = DEPARTMENT_PALETTE['green' if status_key(status) == 'ти утверждено' else 'red'] if status else None
             chip(value, rect.translated(x, y), palette=palette, text_width=text_width)
         y += basis_height
-        unlinked_bugs = task.get('unlinked_bugs', [])
-        bugs = task['issue_references'].get('bugs', []) + unlinked_bugs
-        text('Баги' if bugs else 'Баги —', x, y, width)
-        y += REFERENCE_LABEL_HEIGHT
-        span = (width - CHIP_GAP * (BUG_CHIPS_PER_ROW - 1)) // BUG_CHIPS_PER_ROW
-        palettes = dict.fromkeys(task.get('linked_bugs', ()), DEPARTMENT_PALETTE['green'])
-        palettes.update(dict.fromkeys(unlinked_bugs, DEPARTMENT_PALETTE['red']))
-        for index, value in enumerate(bugs):
-            row, column = divmod(index, BUG_CHIPS_PER_ROW)
-            chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT),
-                 palette=palettes.get(value))
-        y += chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
+        if task.get('show_ti_details', True):
+            unlinked_bugs = task.get('unlinked_bugs', [])
+            bugs = task['issue_references'].get('bugs', []) + unlinked_bugs
+            text('Баги' if bugs else 'Баги —', x, y, width)
+            y += REFERENCE_LABEL_HEIGHT
+            span = (width - CHIP_GAP * (BUG_CHIPS_PER_ROW - 1)) // BUG_CHIPS_PER_ROW
+            palettes = dict.fromkeys(task.get('linked_bugs', ()), DEPARTMENT_PALETTE['green'])
+            palettes.update(dict.fromkeys(unlinked_bugs, DEPARTMENT_PALETTE['red']))
+            for index, value in enumerate(bugs):
+                row, column = divmod(index, BUG_CHIPS_PER_ROW)
+                chip(value, QRect(x+column*(span+CHIP_GAP), y+row*CHIP_PITCH, span, CHIP_HEIGHT),
+                     palette=palettes.get(value))
+            y += chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
         text('КРИС ТИ', x, y, width-106)
         text(kris_progress_text(progress), x+width-100, y, 100, align=Qt.AlignRight)
         track = QRectF(x, y+19, width, 5)
@@ -427,7 +434,7 @@ class CardDelegate(QStyledItemDelegate):
             chip(line, QRect(x, footer, coding_width(line, width), CHIP_HEIGHT),
                  palette=DEPARTMENT_PALETTE['yellow'], elide=Qt.ElideMiddle)
             footer += CHIP_PITCH
-        if task['approvals']:
+        if task.get('show_ti_details', True) and task['approvals']:
             span = (width - 4*(DEPARTMENT_CHIPS_PER_ROW-1)) // DEPARTMENT_CHIPS_PER_ROW
             for index, approval in enumerate(task['approvals']):
                 row, column = divmod(index, DEPARTMENT_CHIPS_PER_ROW)
@@ -519,7 +526,8 @@ class Cards(QListWidget):
         if item and event.button() == Qt.LeftButton:
             task = item.data(Qt.UserRole)
             offset = 28 if self.redmine_can_collapse(task) else 0
-            if task.get('redmine_id') and card_refresh_rect(self.visualItemRect(item), offset).contains(event.pos()):
+            if (task.get('redmine_id') and not task.get('archived')
+                    and card_refresh_rect(self.visualItemRect(item), offset).contains(event.pos())):
                 self.redmine_refresh_requested.emit(task)
                 event.accept()
                 return
@@ -538,7 +546,7 @@ class Cards(QListWidget):
         item = self.currentItem()
         if item and event.key() == Qt.Key_R and event.modifiers() == Qt.ControlModifier:
             task = item.data(Qt.UserRole)
-            if task.get('redmine_id'):
+            if task.get('redmine_id') and not task.get('archived'):
                 self.redmine_refresh_requested.emit(task)
                 event.accept()
                 return
@@ -593,7 +601,8 @@ def set_card_notice(item, count):
             hint = 'Пробел — развернуть карточку, Enter — открыть задачу'
         elif cards.redmine_can_collapse(task):
             hint = 'Пробел — свернуть карточку, Enter — открыть задачу'
-        hint += ', Ctrl+R — обновить карточку'
+        if not task.get('archived'):
+            hint += ', Ctrl+R — обновить карточку'
         item.setData(Qt.AccessibleDescriptionRole, hint)
     if task.get('redmine_id'):
         answer = task['issue_references'].get('check_sheet')
@@ -613,6 +622,8 @@ def set_card_data(item, task, count):
         if responsible:
             summary += '\nОтветственный за выпуск ТИ: ' + ', '.join(person['name'] for person in responsible)
         for label, key in (('Основание', 'basis'), ('Баги', 'bugs')):
+            if key == 'bugs' and not task.get('show_ti_details', True):
+                continue
             values = task['issue_references'].get(key, [])
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
         for number, status in task['issue_references'].get('basis_statuses', {}).items():
@@ -623,7 +634,7 @@ def set_card_data(item, task, count):
             summary += '\nВ кодировании: {}/{}'.format(coding, progress['total'])
         summary += '\n'
         summary += '\n'.join([*kris_coding_lines(progress), 'Приложения —'])
-        if task['approvals']:
+        if task.get('show_ti_details', True) and task['approvals']:
             summary += '\n' + ', '.join(
                 '{}: {}'.format(entry['department'], entry['status']) for entry in task['approvals'])
         item.setText(summary)
