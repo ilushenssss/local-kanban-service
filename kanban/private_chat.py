@@ -1,4 +1,3 @@
-import os
 import socket
 import socketserver
 import struct
@@ -14,8 +13,9 @@ from .widgets import MessageEdit
 
 
 MAX_TEXT = 8192
-MAX_FRAME = MAX_TEXT + 128
-HEADER = struct.Struct('!Q16s')
+PROTOCOL_VERSION = 2
+HEADER = struct.Struct('!BQ16s16s')
+MAX_FRAME = HEADER.size + 16 + MAX_TEXT
 
 
 def receive_frame(conn):
@@ -91,13 +91,6 @@ class PrivateChatTransport:
         self.user_id = None
 
     def start(self):
-        try:
-            from cryptography.hazmat.primitives import serialization
-            from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
-        except ImportError:
-            raise ValueError('Личная переписка недоступна. Обновите окружение TeamSync.') from None
-        self.key = X25519PrivateKey.generate()
-        public = self.key.public_key().public_bytes(serialization.Encoding.Raw, serialization.PublicFormat.Raw)
         hostname = socket.gethostname()
         try:
             addresses = socket.gethostbyname_ex(hostname)[2]
@@ -107,7 +100,7 @@ class PrivateChatTransport:
             if self.stopped.is_set():
                 return
             self.server = PrivateChatServer(self)
-            self.endpoint = {'session': self.session.hex(), 'public': public.hex(), 'addresses': list(
+            self.endpoint = {'session': self.session.hex(), 'version': PROTOCOL_VERSION, 'addresses': list(
                 dict.fromkeys([*addresses, hostname, '127.0.0.1']))[:8], 'port': self.server.server_address[1]}
             threading.Thread(target=self.server.serve_forever, kwargs={'poll_interval': 0.1}, daemon=True).start()
         try:
@@ -129,28 +122,6 @@ class PrivateChatTransport:
                 self.server.server_close()
                 self.server = None
 
-    def cipher(self, peer):
-        from cryptography.hazmat.primitives import hashes
-        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PublicKey
-        from cryptography.hazmat.primitives.ciphers.aead import ChaCha20Poly1305
-        from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-        shared = self.key.exchange(X25519PublicKey.from_public_bytes(bytes.fromhex(peer['public'])))
-        key = HKDF(hashes.SHA256(), length=32, salt=None, info=b'TeamSync private chat v1').derive(shared)
-        return ChaCha20Poly1305(key)
-
-    @staticmethod
-    def seal(cipher, data, context):
-        nonce = os.urandom(12)
-        return nonce + cipher.encrypt(nonce, data, context)
-
-    @staticmethod
-    def unseal(cipher, data, context):
-        from cryptography.exceptions import InvalidTag
-        try:
-            return cipher.decrypt(data[:12], data[12:], context)
-        except InvalidTag:
-            raise ValueError('Не удалось подтвердить участника личной переписки.') from None
-
     def send(self, user_id, message_id, text):
         if self.stopped.is_set() or self.user_id is None:
             raise ValueError('Личная переписка сейчас недоступна.')
@@ -161,9 +132,10 @@ class PrivateChatTransport:
         local, _ = self.store.private_chat_peer(self.user_id)
         if local['session'] != self.endpoint['session']:
             raise ValueError('Личная переписка активна в другом сеансе TeamSync.')
-        header = HEADER.pack(self.user_id, bytes.fromhex(peer['session']))
-        cipher = self.cipher(peer)
-        body = header + self.seal(cipher, message_id + encoded, b'message' + header)
+        if peer.get('version') != PROTOCOL_VERSION:
+            raise ValueError('Попросите сотрудника обновить и перезапустить TeamSync.')
+        header = HEADER.pack(PROTOCOL_VERSION, self.user_id, self.session, bytes.fromhex(peer['session']))
+        body = header + message_id + encoded
         for address in peer['addresses']:
             if self.stopped.is_set():
                 break
@@ -171,7 +143,7 @@ class PrivateChatTransport:
                 with socket.create_connection((address, peer['port']), timeout=1.2) as conn:
                     conn.settimeout(6)
                     send_frame(conn, body)
-                    reply = self.unseal(cipher, receive_frame(conn), b'ack' + header)
+                    reply = receive_frame(conn)
                     if reply == message_id:
                         return
             except (OSError, EOFError, ValueError):
@@ -179,13 +151,14 @@ class PrivateChatTransport:
         raise ValueError('Не удалось доставить сообщение. Проверьте, что TeamSync открыт у сотрудника.')
 
     def receive(self, frame):
-        header = frame[:HEADER.size]
-        sender_id, target = HEADER.unpack(header)
-        if self.stopped.is_set() or target != self.session or not 0 < sender_id < 2**63:
+        version, sender_id, sender_session, target = HEADER.unpack_from(frame)
+        if (self.stopped.is_set() or version != PROTOCOL_VERSION or target != self.session
+                or not 0 < sender_id < 2**63):
             raise ValueError('Сеанс личной переписки закрыт.')
         peer, name = self.store.private_chat_peer(sender_id)
-        cipher = self.cipher(peer)
-        body = self.unseal(cipher, frame[HEADER.size:], b'message' + header)
+        if peer.get('version') != PROTOCOL_VERSION or peer['session'] != sender_session.hex():
+            raise ValueError('Сеанс отправителя изменился.')
+        body = frame[HEADER.size:]
         if not 16 < len(body) <= 16 + MAX_TEXT:
             raise ValueError('Недопустимый размер сообщения.')
         message_id, text = body[:16], body[16:].decode('utf-8')
@@ -198,7 +171,7 @@ class PrivateChatTransport:
                 self.seen[key] = None
                 if len(self.seen) > 1024:
                     self.seen.popitem(last=False)
-        return self.seal(cipher, message_id, b'ack' + header)
+        return message_id
 
 
 class PrivateChatDialog(QDialog):

@@ -201,10 +201,6 @@ class UITest(unittest.TestCase):
         self.assertEqual(manager.employee_profile(blocked)['display_name'], 'another')
 
     def test_employee_directory_opens_profile_and_sends_ephemeral_message(self):
-        from importlib.util import find_spec
-
-        if not find_spec('cryptography'):
-            self.skipTest('cryptography is required for private chats')
         colleague = Store(self.store.folder, 'colleague')
         windows = []
         for store in (self.store, colleague):
