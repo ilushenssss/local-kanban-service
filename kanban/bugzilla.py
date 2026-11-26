@@ -1,7 +1,7 @@
 """Read one Bugzilla bug and return its data as JSON."""
 from base64 import b64encode
 from contextlib import closing
-from datetime import datetime
+from datetime import date, datetime
 from gzip import GzipFile
 from http.client import HTTPConnection, HTTPException, HTTPSConnection
 import json
@@ -207,6 +207,71 @@ def add_bug_comment(url, bug_id, comment, *, login, password):
     if not result.get('id'):
         raise BugzillaError('Bugzilla не подтвердила отправку. Проверьте комментарии на странице бага.')
     return result['id']
+
+
+EDITABLE_FIELDS = ('cf_event_1', 'deadline', 'cf_cr_num', 'assigned_to')
+
+
+def read_bug_details(url, bug_id, *, login, password):
+    number = bug_number(bug_id)
+    result = xml_request(parse_url(url), 'Bug.get', {'ids': [number]}, login, password, number)
+    for bug in response_list(result, 'bugs'):
+        if str(bug.get('id')) == number:
+            return bug
+    raise BugzillaError(f'Bugzilla не вернула данные бага #{number}.')
+
+
+def bug_edit_choices(url, bug, employees, *, login, password):
+    parts = parse_url(url)
+    warnings, actions, assignees = [], None, None
+    try:
+        result = xml_request(parts, 'Bug.fields', {'names': ['cf_event_1']}, login, password)
+        fields = response_list(result, 'fields')
+        field = next((item for item in fields if item.get('name') == 'cf_event_1'), None)
+        if field is None or not isinstance(field.get('values'), list):
+            raise BugzillaError('Список значений не найден.')
+        controller = bug.get(field.get('value_field') or field.get('visibility_field'))
+        controllers = controller if isinstance(controller, list) else [controller]
+        actions = [item['name'] for item in field['values'] if item.get('name') and item.get('is_active', True)
+                   and (not item.get('visibility_values') or any(value in item['visibility_values'] for value in controllers))]
+    except BugzillaAuthError:
+        raise
+    except BugzillaError:
+        warnings.append('Bugzilla не вернула варианты дальнейшего действия.')
+    try:
+        names = employee_names(employees)
+        if not names:
+            raise BugzillaError('Список сотрудников пуст.')
+        result = xml_request(parts, 'User.get', {'match': list(names),
+                                                'include_fields': ['name', 'email', 'real_name', 'can_login']},
+                             login, password)
+        assignees = {}
+        for user in response_list(result, 'users'):
+            account = user.get('name') or user.get('email')
+            full_name = user.get('real_name') or ''
+            if account and user.get('can_login', True) and any(
+                    match in value.casefold() for match in names for value in (account, full_name)):
+                assignees[account] = f'{full_name} · {account}' if full_name else account
+    except BugzillaAuthError:
+        raise
+    except BugzillaError:
+        warnings.append('Не удалось загрузить исполнителей из Bugzilla по списку employees.json.')
+    return actions, assignees, warnings
+
+
+def update_bug_fields(url, bug_id, fields, *, login, password):
+    number = bug_number(bug_id)
+    if not fields or fields.keys() - set(EDITABLE_FIELDS):
+        raise BugzillaError('Выберите поля для изменения.')
+    if fields.get('deadline'):
+        try:
+            date.fromisoformat(fields['deadline'])
+        except (TypeError, ValueError):
+            raise BugzillaError('Укажите срок в формате ГГГГ-ММ-ДД.') from None
+    result = xml_request(parse_url(url), 'Bug.update', dict(fields, ids=[int(number)]),
+                         login, password, number)
+    if not any(str(bug.get('id')) == number for bug in response_list(result, 'bugs')):
+        raise BugzillaError('Bugzilla не подтвердила сохранение бага.')
 
 
 def search_board_bugs(url, project, board, employees, *, login, password):

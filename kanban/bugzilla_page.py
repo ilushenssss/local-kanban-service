@@ -2,11 +2,13 @@ import json
 
 from PyQt5.QtCore import QPointF, QRect, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QTextLayout, QTextOption
-from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QListWidget, QListWidgetItem, QMenu,
-                             QPlainTextEdit, QPushButton, QScrollArea, QVBoxLayout, QWidget)
+from PyQt5.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
+                             QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton,
+                             QScrollArea, QVBoxLayout, QWidget)
 from .bugzilla import is_closed, xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
 from .theme import STICKERS, TOKENS, symbol_icon
+from .widgets import DateField
 
 
 def field_text(value):
@@ -109,9 +111,10 @@ class BugzillaCard(ProjectCardDelegate):
 
 
 class BugzillaPage(QWidget):
-    def __init__(self, refresh, open_bug, comment_bug, can_comment):
+    def __init__(self, refresh, open_bug, open_in_browser, comment_bug, can_comment):
         super().__init__()
         self.open_bug, self.comment_bug, self.can_comment = open_bug, comment_bug, can_comment
+        self.open_in_browser = open_in_browser
         self.snapshot = None
         self.linked = frozenset()
         self.loading = False
@@ -164,7 +167,8 @@ class BugzillaPage(QWidget):
             return
         number = item.data(Qt.UserRole)[0]
         menu = QMenu(cards)
-        menu.addAction('Открыть в Bugzilla', lambda: self.open_bug(number))
+        menu.addAction('Открыть карточку', lambda: self.open_bug(number))
+        menu.addAction('Открыть в Bugzilla', lambda: self.open_in_browser(number))
         if self.can_comment():
             menu.addAction('Написать комментарий…', lambda: self.comment_bug(number))
         menu.exec_(cards.viewport().mapToGlobal(point))
@@ -192,10 +196,115 @@ class BugzillaPage(QWidget):
             item.setData(Qt.UserRole, (number, lines, is_linked))
             summary = '\n'.join([number, *lines])
             item.setData(Qt.AccessibleTextRole, summary)
-            item.setToolTip(summary + '\nНажмите, чтобы открыть в Bugzilla. Действия доступны в контекстном меню.')
-            item.setData(Qt.AccessibleDescriptionRole, 'Enter — открыть в Bugzilla. Действия доступны в контекстном меню.')
+            item.setToolTip(summary + '\nНажмите, чтобы открыть карточку. Действия доступны в контекстном меню.')
+            item.setData(Qt.AccessibleDescriptionRole, 'Enter — открыть карточку. Действия доступны в контекстном меню.')
         for column, position in zip(self.columns, scroll_positions):
             column.verticalScrollBar().setValue(position)
+
+
+class BugEditDialog(QDialog):
+    def __init__(self, number, open_in_browser, save, parent):
+        super().__init__(parent)
+        self.setWindowTitle(f'Баг #{number} · Bugzilla')
+        self.setMinimumWidth(460)
+        self.pending = True
+        self.editable = set()
+        self.original = {}
+        self.initial = {}
+        layout = QVBoxLayout(self)
+        self.title = QLabel()
+        self.title.setTextFormat(Qt.PlainText)
+        self.title.setWordWrap(True)
+        self.title.setObjectName('SectionTitle')
+        layout.addWidget(self.title)
+        form = QFormLayout()
+        self.action = QComboBox()
+        self.deadline = DateField()
+        self.ti = QLineEdit()
+        self.assignee = QComboBox()
+        for combo in (self.action, self.assignee):
+            combo.setMinimumContentsLength(18)
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.fields = {'cf_event_1': self.action, 'deadline': self.deadline,
+                       'cf_cr_num': self.ti, 'assigned_to': self.assignee}
+        for label, widget in zip(('Дальнейшее действие', 'Срок', 'ТИ', 'Исполнитель'), self.fields.values()):
+            widget.setAccessibleName(label)
+            form.addRow(label, widget)
+        layout.addLayout(form)
+        self.status = QLabel('Загрузка из Bugzilla…')
+        self.status.setWordWrap(True)
+        self.status.setTextFormat(Qt.PlainText)
+        layout.addWidget(self.status)
+        buttons = QHBoxLayout()
+        page = QPushButton('Открыть в Bugzilla')
+        page.clicked.connect(open_in_browser)
+        buttons.addWidget(page)
+        buttons.addStretch()
+        close = QPushButton('Закрыть')
+        close.clicked.connect(self.reject)
+        buttons.addWidget(close)
+        self.save_button = QPushButton('Сохранить')
+        self.save_button.setObjectName('primary')
+        self.save_button.clicked.connect(lambda: save(self))
+        buttons.addWidget(self.save_button)
+        layout.addLayout(buttons)
+        self.action.currentIndexChanged.connect(self.update_save)
+        self.deadline.changed.connect(self.update_save)
+        self.ti.textChanged.connect(self.update_save)
+        self.assignee.currentIndexChanged.connect(self.update_save)
+        self.set_pending(True)
+
+    def load(self, bug, choices, editable):
+        self.original = bug
+        self.title.setText(str(bug.get('summary') or ''))
+        actions, assignees, warnings = choices
+        original_action = bug.get('cf_event_1')
+        multiple = isinstance(original_action, list)
+        current_assignee = bug.get('assigned_to') or ''
+        for widget, current, options in (
+                (self.action, original_action, [(value, [value] if multiple else value) for value in actions or ()]),
+                (self.assignee, current_assignee, [(label, account) for account, label in sorted(
+                    (assignees or {}).items(), key=lambda item: item[1].casefold())])):
+            widget.addItem(field_text(current), current)
+            for label, value in options:
+                if value != current:
+                    widget.addItem(label, value)
+        self.deadline.set_value(str(bug['deadline'])[:10] if bug.get('deadline') else None)
+        ti = bug.get('cf_cr_num')
+        self.ti.setText(field_text(ti) if ti is not None else '')
+        if editable:
+            self.editable = {field for field in self.fields if field in bug}
+            if not actions:
+                self.editable.discard('cf_event_1')
+            if not assignees:
+                self.editable.discard('assigned_to')
+            if 'deadline' not in bug:
+                warnings = [*warnings, 'Bugzilla не предоставила доступ к полю срока.']
+        self.initial = self.values()
+        self.status.setText('\n'.join(warnings) if editable else 'Просмотр')
+        self.save_button.setVisible(editable)
+        self.set_pending(False)
+
+    def values(self):
+        return {'cf_event_1': self.action.currentData(), 'deadline': self.deadline.text(),
+                'cf_cr_num': self.ti.text(), 'assigned_to': self.assignee.currentData()}
+
+    def changes(self):
+        return {field: value for field, value in self.values().items()
+                if field in self.editable and value != self.initial[field]}
+
+    def update_save(self):
+        self.save_button.setEnabled(not self.pending and bool(self.changes()))
+
+    def set_pending(self, pending):
+        self.pending = pending
+        for field, widget in self.fields.items():
+            widget.setEnabled(not pending and field in self.editable)
+        self.update_save()
+
+    def reject(self):
+        if not self.pending:
+            super().reject()
 
 
 class BugCommentDialog(QDialog):

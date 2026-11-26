@@ -3,6 +3,7 @@ import datetime as dt
 import getpass
 import hashlib
 import json
+import sqlite3
 from pathlib import Path
 import tempfile
 import uuid
@@ -12,13 +13,13 @@ from PyQt5.QtWidgets import (QApplication, QMainWindow, QWidget, QHBoxLayout, QV
     QListWidget, QListWidgetItem, QPushButton, QLabel, QLineEdit, QTextEdit, QTextBrowser, QPlainTextEdit, QComboBox,
     QCheckBox, QDialog, QDialogButtonBox, QFormLayout, QMessageBox, QInputDialog,
     QScrollArea, QFileDialog, QTabWidget, QTableWidget, QTableWidgetItem, QHeaderView, QMenu, QTabBar, QSplitter, QTreeWidget, QTreeWidgetItem, QSizePolicy)
-from .store import Store, Conflict, AccessRestricted, DatabaseTooNew
+from .store import Store, Busy, Conflict, AccessRestricted, DatabaseTooNew
 from . import bugzilla, installation, redmine
 from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityCombo, PrioritySelector, MessageEdit
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
 from .identification import IdentificationPage
-from .bugzilla_page import BugCommentDialog, BugzillaPage
+from .bugzilla_page import BugCommentDialog, BugEditDialog, BugzillaPage
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -1467,8 +1468,8 @@ class MainWindow(QMainWindow, Async):
         self.project_sections.addTab(current_work, 'Текущие работы')
         self.identification_page = IdentificationPage(self.refresh_identification, self.refresh_identification_card)
         self.project_sections.addTab(self.identification_page, 'ИД')
-        self.bugzilla_page = BugzillaPage(lambda: self.export_bugzilla_bug(mode='bulk'), self.open_bugzilla_page,
-                                         self.comment_bugzilla_bug, self.can_comment_bug)
+        self.bugzilla_page = BugzillaPage(lambda: self.export_bugzilla_bug(mode='bulk'), self.open_bugzilla_card,
+                                         self.open_bugzilla_page, self.comment_bugzilla_bug, self.can_comment_bug)
         self.project_sections.addTab(self.bugzilla_page, 'Баги')
         self.project_sections.currentChanged.connect(self.project_section_changed)
         content = QVBoxLayout(current_work)
@@ -1898,6 +1899,112 @@ class MainWindow(QMainWindow, Async):
             return
         if not QDesktopServices.openUrl(QUrl(url)):
             self.status.setText('Не удалось открыть страницу бага в браузере.')
+
+    def open_bugzilla_card(self, number):
+        from PyQt5 import sip
+
+        if not self.store or self.access_restricted or self.board_id != self.project_sections_board:
+            return
+        board_id, store = self.board_id, self.store
+        config = self.bugzilla_config.copy()
+        if board_id is None or not config['url'] or not config['domain']:
+            return
+        source_login = self.redmine_login or store.login
+        username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
+        login = f"{username}@{config['domain']}"
+        scope = config['url'], login
+        session = self.bugzilla_session
+        credentials = self.prompt_bugzilla_export(login, session[2] if session and session[:2] == scope else None,
+                                                   'comment')
+        if credentials is None or self.access_restricted or self.store is not store:
+            return
+        password = credentials[1]
+        editable = self.can_comment_bug()
+        base = self.redmine_config_base()
+
+        def same_session():
+            return (self.store is store and self.board_id == board_id and not self.access_restricted
+                    and self.bugzilla_config == config and (self.redmine_login or store.login) == source_login)
+
+        def read():
+            return bugzilla.read_bug_details(config['url'], number, login=login, password=password)
+
+        def load():
+            store.require_bugzilla_card(board_id, config, number)
+            bug = read()
+            if not editable or bugzilla.is_closed(bug):
+                return bug, (None, None, [])
+            try:
+                employees = installation.load_redmine_employees(base)
+            except ValueError:
+                employees = []
+            return bug, bugzilla.bug_edit_choices(config['url'], bug, employees, login=login, password=password)
+
+        def handle_error(dialog, error):
+            dialog.set_pending(False)
+            dialog.status.setText(error_text(error))
+            if isinstance(error, bugzilla.BugzillaAuthError):
+                self.reset_bugzilla_session()
+            elif isinstance(error, AccessRestricted):
+                self.set_access_restricted(True)
+
+        def save(dialog):
+            fields = dialog.changes()
+            if not fields or dialog.pending or not same_session() or not self.can_comment_bug():
+                return
+            original = {field: dialog.original.get(field) for field in fields}
+            dialog.set_pending(True)
+            dialog.status.setText('Сохранение в Bugzilla…')
+
+            def submit():
+                revision = store.require_bugzilla_card(board_id, config, number, edit=True)
+                current = read()
+                if bugzilla.is_closed(current):
+                    raise bugzilla.BugzillaError('Баг закрыт в Bugzilla.')
+                if any(current.get(field) != value for field, value in original.items()):
+                    raise bugzilla.BugzillaError('Поля бага изменились в Bugzilla. Откройте карточку заново.')
+                bugzilla.update_bug_fields(config['url'], number, fields, login=login, password=password)
+                try:
+                    updated = read()
+                    store.save_bugzilla_cards(board_id, config, {number: updated}, revision=revision)
+                    return store.bugzilla_board_snapshot(board_id)
+                except (OSError, ValueError, Busy, sqlite3.Error):
+                    return None
+
+            def done(snapshot, error):
+                if sip.isdeleted(dialog):
+                    return
+                if error:
+                    handle_error(dialog, error)
+                    return
+                if same_session() and snapshot is not None:
+                    self.bugzilla_cards[board_id] = snapshot['cards']
+                    self.render_bugzilla_cards()
+                self.status.setText(f'Баг #{number} сохранён в Bugzilla.' if snapshot is not None else
+                                    f'Баг #{number} сохранён в Bugzilla. Обновите вкладку «Баги».')
+                dialog.set_pending(False)
+                dialog.accept()
+
+            self.work(submit, done)
+
+        def loaded(result, error):
+            if sip.isdeleted(dialog):
+                return
+            if error:
+                handle_error(dialog, error)
+                return
+            if not same_session():
+                dialog.set_pending(False)
+                dialog.reject()
+                return
+            self.bugzilla_session = (*scope, password)
+            bug, choices = result
+            dialog.load(bug, choices, editable and self.can_comment_bug() and not bugzilla.is_closed(bug))
+
+        dialog = BugEditDialog(number, lambda: self.open_bugzilla_page(number), save, self)
+        self.work(load, loaded)
+        dialog.exec_()
+        dialog.deleteLater()
 
     def comment_bugzilla_bug(self, number):
         if not self.can_comment_bug():

@@ -11,6 +11,30 @@ from kanban import bugzilla
 
 
 class BugzillaTest(unittest.TestCase):
+    @patch('kanban.bugzilla.xml_request')
+    def test_bug_edit_fields_are_scoped_and_choices_follow_bugzilla(self, request):
+        url = 'https://bugs.example.test/bugzilla'
+        auth = {'login': 'user', 'password': 'sample'}
+        request.side_effect = [
+            {'fields': [{'name': 'cf_event_1', 'value_field': 'product', 'values': [
+                {'name': 'Проверить'},
+                {'name': 'Передать', 'visibility_values': ['Другой проект']},
+                {'name': 'Устарело', 'is_active': False},
+            ]}]},
+            {'users': [{'name': 'anna@example.test', 'real_name': 'Анна'}, {'name': 'outside@example.test'}]},
+            {'bugs': [{'id': 42}]},
+        ]
+        self.assertEqual(bugzilla.bug_edit_choices(url, {'product': 'Проект'}, ['anna'], **auth),
+                         (['Проверить'], {'anna@example.test': 'Анна · anna@example.test'}, []))
+        fields = {'cf_event_1': 'Проверить', 'deadline': '2026-12-25',
+                  'cf_cr_num': 'ТИ-23', 'assigned_to': 'anna@example.test'}
+        bugzilla.update_bug_fields(url, 42, fields, **auth)
+        request.assert_called_with(bugzilla.parse_url(url), 'Bug.update', dict(fields, ids=[42]),
+                                   'user', 'sample', '42')
+        with self.assertRaises(bugzilla.BugzillaError):
+            bugzilla.update_bug_fields(url, 42, {'status': 'Closed'}, **auth)
+        self.assertEqual(request.call_count, 3)
+
     @patch('kanban.bugzilla.xml_request', return_value={'id': 9})
     def test_comment_targets_only_the_requested_bug(self, request):
         url = 'https://bugs.example.test/bugzilla/'

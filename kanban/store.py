@@ -459,9 +459,12 @@ class Store:
             return self.bugzilla_cards_in(c, board_id, self.bugzilla_settings_in(c))
 
     def require_bugzilla_comment(self, board_id, config, number):
+        self.require_bugzilla_card(board_id, config, number, edit=True)
+
+    def require_bugzilla_card(self, board_id, config, number, *, edit=False):
         with self.connection() as c:
             c.execute('BEGIN')
-            self.require(c, 'create_task', board_id)
+            self.require(c, 'create_task' if edit else 'read', board_id)
             self.active_board(c, board_id)
             board = c.execute('SELECT name,personal,archived FROM boards WHERE id=?', (board_id,)).fetchone()
             if not self.project_board(board) or self.bugzilla_settings_in(c) != config:
@@ -469,6 +472,7 @@ class Store:
             snapshot = self.bugzilla_cards_in(c, board_id, config)
             if not snapshot or number not in snapshot['cards']:
                 raise AccessDenied('Баг больше не доступен на этой доске.')
+            return snapshot['revision']
 
     def save_bugzilla_cards(self, board_id, config, cards, *, replace=False, revision=None, board_name=None):
         cards = {number: bugzilla.card_fields(card) if card is not None and not bugzilla.is_closed(card) else None
@@ -481,7 +485,7 @@ class Store:
             if board_name is not None and c.execute('SELECT name FROM boards WHERE id=?', (board_id,)).fetchone()[0] != board_name:
                 raise ValueError('Название доски изменилось. Повторите выгрузку.')
             current = self.bugzilla_cards_in(c, board_id, config)
-            if replace and (current['revision'] if current else None) != revision:
+            if (replace or revision is not None) and (current['revision'] if current else None) != revision:
                 raise ValueError('Другой участник уже обновил баги доски. Повторите выгрузку.')
             updated = {} if replace or current is None else current['cards']
             for number, card in cards.items():

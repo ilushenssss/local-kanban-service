@@ -1095,10 +1095,35 @@ class UITest(unittest.TestCase):
                                         login='colleague@example.test', password='пример-пароля')
         self.assertEqual(reopened.bugzilla_page.snapshot, tuple(updated.values()))
         from PyQt5.QtGui import QDesktopServices
-        with patch.object(QDesktopServices, 'openUrl', return_value=True) as open_url:
-            card_list = next(cards for cards in reopened.bugzilla_page.columns if cards.count())
+        bug = dict(updated['42'], deadline='2026-12-20', assigned_to='anna@example.test', status='Открыто')
+        edited = {'cf_event_1': 'Выпуск ТИ', 'deadline': '2026-12-31',
+                  'cf_cr_num': 'ТИ-123', 'assigned_to': 'bob@example.test'}
+        choices = (['Событие', 'Выпуск ТИ'], {'bob@example.test': 'Боб'}, [])
+
+        def edit(dialog):
+            wait_for(lambda: not dialog.pending)
+            self.assertEqual(dialog.deadline.text(), '2026-12-20')
+            self.assertFalse(dialog.save_button.isEnabled())
+            dialog.action.setCurrentIndex(dialog.action.findData('Выпуск ТИ'))
+            dialog.deadline.set_value('2026-12-31')
+            dialog.ti.setText('ТИ-123')
+            dialog.assignee.setCurrentIndex(dialog.assignee.findData('bob@example.test'))
+            next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Открыть в Bugzilla').click()
+            dialog.save_button.click()
+            wait_for(lambda: dialog.result() == QDialog.Accepted)
+            return dialog.result()
+
+        card_list = next(cards for cards in reopened.bugzilla_page.columns if cards.count())
+        with patch.object(QDialog, 'exec_', new=edit), \
+             patch.object(QDesktopServices, 'openUrl', return_value=True) as open_url, \
+             patch('kanban.bugzilla.read_bug_details', side_effect=[bug, bug, dict(bug, **edited)]), \
+             patch('kanban.bugzilla.bug_edit_choices', return_value=choices), \
+             patch('kanban.bugzilla.update_bug_fields') as save:
             card_list.itemClicked.emit(card_list.item(0))
             self.assertEqual(open_url.call_args.args[0].toString(), url + '/show_bug.cgi?id=42')
+        save.assert_called_once_with(url, '42', edited, login='colleague@example.test', password='пример-пароля')
+        shared = self.store.bugzilla_board_snapshot(board)['cards']['42']
+        self.assertEqual((shared['cf_event_1'], shared['cf_cr_num']), ('Выпуск ТИ', 'ТИ-123'))
 
         def comment(dialog):
             self.assertFalse(dialog.send_button.isEnabled())
