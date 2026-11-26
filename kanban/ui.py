@@ -19,7 +19,7 @@ from .widgets import RegistrySelection, DateField, ChecklistEditor, PriorityComb
 from .presentation import history_html, date_text, comments_html
 from .cards import Cards, EXPANDED_ROLE, DETAILS_ROLE, set_card_notice, update_cards
 from .identification import IdentificationPage
-from .bugzilla_page import BugCommentDialog, BugEditDialog, BugzillaPage
+from .bugzilla_page import BugEditDialog, BugzillaPage
 from .statistics import StatisticsPage
 from .my_tasks import MyTasksPage
 from .board_views import BoardView
@@ -1900,7 +1900,7 @@ class MainWindow(QMainWindow, Async):
         if not QDesktopServices.openUrl(QUrl(url)):
             self.status.setText('Не удалось открыть страницу бага в браузере.')
 
-    def open_bugzilla_card(self, number):
+    def open_bugzilla_card(self, number, *, focus_comment=False):
         from PyQt5 import sip
 
         if not self.store or self.access_restricted or self.board_id != self.project_sections_board:
@@ -1964,26 +1964,70 @@ class MainWindow(QMainWindow, Async):
                 if any(current.get(field) != value for field, value in original.items()):
                     raise bugzilla.BugzillaError('Поля бага изменились в Bugzilla. Откройте карточку заново.')
                 bugzilla.update_bug_fields(config['url'], number, fields, login=login, password=password)
+                updated = dict(current, **fields)
                 try:
                     updated = read()
                     store.save_bugzilla_cards(board_id, config, {number: updated}, revision=revision)
-                    return store.bugzilla_board_snapshot(board_id)
+                    return updated, store.bugzilla_board_snapshot(board_id)
                 except (OSError, ValueError, Busy, sqlite3.Error):
-                    return None
+                    return updated, None
 
-            def done(snapshot, error):
+            def done(result, error):
                 if sip.isdeleted(dialog):
                     return
                 if error:
                     handle_error(dialog, error)
                     return
+                updated, snapshot = result
                 if same_session() and snapshot is not None:
                     self.bugzilla_cards[board_id] = snapshot['cards']
                     self.render_bugzilla_cards()
-                self.status.setText(f'Баг #{number} сохранён в Bugzilla.' if snapshot is not None else
-                                    f'Баг #{number} сохранён в Bugzilla. Обновите вкладку «Баги».')
+                message = f'Баг #{number} сохранён в Bugzilla.'
+                if snapshot is None:
+                    message += ' Обновите вкладку «Баги».'
+                self.status.setText(message)
+                dialog.status.setText(message)
+                dialog.original = updated
+                dialog.initial = dialog.values()
                 dialog.set_pending(False)
-                dialog.accept()
+                if not dialog.comment.toPlainText():
+                    dialog.accept()
+
+            self.work(submit, done)
+
+        def send_comment(dialog):
+            nonlocal password
+            comment = dialog.comment.toPlainText().strip()
+            if not comment or not dialog.can_comment or dialog.pending or not same_session() or not self.can_comment_bug():
+                return
+            if self.bugzilla_session is None or self.bugzilla_session[:2] != scope:
+                credentials = self.prompt_bugzilla_export(login, None, 'comment')
+                if credentials is None or not same_session():
+                    return
+                password = credentials[1]
+            dialog.set_pending(True)
+            dialog.comment_status.setText('Отправка…')
+
+            def submit():
+                store.require_bugzilla_comment(board_id, config, number)
+                return bugzilla.add_bug_comment(config['url'], number, comment, login=login, password=password)
+
+            def done(result, error):
+                if sip.isdeleted(dialog):
+                    return
+                if error:
+                    dialog.set_pending(False)
+                    dialog.comment_status.setText(error_text(error) + ' Текст сохранён. Перед повтором проверьте страницу бага.')
+                    if isinstance(error, bugzilla.BugzillaAuthError):
+                        self.reset_bugzilla_session()
+                    elif isinstance(error, AccessRestricted):
+                        self.set_access_restricted(True)
+                    return
+                if same_session():
+                    self.bugzilla_session = (*scope, password)
+                dialog.comment.clear()
+                dialog.comment_status.setText('Комментарий отправлен.')
+                dialog.set_pending(False)
 
             self.work(submit, done)
 
@@ -2000,64 +2044,17 @@ class MainWindow(QMainWindow, Async):
             self.bugzilla_session = (*scope, password)
             bug, choices = result
             dialog.load(bug, choices, editable and self.can_comment_bug() and not bugzilla.is_closed(bug))
+            if focus_comment and dialog.can_comment:
+                dialog.comment.setFocus()
 
-        dialog = BugEditDialog(number, lambda: self.open_bugzilla_page(number), save, self)
+        dialog = BugEditDialog(number, lambda: self.open_bugzilla_page(number), save, send_comment, self)
         self.work(load, loaded)
         dialog.exec_()
         dialog.deleteLater()
 
     def comment_bugzilla_bug(self, number):
-        if not self.can_comment_bug():
-            return
-        board_id, store = self.board_id, self.store
-        config = self.bugzilla_config.copy()
-        if not config['url'] or not config['domain']:
-            self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
-            return
-        source_login = self.redmine_login or store.login
-        username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
-        login = f"{username}@{config['domain']}"
-        scope = (config['url'], login)
-
-        def send(dialog):
-            comment = dialog.text.toPlainText().strip()
-            if not comment or dialog.pending or self.store is not store or not self.can_comment_bug():
-                return
-            session = self.bugzilla_session
-            password = session[2] if session and session[:2] == scope else None
-            credentials = self.prompt_bugzilla_export(login, password, 'comment')
-            if credentials is None or self.access_restricted or self.store is not store:
-                return
-            password = credentials[1]
-            dialog.set_pending(True)
-            dialog.status.setText('Отправка…')
-
-            def submit():
-                store.require_bugzilla_comment(board_id, config, number)
-                return bugzilla.add_bug_comment(config['url'], number, comment, login=login, password=password)
-
-            def done(result, error):
-                from PyQt5 import sip
-                if sip.isdeleted(dialog):
-                    return
-                dialog.set_pending(False)
-                if error:
-                    if isinstance(error, bugzilla.BugzillaAuthError):
-                        self.reset_bugzilla_session()
-                    dialog.status.setText(error_text(error) + ' Текст сохранён в форме. Перед повтором проверьте страницу бага.')
-                    if isinstance(error, AccessRestricted):
-                        self.set_access_restricted(True)
-                    return
-                if self.store is store and self.bugzilla_config == config and (self.redmine_login or store.login) == source_login:
-                    self.bugzilla_session = (*scope, password)
-                self.status.setText(f'Комментарий к багу #{number} отправлен.')
-                dialog.accept()
-
-            self.work(submit, done)
-
-        dialog = BugCommentDialog(number, lambda: self.open_bugzilla_page(number), send, self)
-        dialog.exec_()
-        dialog.deleteLater()
+        if self.can_comment_bug():
+            self.open_bugzilla_card(number, focus_comment=True)
 
     def prompt_bugzilla_export(self, login, password, mode):
         if mode != 'single' and password is not None:

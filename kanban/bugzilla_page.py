@@ -203,11 +203,12 @@ class BugzillaPage(QWidget):
 
 
 class BugEditDialog(QDialog):
-    def __init__(self, number, open_in_browser, save, parent):
+    def __init__(self, number, open_in_browser, save, send_comment, parent):
         super().__init__(parent)
         self.setWindowTitle(f'Баг #{number} · Bugzilla')
         self.setMinimumWidth(460)
         self.pending = True
+        self.can_comment = False
         self.editable = set()
         self.original = {}
         self.initial = {}
@@ -235,6 +236,30 @@ class BugEditDialog(QDialog):
         self.status.setWordWrap(True)
         self.status.setTextFormat(Qt.PlainText)
         layout.addWidget(self.status)
+        self.comment_section = QWidget()
+        comment_layout = QVBoxLayout(self.comment_section)
+        comment_layout.setContentsMargins(0, 4, 0, 4)
+        label = QLabel('Комментарий')
+        label.setObjectName('SectionTitle')
+        self.comment = QPlainTextEdit()
+        self.comment.setAccessibleName('Комментарий к багу')
+        self.comment.setPlaceholderText('Напишите комментарий…')
+        self.comment.setMaximumHeight(130)
+        label.setBuddy(self.comment)
+        comment_layout.addWidget(label)
+        comment_layout.addWidget(self.comment)
+        comment_actions = QHBoxLayout()
+        self.comment_status = QLabel()
+        self.comment_status.setTextFormat(Qt.PlainText)
+        self.comment_status.setWordWrap(True)
+        comment_actions.addWidget(self.comment_status, 1)
+        self.send_button = QPushButton('Отправить')
+        self.send_button.setAutoDefault(False)
+        self.send_button.clicked.connect(lambda: send_comment(self))
+        comment_actions.addWidget(self.send_button)
+        comment_layout.addLayout(comment_actions)
+        layout.addWidget(self.comment_section)
+        self.comment_section.hide()
         buttons = QHBoxLayout()
         page = QPushButton('Открыть в Bugzilla')
         page.clicked.connect(open_in_browser)
@@ -252,6 +277,7 @@ class BugEditDialog(QDialog):
         self.deadline.changed.connect(self.update_save)
         self.ti.textChanged.connect(self.update_save)
         self.assignee.currentIndexChanged.connect(self.update_save)
+        self.comment.textChanged.connect(self.update_save)
         self.set_pending(True)
 
     def load(self, bug, choices, editable):
@@ -283,6 +309,8 @@ class BugEditDialog(QDialog):
         self.initial = self.values()
         self.status.setText('\n'.join(warnings) if editable else 'Просмотр')
         self.save_button.setVisible(editable)
+        self.can_comment = editable
+        self.comment_section.setVisible(self.can_comment)
         self.set_pending(False)
 
     def values(self):
@@ -295,57 +323,14 @@ class BugEditDialog(QDialog):
 
     def update_save(self):
         self.save_button.setEnabled(not self.pending and bool(self.changes()))
+        self.send_button.setEnabled(self.can_comment and not self.pending and bool(self.comment.toPlainText().strip()))
 
     def set_pending(self, pending):
         self.pending = pending
         for field, widget in self.fields.items():
             widget.setEnabled(not pending and field in self.editable)
+        self.comment.setReadOnly(pending)
         self.update_save()
-
-    def reject(self):
-        if not self.pending:
-            super().reject()
-
-
-class BugCommentDialog(QDialog):
-    def __init__(self, number, open_bug, send, parent):
-        super().__init__(parent)
-        self.pending = False
-        self.setWindowTitle(f'Комментарий к багу #{number}')
-        self.resize(480, 280)
-        layout = QVBoxLayout(self)
-        self.text = QPlainTextEdit()
-        self.text.setPlaceholderText('Напишите комментарий…')
-        self.text.setAccessibleName('Комментарий к багу')
-        layout.addWidget(self.text, 1)
-        self.status = QLabel()
-        self.status.setWordWrap(True)
-        self.status.setTextFormat(Qt.PlainText)
-        layout.addWidget(self.status)
-        buttons = QHBoxLayout()
-        page = QPushButton('Открыть в Bugzilla')
-        page.clicked.connect(open_bug)
-        buttons.addWidget(page)
-        buttons.addStretch()
-        close = QPushButton('Закрыть')
-        close.clicked.connect(self.reject)
-        buttons.addWidget(close)
-        self.send_button = QPushButton('Отправить')
-        self.send_button.setObjectName('primary')
-        self.send_button.setEnabled(False)
-        self.text.textChanged.connect(self.update_send)
-        self.send_button.clicked.connect(lambda: send(self))
-        buttons.addWidget(self.send_button)
-        layout.addLayout(buttons)
-        self.text.setFocus()
-
-    def update_send(self):
-        self.send_button.setEnabled(not self.pending and bool(self.text.toPlainText().strip()))
-
-    def set_pending(self, pending):
-        self.pending = pending
-        self.text.setReadOnly(pending)
-        self.update_send()
 
     def reject(self):
         if not self.pending:

@@ -1104,13 +1104,27 @@ class UITest(unittest.TestCase):
             wait_for(lambda: not dialog.pending)
             self.assertEqual(dialog.deadline.text(), '2026-12-20')
             self.assertFalse(dialog.save_button.isEnabled())
+            self.assertFalse(dialog.comment_section.isHidden())
+            self.assertFalse(dialog.send_button.isEnabled())
             dialog.action.setCurrentIndex(dialog.action.findData('Выпуск ТИ'))
             dialog.deadline.set_value('2026-12-31')
             dialog.ti.setText('ТИ-123')
             dialog.assignee.setCurrentIndex(dialog.assignee.findData('bob@example.test'))
             next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Открыть в Bugzilla').click()
+            draft = '  Описание исправления  '
+            dialog.comment.setPlainText(draft)
             dialog.save_button.click()
-            wait_for(lambda: dialog.result() == QDialog.Accepted)
+            wait_for(lambda: not dialog.pending)
+            self.assertEqual(dialog.comment.toPlainText(), draft)
+            self.assertFalse(dialog.save_button.isEnabled())
+            dialog.send_button.click()
+            wait_for(lambda: not dialog.pending and 'Текст сохранён' in dialog.comment_status.text())
+            self.assertEqual(dialog.comment.toPlainText(), draft)
+            dialog.send_button.click()
+            wait_for(lambda: dialog.comment_status.text() == 'Комментарий отправлен.')
+            self.assertEqual(dialog.comment.toPlainText(), '')
+            self.assertEqual(dialog.result(), QDialog.Rejected)
+            dialog.accept()
             return dialog.result()
 
         card_list = next(cards for cards in reopened.bugzilla_page.columns if cards.count())
@@ -1118,24 +1132,19 @@ class UITest(unittest.TestCase):
              patch.object(QDesktopServices, 'openUrl', return_value=True) as open_url, \
              patch('kanban.bugzilla.read_bug_details', side_effect=[bug, bug, dict(bug, **edited)]), \
              patch('kanban.bugzilla.bug_edit_choices', return_value=choices), \
+             patch('kanban.bugzilla.add_bug_comment', side_effect=[OSError('Таймаут'), 7]) as send, \
              patch('kanban.bugzilla.update_bug_fields') as save:
             card_list.itemClicked.emit(card_list.item(0))
             self.assertEqual(open_url.call_args.args[0].toString(), url + '/show_bug.cgi?id=42')
         save.assert_called_once_with(url, '42', edited, login='colleague@example.test', password='пример-пароля')
         shared = self.store.bugzilla_board_snapshot(board)['cards']['42']
         self.assertEqual((shared['cf_event_1'], shared['cf_cr_num']), ('Выпуск ТИ', 'ТИ-123'))
-
-        def comment(dialog):
-            self.assertFalse(dialog.send_button.isEnabled())
-            dialog.text.setPlainText('  Описание исправления  ')
-            dialog.send_button.click()
-            wait_for(lambda: dialog.result() == QDialog.Accepted)
-            return dialog.result()
-
-        with patch.object(QDialog, 'exec_', new=comment), patch('kanban.bugzilla.add_bug_comment', return_value=7) as send:
+        self.assertEqual(send.call_count, 2)
+        send.assert_called_with(url, '42', 'Описание исправления',
+                                login='colleague@example.test', password='пример-пароля')
+        with patch.object(reopened, 'open_bugzilla_card') as open_card:
             reopened.comment_bugzilla_bug('42')
-        send.assert_called_once_with(url, '42', 'Описание исправления',
-                                     login='colleague@example.test', password='пример-пароля')
+        open_card.assert_called_once_with('42', focus_comment=True)
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu
