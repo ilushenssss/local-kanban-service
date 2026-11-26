@@ -229,20 +229,42 @@ class UITest(unittest.TestCase):
         with patch.object(QDialog, 'exec_', new=profile):
             roster.list.scrollToItem(item)
             QTest.mouseClick(roster.list.viewport(), Qt.LeftButton, pos=roster.list.visualItemRect(item).center())
-            wait_for(lambda: bool(sender.private_chats.dialogs))
-        chat = sender.private_chats.dialogs[colleague.profile()['id']]
+            wait_for(lambda: sender.private_chats.dialog is not None)
+        dialog = sender.private_chats.dialog
+        colleague_id = colleague.profile()['id']
+        chat = dialog.conversations[colleague_id]
         body = 'Личное сообщение, которое не осталось в базе'
         chat.input.setPlainText(body)
         QTest.keyClick(chat.input, Qt.Key_Return)
         sender_id = self.store.profile()['id']
-        wait_for(lambda: sender_id in receiver.private_chats.dialogs and body in chat.timeline.toPlainText())
-        inbox = receiver.private_chats.dialogs[sender_id]
-        self.assertIn(body, inbox.timeline.toPlainText())
+        wait_for(lambda: receiver.private_chats.dialog is not None and bool(chat.timeline.bubbles))
+        inbox = receiver.private_chats.dialog.conversations[sender_id]
+        outgoing, out_body = chat.timeline.bubbles[0]
+        incoming, in_body = inbox.timeline.bubbles[0]
+        self.assertEqual((out_body.toPlainText(), in_body.toPlainText()), (body, body))
+        wait_for(lambda: outgoing.x() > 0)
+        self.assertEqual(outgoing.geometry().right(), outgoing.parentWidget().width() - 1)
+        self.assertEqual(incoming.x(), 0)
         self.assertNotIn(body.encode(), self.store.db.read_bytes())
+        chat.input.setPlainText('Черновик для коллеги')
+        other_id = Store(self.store.folder, 'designer').profile()['id']
+        sender.open_private_chat(other_id, 'designer')
+        self.assertIs(sender.private_chats.dialog, dialog)
+        self.assertIs(dialog.stack.currentWidget(), dialog.conversations[other_id])
+        answer = 'Ответ в другой переписке'
+        inbox.input.setPlainText(answer)
+        inbox.send_button.click()
+        wait_for(lambda: dialog.unread.get(colleague_id) == 1 and not receiver.jobs)
+        self.assertIs(dialog.stack.currentWidget(), dialog.conversations[other_id])
+        dialog.peers.setCurrentItem(dialog.items[colleague_id])
+        self.assertIs(dialog.stack.currentWidget(), chat)
+        self.assertNotIn(colleague_id, dialog.unread)
+        self.assertEqual(chat.input.toPlainText(), 'Черновик для коллеги')
+        self.assertEqual(chat.timeline.bubbles[-1][1].toPlainText(), answer)
         self.assertTrue(sender.close())
         self.assertTrue(receiver.close())
-        self.assertFalse(sender.private_chats.dialogs)
-        self.assertFalse(receiver.private_chats.dialogs)
+        self.assertIsNone(sender.private_chats.dialog)
+        self.assertIsNone(receiver.private_chats.dialog)
 
     def test_newer_database_reports_required_client_update(self):
         newer = SCHEMA_VERSION + 1

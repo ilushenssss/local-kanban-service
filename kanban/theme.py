@@ -226,6 +226,20 @@ QPushButton#Profile { text-align: left; font-size: 12px; padding: 7px 8px; }
 QLabel#CountBadge { background: %(hover)s; color: %(muted)s; border-radius: 9px; padding: 2px 6px; font-size: 12px; }
 QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 36px 7px 10px; }
 QTextEdit#ChatTimeline { border: none; background: %(background)s; padding: 12px; }
+QFrame#PrivateChatSidebar { background: %(sidebar)s; border-right: 1px solid %(border)s; }
+QFrame#PrivateChatHeader { background: %(background)s; border-bottom: 1px solid %(border)s; }
+QFrame#PrivateChatComposer { background: %(background)s; border-top: 1px solid %(border)s; }
+QWidget#PrivateChatCanvas { background: %(canvas)s; }
+QListWidget#PrivateChatPeers { border: 1px solid transparent; border-radius: 7px; padding: 0; background: transparent; }
+QListWidget#PrivateChatPeers:focus { border-color: %(accent)s; }
+QListWidget#PrivateChatPeers::item { margin: 2px 0; padding: 11px 10px; border-radius: 7px; }
+QListWidget#PrivateChatPeers::item:hover { background: %(hover)s; }
+QListWidget#PrivateChatPeers::item:selected { color: %(selected_text)s; background: %(selection)s; }
+QFrame#PrivateChatBubble { background: %(background)s; border: 1px solid %(border)s; border-radius: 10px; }
+QFrame#PrivateChatBubble[outgoing="true"] { background: %(selection)s; border-color: %(selection)s; border-bottom-right-radius: 3px; }
+QFrame#PrivateChatBubble[outgoing="false"] { border-bottom-left-radius: 3px; }
+QTextEdit#PrivateChatText { background: transparent; border: none; padding: 0; }
+QLabel#PrivateChatTime { color: %(muted)s; font-size: 10px; }
 QWidget#side { border-right: 1px solid %(border)s; }
 QWidget#Messenger { background: %(background)s; border: 1px solid %(border)s; border-radius: 12px; }
 QCalendarWidget#DeadlineCalendar { background: %(background)s; border: 1px solid %(field_border)s; border-radius: 12px; padding: 8px; }

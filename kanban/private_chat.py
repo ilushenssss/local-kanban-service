@@ -4,10 +4,13 @@ import struct
 import threading
 import time
 from collections import OrderedDict
+from math import ceil
 from uuid import uuid4
 
-from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt5.QtWidgets import (QDialog, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QVBoxLayout)
+from PyQt5.QtCore import QObject, Qt, QTime, QTimer, pyqtSignal
+from PyQt5.QtGui import QTextOption
+from PyQt5.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
+                             QPushButton, QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from .widgets import MessageEdit
 
@@ -174,28 +177,130 @@ class PrivateChatTransport:
         return message_id
 
 
-class PrivateChatDialog(QDialog):
+class MessageText(QTextEdit):
+    def __init__(self, text, outgoing):
+        super().__init__()
+        self.setObjectName('PrivateChatText')
+        self.setFrameStyle(QFrame.NoFrame)
+        self.setReadOnly(True)
+        self.setUndoRedoEnabled(False)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.setFocusPolicy(Qt.ClickFocus)
+        self.setWordWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
+        self.document().setDocumentMargin(0)
+        self.document().documentLayout().documentSizeChanged.connect(self.fit_height)
+        self.setPlainText(text)
+        self.setAccessibleDescription('Исходящее сообщение' if outgoing else 'Входящее сообщение')
+
+    def fit_height(self, size):
+        self.setFixedHeight(max(self.fontMetrics().height(), ceil(size.height())))
+
+    def wheelEvent(self, event):
+        event.ignore()
+
+
+class MessageTimeline(QScrollArea):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('PrivateChatTimeline')
+        self.setAccessibleName('История личной переписки')
+        self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        canvas = QWidget()
+        canvas.setObjectName('PrivateChatCanvas')
+        self.rows = QVBoxLayout(canvas)
+        self.rows.setContentsMargins(16, 14, 16, 14)
+        self.rows.setSpacing(8)
+        self.rows.addStretch(1)
+        self.setWidget(canvas)
+        self.bubbles = []
+        self.follow = QTimer(self)
+        self.follow.setSingleShot(True)
+        self.follow.timeout.connect(self.scroll_to_end)
+
+    def append_message(self, text, *, outgoing):
+        bar = self.verticalScrollBar()
+        at_end = bar.value() >= bar.maximum() - 4
+        row = QWidget()
+        row_layout = QHBoxLayout(row)
+        row_layout.setContentsMargins(0, 0, 0, 0)
+        bubble = QFrame()
+        bubble.setObjectName('PrivateChatBubble')
+        bubble.setProperty('outgoing', outgoing)
+        layout = QVBoxLayout(bubble)
+        layout.setContentsMargins(12, 7, 12, 7)
+        layout.setSpacing(2)
+        body = MessageText(text, outgoing)
+        layout.addWidget(body)
+        stamp = QLabel(QTime.currentTime().toString('HH:mm'))
+        stamp.setObjectName('PrivateChatTime')
+        stamp.setAlignment(Qt.AlignRight)
+        layout.addWidget(stamp)
+        row_layout.addWidget(bubble, 0, Qt.AlignTop | (Qt.AlignRight if outgoing else Qt.AlignLeft))
+        self.bubbles.append((bubble, body))
+        self.fit_bubble(bubble, body)
+        self.rows.insertWidget(self.rows.count() - 1, row)
+        if at_end or outgoing:
+            self.follow.start(0)
+
+    def fit_bubble(self, bubble, body):
+        natural = max(map(body.fontMetrics().horizontalAdvance, body.toPlainText().splitlines() or ['']))
+        available = max(1, self.viewport().width() - 32)
+        width = min(max(76, natural + 26), max(1, int(available * 0.75)), 540)
+        bubble.setFixedWidth(width)
+        document = body.document()
+        document.setTextWidth(max(1, width - 26))
+        body.fit_height(document.size())
+
+    def resizeEvent(self, event):
+        bar = self.verticalScrollBar()
+        at_end = bar.value() >= bar.maximum() - 4
+        super().resizeEvent(event)
+        for bubble, body in self.bubbles:
+            self.fit_bubble(bubble, body)
+        if at_end:
+            self.follow.start(0)
+
+    def scroll_to_end(self):
+        bar = self.verticalScrollBar()
+        bar.setValue(bar.maximum())
+
+
+class PrivateConversation(QWidget):
     def __init__(self, name, send, parent):
         super().__init__(parent)
-        self.name = name
         self.retry = None
-        self.setWindowTitle(name + ' · Личная переписка')
-        self.resize(520, 480)
         layout = QVBoxLayout(self)
-        hint = QLabel('Временная переписка. История исчезнет после выхода из TeamSync.')
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        header = QFrame()
+        header.setObjectName('PrivateChatHeader')
+        heading = QVBoxLayout(header)
+        heading.setContentsMargins(16, 12, 16, 10)
+        heading.setSpacing(3)
+        title = QLabel(name)
+        title.setTextFormat(Qt.PlainText)
+        title.setWordWrap(True)
+        title.setObjectName('SectionTitle')
+        heading.addWidget(title)
+        hint = QLabel('История хранится до выхода из TeamSync')
         hint.setObjectName('Muted')
         hint.setWordWrap(True)
-        layout.addWidget(hint)
-        self.timeline = QPlainTextEdit()
-        self.timeline.setReadOnly(True)
-        self.timeline.setAccessibleName('Личная переписка')
+        heading.addWidget(hint)
+        layout.addWidget(header)
+        self.timeline = MessageTimeline()
         layout.addWidget(self.timeline, 1)
+        composer = QFrame()
+        composer.setObjectName('PrivateChatComposer')
+        compose = QVBoxLayout(composer)
+        compose.setContentsMargins(14, 10, 14, 10)
         self.input = MessageEdit()
         self.input.setAcceptRichText(False)
         self.input.setAccessibleName('Сообщение сотруднику')
         self.input.setPlaceholderText('Написать сообщение…')
-        self.input.setMaximumHeight(104)
-        layout.addWidget(self.input)
+        self.input.setMaximumHeight(84)
+        compose.addWidget(self.input)
         row = QHBoxLayout()
         self.status = QLabel()
         self.status.setTextFormat(Qt.PlainText)
@@ -203,19 +308,87 @@ class PrivateChatDialog(QDialog):
         row.addWidget(self.status, 1)
         self.send_button = QPushButton('Отправить')
         self.send_button.setObjectName('primary')
+        self.send_button.setEnabled(False)
         self.send_button.clicked.connect(lambda: send(self))
         self.input.sendRequested.connect(self.send_button.click)
+        self.input.textChanged.connect(self.update_send)
         row.addWidget(self.send_button)
-        layout.addLayout(row)
+        compose.addLayout(row)
+        layout.addWidget(composer)
 
-    def append_message(self, author, text):
-        self.timeline.appendPlainText(author + '\n' + text)
-        bar = self.timeline.verticalScrollBar()
-        bar.setValue(bar.maximum())
+    def update_send(self):
+        self.send_button.setEnabled(not self.input.isReadOnly() and bool(self.input.toPlainText().strip()))
 
     def set_sending(self, sending):
-        self.send_button.setEnabled(not sending)
         self.input.setReadOnly(sending)
+        self.update_send()
+
+
+class PrivateChatDialog(QDialog):
+    def __init__(self, new_chat, parent):
+        super().__init__(parent)
+        self.setWindowTitle('Личные переписки')
+        self.resize(860, 610)
+        self.setMinimumSize(540, 400)
+        self.conversations = {}
+        self.items = {}
+        self.unread = {}
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        sidebar = QFrame()
+        sidebar.setObjectName('PrivateChatSidebar')
+        sidebar.setFixedWidth(200)
+        side = QVBoxLayout(sidebar)
+        side.setContentsMargins(10, 12, 10, 10)
+        side.setSpacing(8)
+        add = QPushButton('Новая переписка…')
+        add.clicked.connect(new_chat)
+        side.addWidget(add)
+        self.peers = QListWidget()
+        self.peers.setObjectName('PrivateChatPeers')
+        self.peers.setAccessibleName('Список личных переписок')
+        self.peers.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.peers.currentItemChanged.connect(self.select)
+        side.addWidget(self.peers, 1)
+        layout.addWidget(sidebar)
+        self.stack = QStackedWidget()
+        layout.addWidget(self.stack, 1)
+
+    def conversation(self, user_id, name, send):
+        chat = self.conversations.get(user_id)
+        if chat is None:
+            chat = self.conversations[user_id] = PrivateConversation(name, send, self.stack)
+            self.stack.addWidget(chat)
+            item = self.items[user_id] = QListWidgetItem(name)
+            item.setData(Qt.UserRole, user_id)
+            item.setData(Qt.UserRole + 1, name)
+            item.setToolTip(name)
+            self.peers.addItem(item)
+        return chat
+
+    def select(self, item, previous=None):
+        if item is None:
+            return
+        user_id = item.data(Qt.UserRole)
+        chat = self.conversations[user_id]
+        self.stack.setCurrentWidget(chat)
+        self.unread.pop(user_id, None)
+        item.setText(item.data(Qt.UserRole + 1))
+        item.setData(Qt.AccessibleDescriptionRole, None)
+
+    def show_conversation(self, user_id):
+        self.peers.setCurrentItem(self.items[user_id])
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        self.conversations[user_id].input.setFocus()
+
+    def mark_unread(self, user_id):
+        count = self.unread[user_id] = self.unread.get(user_id, 0) + 1
+        item = self.items[user_id]
+        item.setText('({}) {}'.format(count, item.data(Qt.UserRole + 1)))
+        item.setData(Qt.AccessibleDescriptionRole, 'Непрочитанных сообщений: {}'.format(count))
 
 
 class PrivateChats(QObject):
@@ -227,7 +400,7 @@ class PrivateChats(QObject):
         self.transport = None
         self.ready = False
         self.renewing = False
-        self.dialogs = {}
+        self.dialog = None
         self.timer = QTimer(self)
         self.timer.setInterval(60_000)
         self.timer.timeout.connect(self.renew)
@@ -272,30 +445,28 @@ class PrivateChats(QObject):
             self.transport.stop()
             self.transport = None
         self.ready = False
-        for chat in self.dialogs.values():
-            chat.timeline.clear()
-            chat.input.clear()
-            chat.retry = None
-            chat.close()
-            chat.deleteLater()
-        self.dialogs.clear()
+        if self.dialog:
+            self.dialog.close()
+            self.dialog.deleteLater()
+            self.dialog = None
+
+    def conversation(self, user_id, name):
+        if self.dialog is None:
+            self.dialog = PrivateChatDialog(lambda: self.window.open_catalog('users'), self.window)
+        return self.dialog.conversation(user_id, name, lambda chat: self.send(user_id, chat))
 
     def open(self, user_id, name):
-        chat = self.dialogs.get(user_id)
-        if chat is None:
-            chat = self.dialogs[user_id] = PrivateChatDialog(name, lambda chat: self.send(user_id, chat), self.window)
-        chat.show()
-        chat.raise_()
-        chat.activateWindow()
-        chat.input.setFocus()
-        return chat
+        self.conversation(user_id, name)
+        self.dialog.show_conversation(user_id)
 
     def receive(self, transport, user_id, name, text):
         if self.transport is transport and not self.window.access_restricted:
-            chat = self.dialogs.get(user_id)
-            if chat is None or not chat.isVisible():
-                chat = self.open(user_id, name)
-            chat.append_message(name, text)
+            chat = self.conversation(user_id, name)
+            if not self.dialog.isVisible():
+                self.dialog.show_conversation(user_id)
+            elif self.dialog.stack.currentWidget() is not chat:
+                self.dialog.mark_unread(user_id)
+            chat.timeline.append_message(text, outgoing=False)
 
     def send(self, user_id, chat):
         text = chat.input.toPlainText().strip()
@@ -318,7 +489,7 @@ class PrivateChats(QObject):
             if error:
                 chat.status.setText(str(error))
                 return
-            chat.append_message('Вы', text)
+            chat.timeline.append_message(text, outgoing=True)
             chat.input.clear()
             chat.status.clear()
             chat.retry = None
