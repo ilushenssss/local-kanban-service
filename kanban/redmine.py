@@ -453,6 +453,11 @@ def kris_progress_text(progress):
     return '{}% ({}/{})'.format(kris_percent(progress), progress['done'], progress['total'])
 
 
+def kris_coding_count(progress):
+    return sum(status_key(task['status']) == 'кодирование'
+               for task in (progress or {}).get('subtasks', ()))
+
+
 def kris_coding_lines(progress):
     coding = (progress or {}).get('coding', [])
     if not coding:

@@ -1768,7 +1768,12 @@ class UITest(unittest.TestCase):
                              'issue_references': {'basis': values, 'bugs': ['48316'],
                                                   'check_sheet': 'Да',
                                                   'ti_responsible': [{'name': 'Иван Петров', 'initials': 'ИП'}]},
-                             'kris_progress': {'subject': 'ТИ-1157 КРИС', 'done': 0, 'total': 0}}, 0)
+                             'kris_progress': {
+                                 'subject': 'ТИ-1157 КРИС', 'done': 1, 'total': 4,
+                                 'subtasks': [{'status': status} for status in
+                                              ('Выполнено', 'Кодирование', 'Кодирование', 'Новое')],
+                                 'coding': [{'subject': 'Сервис', 'due_date': '2027-02-03'}],
+                             }}, 0)
         cards.show()
         self.addCleanup(cards.close)
         APP.processEvents()
@@ -1788,6 +1793,14 @@ class UITest(unittest.TestCase):
         self.assertLess(traced.drawEllipse.call_args.args[0].right(), labels['ТИ-1157 КРИС'][0].left())
         self.assertIn('ИП', labels)
         self.assertNotIn('Redmine', labels)
+        self.assertNotIn('Согласование отделов', labels)
+        self.assertIn('В кодировании: 2/4', item.toolTip())
+        self.assertEqual(labels['Кодирование до 03.02'][0].height(), labels['ОСП'][0].height())
+        from kanban.theme import TOKENS
+        completed, coding = [call.args for call in traced.fillRect.call_args_list]
+        self.assertAlmostEqual(completed[0].right(), coding[0].left())
+        self.assertAlmostEqual(coding[0].width(), 2 * completed[0].width())
+        self.assertEqual(coding[1].name().upper(), TOKENS['warning'].upper())
         self.assertIn('Ответственный за выпуск ТИ: Иван Петров', item.toolTip())
         self.assertNotIn('ТИ', labels)
         for value in values:

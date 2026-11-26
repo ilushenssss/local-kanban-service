@@ -6,7 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call
 
 from kanban.installation import load_redmine_project_id
-from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_deadline, kris_coding_lines,
+from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_count, kris_coding_deadline, kris_coding_lines,
                             kris_progress_text, read_basis_statuses, read_identification_card, read_identification_cards, read_issue,
                             iter_sppi_issues, read_kris_progress, status_key)
 
@@ -239,6 +239,7 @@ class RedmineTest(unittest.TestCase):
         self.assertEqual(kris_progress_text(progress[42]), '67% (2/3)')
         self.assertEqual(kris_progress_text(progress[43]), 'Подзадач нет')
         self.assertEqual(kris_progress_text(progress[45]), '—')
+        self.assertEqual([kris_coding_count(progress[issue_id]) for issue_id in (42, 43, 45)], [1, 0, 0])
         client.issue.filter.assert_called_once_with(project_id=73, status_id='open', parent_id='!*')
         client.user.get.assert_called_once_with(9)
         self.assertEqual(client.issue.get.call_args_list,

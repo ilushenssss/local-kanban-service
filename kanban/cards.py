@@ -1,10 +1,10 @@
 """Compact task cards with semantic badges and optional inline details."""
 import datetime as dt
 from PyQt5.QtCore import Qt, QRect, QRectF, QSize, QPointF, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPen, QTextDocument, QDrag
+from PyQt5.QtGui import QColor, QFont, QFontMetrics, QPainterPath, QPen, QTextDocument, QDrag
 from PyQt5.QtWidgets import QStyledItemDelegate, QStyle, QApplication, QListWidget, QListWidgetItem
 from .avatars import avatar_image
-from .redmine import (APPROVAL_COLORS, CHECK_SHEET_FIELD, issue_label, kris_coding_deadline,
+from .redmine import (APPROVAL_COLORS, CHECK_SHEET_FIELD, issue_label, kris_coding_count, kris_coding_deadline,
                       kris_coding_lines, kris_progress_text, status_key)
 from .theme import TOKENS, STICKERS, avatar_color, card_refresh_rect, paint_card_refresh
 
@@ -21,7 +21,6 @@ CHIP_GAP = 4
 CHIP_PITCH = CHIP_HEIGHT + CHIP_GAP
 CHIP_TEXT_INSET = 3
 REFERENCE_LABEL_HEIGHT = 22
-CODING_LINE_HEIGHT = 19
 COMPACT_TI_HEIGHT = 38
 
 
@@ -103,12 +102,12 @@ class CardDelegate(QStyledItemDelegate):
             if self.parent().redmine_is_compact(task):
                 return QSize(292, COMPACT_TI_HEIGHT)
             rows = chip_rows(task['approvals'], DEPARTMENT_CHIPS_PER_ROW)
-            approval_height = 19 + rows * CHIP_PITCH if rows else 0
+            approval_height = rows * CHIP_PITCH
             _, basis_height = self.basis_layout(task, option)
             bugs = task['issue_references'].get('bugs', []) + task.get('unlinked_bugs', [])
             reference_height = 2 * REFERENCE_LABEL_HEIGHT + basis_height + chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
             title_height = 2 * QFontMetrics(redmine_title_font(option.font)).lineSpacing()
-            coding_height = len(kris_coding_lines(task.get('kris_progress'))) * CODING_LINE_HEIGHT
+            coding_height = len(kris_coding_lines(task.get('kris_progress'))) * CHIP_PITCH
             return QSize(292, 94 + title_height + reference_height + approval_height + coding_height)
         height = card_height(task, QFontMetrics(title_font(option.font)))
         if index.data(EXPANDED_ROLE):
@@ -305,17 +304,16 @@ class CardDelegate(QStyledItemDelegate):
         painter.setClipRect(card)
         x, y, width = card.left()+12, card.top()+9, card.width()-24
 
-        def text(caption, left, top, span, height=19, bold=False, color='muted', align=Qt.AlignLeft,
-                 elide=Qt.ElideRight):
+        def text(caption, left, top, span, height=19, bold=False, color='muted', align=Qt.AlignLeft):
             font = QFont(option.font)
             font.setPixelSize(12 if not bold else 15)
             font.setBold(bold)
             painter.setFont(font)
             painter.setPen(QColor(TOKENS[color]))
             painter.drawText(QRect(left, top, span, height), align | Qt.AlignVCenter,
-                             painter.fontMetrics().elidedText(caption, elide, span))
+                             painter.fontMetrics().elidedText(caption, Qt.ElideRight, span))
 
-        def chip(caption, rect, palette=None, text_width=None):
+        def chip(caption, rect, palette=None, text_width=None, elide=Qt.ElideRight):
             foreground, background = palette or (TOKENS['secondary'], TOKENS['hover'])
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(background))
@@ -325,7 +323,7 @@ class CardDelegate(QStyledItemDelegate):
             inset = CHIP_TEXT_INSET
             label_rect = rect.adjusted(inset, 0, -inset, 0)
             if text_width is None:
-                caption = painter.fontMetrics().elidedText(caption, Qt.ElideRight, label_rect.width())
+                caption = painter.fontMetrics().elidedText(caption, elide, label_rect.width())
             elif text_width > label_rect.width():
                 painter.save()
                 painter.translate(label_rect.topLeft())
@@ -336,6 +334,11 @@ class CardDelegate(QStyledItemDelegate):
             painter.drawText(label_rect, Qt.AlignCenter | Qt.TextSingleLine, caption)
 
         progress = task.get('kris_progress')
+        coding_metrics = QFontMetrics(chip_font(option.font))
+
+        def coding_width(caption, available):
+            return min(available, coding_metrics.horizontalAdvance(caption) + 2 * CHIP_TEXT_INSET + 4)
+
         label = issue_label(task['tracker_name'], task['redmine_id'], progress)
         answer = task['issue_references'].get('check_sheet')
         dot_color = {'Да': 'success', 'Нет': 'danger'}.get(answer)
@@ -366,12 +369,11 @@ class CardDelegate(QStyledItemDelegate):
                                  QPointF(cx+4, cy-2*direction))
         if compact:
             deadline = kris_coding_deadline(progress)
-            deadline_font = QFont(option.font)
-            deadline_font.setPixelSize(12)
-            deadline_width = QFontMetrics(deadline_font).horizontalAdvance(deadline) + 8 if deadline else 0
-            heading(y-2, width-control_width-deadline_width)
+            deadline_width = coding_width(deadline, max(0, width-control_width)//2) if deadline else 0
+            heading(y-2, width-control_width-deadline_width-(4 if deadline_width else 0))
             if deadline:
-                text(deadline, x+width-control_width-deadline_width, y-2, deadline_width-4, align=Qt.AlignRight)
+                chip(deadline, QRect(x+width-control_width-deadline_width, y-2, deadline_width, CHIP_HEIGHT),
+                     palette=DEPARTMENT_PALETTE['yellow'])
             painter.restore()
             return
         responsible = task['issue_references'].get('ti_responsible', [])
@@ -407,20 +409,25 @@ class CardDelegate(QStyledItemDelegate):
         y += chip_rows(bugs, BUG_CHIPS_PER_ROW) * CHIP_PITCH
         text('КРИС ТИ', x, y, width-106)
         text(kris_progress_text(progress), x+width-100, y, 100, align=Qt.AlignRight)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(TOKENS['hover']))
-        painter.drawRoundedRect(QRectF(x, y+19, width, 4), 2, 2)
-        if progress and progress['total'] and progress['done']:
-            painter.setBrush(QColor(TOKENS['accent']))
-            fill = width * progress['done'] / progress['total']
-            painter.drawRoundedRect(QRectF(x, y+19, fill, 4), 2, 2)
-        footer = y+25
+        track = QRectF(x, y+19, width, 5)
+        outline = QPainterPath()
+        outline.addRoundedRect(track, 2.5, 2.5)
+        painter.fillPath(outline, QColor(TOKENS['hover']))
+        if progress and progress['total']:
+            unit = width / progress['total']
+            completed = unit * progress['done']
+            coding = unit * kris_coding_count(progress)
+            painter.save()
+            painter.setClipPath(outline, Qt.IntersectClip)
+            painter.fillRect(QRectF(x, track.y(), completed, track.height()), QColor(TOKENS['accent']))
+            painter.fillRect(QRectF(x+completed, track.y(), coding, track.height()), QColor(TOKENS['warning']))
+            painter.restore()
+        footer = y+28
         for line in kris_coding_lines(progress):
-            text(line, x, footer, width, height=CODING_LINE_HEIGHT, elide=Qt.ElideMiddle)
-            footer += CODING_LINE_HEIGHT
+            chip(line, QRect(x, footer, coding_width(line, width), CHIP_HEIGHT),
+                 palette=DEPARTMENT_PALETTE['yellow'], elide=Qt.ElideMiddle)
+            footer += CHIP_PITCH
         if task['approvals']:
-            text('Согласование отделов', x, footer, width)
-            footer += 19
             span = (width - 4*(DEPARTMENT_CHIPS_PER_ROW-1)) // DEPARTMENT_CHIPS_PER_ROW
             for index, approval in enumerate(task['approvals']):
                 row, column = divmod(index, DEPARTMENT_CHIPS_PER_ROW)
@@ -610,10 +617,14 @@ def set_card_data(item, task, count):
             summary += '\n{}: {}'.format(label, ', '.join(values)) if values else '\n' + label + ' —'
         for number, status in task['issue_references'].get('basis_statuses', {}).items():
             summary += '\n{}: {}'.format(number, status or 'Задача не найдена')
-        summary += '\nКРИС ТИ: {}\n'.format(kris_progress_text(progress))
+        summary += '\nКРИС ТИ: {}'.format(kris_progress_text(progress))
+        coding = kris_coding_count(progress)
+        if coding:
+            summary += '\nВ кодировании: {}/{}'.format(coding, progress['total'])
+        summary += '\n'
         summary += '\n'.join([*kris_coding_lines(progress), 'Приложения —'])
         if task['approvals']:
-            summary += '\nСогласование отделов: ' + ', '.join(
+            summary += '\n' + ', '.join(
                 '{}: {}'.format(entry['department'], entry['status']) for entry in task['approvals'])
         item.setText(summary)
         set_card_notice(item, count)
