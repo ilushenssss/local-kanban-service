@@ -215,6 +215,7 @@ QTreeWidget { background: %(sidebar)s; color: %(text)s; border: none; padding: 4
 QTreeWidget::branch:selected { background: %(selection)s; }
 QTreeWidget::item { padding: 7px 4px; border-radius: 4px; }
 QTreeWidget::item:selected { background: %(selection)s; color: %(accent)s; }
+QTreeWidget#BugzillaGroups { background: transparent; padding: 0; }
 QWidget#Header { background: %(background)s; border-bottom: 1px solid %(border)s; }
 QSplitter::handle { background: %(border)s; }
 QWidget#side QPushButton:checked { color: %(selected_text)s; background: %(selection)s; }

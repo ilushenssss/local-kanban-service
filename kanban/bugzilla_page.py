@@ -1,10 +1,10 @@
 import json
 
-from PyQt5.QtCore import QPointF, QRect, QSize, Qt, pyqtSignal
+from PyQt5.QtCore import QDate, QPointF, QRect, QSize, Qt, pyqtSignal
 from PyQt5.QtGui import QColor, QFontMetrics, QTextLayout, QTextOption
 from PyQt5.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton,
-                             QScrollArea, QVBoxLayout, QWidget)
+                             QScrollArea, QTreeWidget, QTreeWidgetItem, QVBoxLayout, QWidget)
 from .bugzilla import assignee_initials, deadline_value, is_assigned_to, is_closed, xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
 from .theme import STICKERS, TOKENS, symbol_icon
@@ -15,6 +15,12 @@ def field_text(value):
     if value is None or value == '':
         return '—'
     return value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=xml_value_to_json)
+
+
+def action_category(value):
+    values = value if isinstance(value, list) else [value]
+    return ' · '.join(dict.fromkeys(' '.join(item.split()) for item in values
+                                    if isinstance(item, str) and item.strip())) or 'Без действия'
 
 
 class BugzillaGrid(QListWidget):
@@ -49,11 +55,18 @@ class BugzillaGrid(QListWidget):
 
 class BugzillaCard(ProjectCardDelegate):
     def sizeHint(self, option, index):
+        if not index.data(Qt.UserRole):
+            return super().sizeHint(option, index)
         grid = self.parent()
+        if isinstance(grid, QTreeWidget):
+            return QSize(0, BugzillaGrid.card_height)
         return QSize(max(1, grid.gridSize().width() - grid.gap), grid.card_height)
 
     def paint(self, painter, option, index):
-        number, (title, ti, action), linked, initials = index.data(Qt.UserRole)
+        card = index.data(Qt.UserRole)
+        if not card:
+            return super().paint(painter, option, index)
+        number, (title, ti, action), linked, initials, limit = card
         painter.save()
         box = self.paint_surface(painter, option, linked)
         left, top = box.x() + 8, box.y() + 9
@@ -65,14 +78,25 @@ class BugzillaCard(ProjectCardDelegate):
         painter.setFont(self.heading_font(option))
         painter.setPen(QColor(TOKENS['text']))
         metrics = painter.fontMetrics()
-        number_width = min(metrics.horizontalAdvance(number), width // 3)
+        number_width = min(metrics.horizontalAdvance(number) + 3, width * 2 // 5)
         painter.drawText(QRect(left, top, number_width, 18), Qt.AlignTop | Qt.AlignLeft,
                          metrics.elidedText(number, Qt.ElideRight, number_width))
 
         font = self.body_font(option)
         metrics = QFontMetrics(font)
-        title_x = left + number_width + 8
-        title_width = width - number_width - 8
+        date = QDate.fromString(limit, Qt.ISODate)
+        date_text = date.toString('dd.MM.yyyy') if date.isValid() else limit
+        left_width = max(number_width, min(metrics.horizontalAdvance(date_text), width * 2 // 5))
+        if date.isValid() and metrics.horizontalAdvance(date_text) > left_width:
+            date_text = date.toString('dd.MM.yy')
+        if date_text:
+            painter.setFont(font)
+            painter.setPen(QColor(TOKENS['secondary']))
+            painter.drawText(QRect(left, top + 21, left_width, 18), Qt.AlignVCenter | Qt.AlignLeft,
+                             metrics.elidedText(date_text, Qt.ElideRight, left_width))
+        painter.setPen(QColor(TOKENS['text']))
+        title_x = left + left_width + 8
+        title_width = width - left_width - 8
         layout = QTextLayout(title, font)
         wrap = QTextOption()
         wrap.setWrapMode(QTextOption.WrapAtWordBoundaryOrAnywhere)
@@ -103,7 +127,7 @@ class BugzillaCard(ProjectCardDelegate):
             painter.setPen(QColor(TOKENS['selected_text']))
             painter.drawText(rect, Qt.AlignCenter, metrics.elidedText(initials, Qt.ElideRight, size))
             badges_width -= size + 5
-        ti_colors = STICKERS[0] if ti == '—' else (TOKENS['secondary'], TOKENS['hover'])
+        ti_colors = STICKERS[0] if ti == '—' else STICKERS[1]
         ti_width = min(metrics.horizontalAdvance(ti) + 12, badges_width // 2)
         for value, x, available, (foreground, background), border in (
             (ti, left, ti_width, ti_colors, None),
@@ -116,6 +140,35 @@ class BugzillaCard(ProjectCardDelegate):
             painter.setPen(QColor(foreground))
             painter.drawText(rect, Qt.AlignCenter, metrics.elidedText(value, Qt.ElideRight, max(0, span - 10)))
         painter.restore()
+
+
+class BugzillaGroups(QTreeWidget):
+    card_requested = pyqtSignal(str)
+    comment_requested = pyqtSignal(str)
+
+    def __init__(self):
+        super().__init__()
+        self.setColumnCount(1)
+        self.setHeaderHidden(True)
+        self.setRootIsDecorated(False)
+        self.setIndentation(0)
+        self.setItemsExpandable(False)
+        self.itemClicked.connect(self.open_item)
+
+    def open_item(self, item):
+        card = item.data(0, Qt.UserRole)
+        if card:
+            self.card_requested.emit(card[0])
+
+    def keyPressEvent(self, event):
+        item = self.currentItem()
+        card = item.data(0, Qt.UserRole) if item else None
+        if card and event.key() in (Qt.Key_Enter, Qt.Key_Return):
+            signal = self.comment_requested if event.modifiers() == Qt.ControlModifier else self.card_requested
+            signal.emit(card[0])
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
 
 class BugzillaPage(QWidget):
@@ -152,7 +205,7 @@ class BugzillaPage(QWidget):
         columns.setContentsMargins(0, 0, 0, 0)
         columns.setSpacing(18)
         self.columns = []
-        for title in ('Не привязаны', 'Привязаны', 'Мои баги'):
+        for title in ('Не привязаны', 'Привязаны'):
             panel, cards = project_card_column(title, BugzillaCard, minimum_width=150, list_type=BugzillaGrid)
             cards.setSpacing(0)
             cards.itemClicked.connect(lambda item: self.open_bug(item.data(Qt.UserRole)[0]))
@@ -161,6 +214,13 @@ class BugzillaPage(QWidget):
             cards.customContextMenuRequested.connect(lambda point, cards=cards: self.bug_menu(cards, point))
             columns.addWidget(panel, 1)
             self.columns.append(cards)
+        panel, self.mine = project_card_column('Мои баги', BugzillaCard, minimum_width=150, list_type=BugzillaGroups)
+        self.mine.setObjectName('BugzillaGroups')
+        self.mine.card_requested.connect(self.open_bug)
+        self.mine.comment_requested.connect(self.comment_bug)
+        self.mine.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.mine.customContextMenuRequested.connect(lambda point: self.bug_menu(self.mine, point))
+        columns.addWidget(panel, 1)
         self.scroll.setWidget(canvas)
         layout.addWidget(self.scroll, 1)
         self.show_cards(())
@@ -171,10 +231,10 @@ class BugzillaPage(QWidget):
         self.progress.setVisible(loading)
 
     def bug_menu(self, cards, point):
-        item = cards.itemAt(point)
-        if item is None:
+        card = cards.indexAt(point).data(Qt.UserRole)
+        if not card:
             return
-        number = item.data(Qt.UserRole)[0]
+        number = card[0]
         menu = QMenu(cards)
         menu.addAction('Открыть карточку', lambda: self.open_bug(number))
         menu.addAction('Открыть в Bugzilla', lambda: self.open_in_browser(number))
@@ -190,9 +250,11 @@ class BugzillaPage(QWidget):
         self.snapshot = snapshot
         self.linked = linked
         self.login = login
-        scroll_positions = [column.verticalScrollBar().value() for column in self.columns]
-        for column in self.columns:
+        views = [*self.columns, self.mine]
+        scroll_positions = [column.verticalScrollBar().value() for column in views]
+        for column in views:
             column.clear()
+        groups = {}
         for bug in snapshot:
             is_linked = str(bug['id']).lstrip('0') in linked
             number = str(bug['id'])
@@ -202,16 +264,35 @@ class BugzillaPage(QWidget):
             lines = [title,
                      field_text(bug['cf_cr_num']),
                      field_text(bug['cf_event_1'])]
-            column = 2 if is_assigned_to(bug, login) else int(is_linked)
-            item = QListWidgetItem(self.columns[column])
-            item.setData(Qt.UserRole, (number, lines, is_linked, assignee_initials(bug)))
+            limit = bug.get('cf_time_limit') or ''
+            card = (number, lines, is_linked, assignee_initials(bug), limit)
             summary = '\n'.join([number, *lines])
-            item.setData(Qt.AccessibleTextRole, summary)
+            if limit:
+                summary += '\nСрок: ' + limit
             assignee = bug.get('assigned_to_name') or bug.get('assigned_to')
             description = f'Исполнитель: {assignee}. ' if assignee else ''
-            item.setToolTip(summary + '\n' + description + 'Нажмите, чтобы открыть карточку. Действия доступны в контекстном меню.')
-            item.setData(Qt.AccessibleDescriptionRole, description + 'Enter — открыть карточку. Действия доступны в контекстном меню.')
-        for column, position in zip(self.columns, scroll_positions):
+            tooltip = summary + '\n' + description + 'Нажмите, чтобы открыть карточку. Действия доступны в контекстном меню.'
+            accessibility = description + 'Enter — открыть карточку. Действия доступны в контекстном меню.'
+            if is_assigned_to(bug, login):
+                groups.setdefault(action_category(bug['cf_event_1']), []).append((card, summary, tooltip, accessibility))
+                continue
+            item = QListWidgetItem(self.columns[int(is_linked)])
+            item.setData(Qt.UserRole, card)
+            item.setData(Qt.AccessibleTextRole, summary)
+            item.setToolTip(tooltip)
+            item.setData(Qt.AccessibleDescriptionRole, accessibility)
+        for category, cards in sorted(groups.items(), key=lambda pair: (pair[0] == 'Без действия', pair[0].casefold())):
+            heading = QTreeWidgetItem(self.mine, [category])
+            heading.setFlags(Qt.ItemIsEnabled)
+            heading.setSizeHint(0, QSize(0, 30))
+            for card, summary, tooltip, accessibility in cards:
+                item = QTreeWidgetItem(heading)
+                item.setData(0, Qt.UserRole, card)
+                item.setData(0, Qt.AccessibleTextRole, summary)
+                item.setToolTip(0, tooltip)
+                item.setData(0, Qt.AccessibleDescriptionRole, accessibility)
+            heading.setExpanded(True)
+        for column, position in zip(views, scroll_positions):
             column.verticalScrollBar().setValue(position)
 
 
@@ -293,7 +374,7 @@ class BugEditDialog(QDialog):
         self.comment.textChanged.connect(self.update_save)
         self.set_pending(True)
 
-    def load(self, bug, choices, editable):
+    def load(self, bug, choices, editable, *, can_comment=False):
         self.original = bug
         self.title.setText(str(bug.get('summary') or ''))
         actions, assignees, warnings = choices
@@ -323,7 +404,7 @@ class BugEditDialog(QDialog):
         self.initial = self.values()
         self.status.setText('\n'.join(warnings) if editable else 'Просмотр')
         self.save_button.setVisible(editable)
-        self.can_comment = editable
+        self.can_comment = can_comment
         self.comment_section.setVisible(self.can_comment)
         self.set_pending(False)
 

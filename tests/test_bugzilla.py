@@ -119,7 +119,8 @@ class BugzillaTest(unittest.TestCase):
         response.status = 200
         response.getheader.return_value = ''
         bug = {'id': 42, 'product': 'Система ПРОЕКТ', 'version': '2.0-218 И-01',
-               'assigned_to': 'ANNA@example.test', 'summary': 'Подходящий', 'cf_event_1': 'Проверить', 'cf_cr_num': 7}
+               'assigned_to': 'ANNA@example.test', 'summary': 'Подходящий', 'cf_event_1': 'Проверить',
+               'cf_cr_num': 7, 'cf_time_limit': '2026-12-28T00:00:00'}
         replies = [
             {'ids': [1, 2]},
             {'products': [{'name': 'Система ПРОЕКТ', 'versions': [{'name': '2.0-218 И-01'}, {'name': '2.0-219'},
@@ -135,7 +136,7 @@ class BugzillaTest(unittest.TestCase):
                                           login='user@example.test', password='sample')
         self.assertEqual(set(cards), {'42', '46'})
         self.assertEqual(cards['42'], {'id': 42, 'summary': 'Подходящий', 'cf_event_1': 'Проверить', 'cf_cr_num': 7,
-                                       'assigned_to': 'ANNA@example.test'})
+                                       'assigned_to': 'ANNA@example.test', 'cf_time_limit': '2026-12-28'})
         calls = []
         for request in connect.return_value.request.call_args_list:
             self.assertEqual(request.args, ('POST', '/bugzilla/xmlrpc.cgi'))
@@ -151,6 +152,7 @@ class BugzillaTest(unittest.TestCase):
             self.assertIn('cf_cr_num', params['include_fields'])
             self.assertIn('status', params['include_fields'])
             self.assertIn('assigned_to.real_name', params['include_fields'])
+            self.assertIn('cf_time_limit', params['include_fields'])
             versions.append(params['version'])
         self.assertEqual(versions, ['2.0-218 И-01', '2.0-218 И-02'])
         self.assertEqual(connect.return_value.connect.call_count, len(replies))

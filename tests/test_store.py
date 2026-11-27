@@ -76,8 +76,11 @@ class StoreTest(unittest.TestCase):
                                                    'cf_cr_num': None, 'assigned_to': 'private'}})
         self.assertEqual(member.board_snapshot(board, {}, 'bugs')[3], snapshot)
         self.s.require_bugzilla_comment(board, config, '42')
+        member.require_bugzilla_comment(board, config, '42')
         with self.assertRaises(AccessDenied):
-            member.require_bugzilla_comment(board, config, '42')
+            member.require_bugzilla_card(board, config, '42', edit=True)
+        with self.assertRaises(AccessDenied):
+            outsider.require_bugzilla_comment(board, config, '42')
         self.s.set_role(member.profile()['id'], 'manager')
         member.require_bugzilla_comment(board, config, '42')
         with self.assertRaises(AccessDenied):

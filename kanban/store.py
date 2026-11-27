@@ -485,7 +485,7 @@ class Store:
             return self.bugzilla_cards_in(c, board_id, self.bugzilla_settings_in(c))
 
     def require_bugzilla_comment(self, board_id, config, number):
-        self.require_bugzilla_card(board_id, config, number, edit=True)
+        self.require_bugzilla_card(board_id, config, number)
 
     def require_bugzilla_card(self, board_id, config, number, *, edit=False):
         with self.connection() as c:

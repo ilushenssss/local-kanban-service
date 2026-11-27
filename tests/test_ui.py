@@ -1161,9 +1161,9 @@ class UITest(unittest.TestCase):
         refresh.assert_called_once_with(url, 'Разработка', 'Версия 1', ['anna'],
                                         login='colleague@example.test', password='пример-пароля')
         self.assertEqual(reopened.bugzilla_page.snapshot, tuple(updated.values()))
-        self.assertEqual(reopened.bugzilla_page.columns[2].count(), 0)
+        self.assertEqual(reopened.bugzilla_page.mine.topLevelItemCount(), 0)
         from PyQt5.QtGui import QDesktopServices
-        bug = dict(updated['42'], assigned_to='anna@example.test', status='Открыто')
+        bug = dict(updated['42'], assigned_to='anna@example.test', status='Открыто', cf_time_limit='2027-01-03')
         edited = {'cf_event_1': 'Выпуск ТИ', 'deadline': '2026-12-31',
                   'cf_cr_num': 'ТИ-123', 'assigned_to': 'COLLEAGUE@example.test'}
         choices = (['Событие', 'Выпуск ТИ'], {'COLLEAGUE@example.test': 'Борис Петров'}, [])
@@ -1208,10 +1208,12 @@ class UITest(unittest.TestCase):
         save.assert_called_once_with(url, '42', edited, login='colleague@example.test', password='пример-пароля')
         shared = self.store.bugzilla_board_snapshot(board)['cards']['42']
         self.assertEqual((shared['cf_event_1'], shared['cf_cr_num']), ('Выпуск ТИ', 'ТИ-123'))
-        mine = reopened.bugzilla_page.columns[2].item(0)
-        self.assertEqual(mine.data(Qt.UserRole)[0::2], ('42', True))
-        self.assertEqual(mine.data(Qt.UserRole)[3], 'БП')
-        self.assertIn('Борис Петров', mine.toolTip())
+        group = reopened.bugzilla_page.mine.topLevelItem(0)
+        self.assertEqual(group.text(0), 'Выпуск ТИ')
+        mine = group.child(0)
+        data = mine.data(0, Qt.UserRole)
+        self.assertEqual((data[0], *data[2:]), ('42', True, 'БП', '2027-01-03'))
+        self.assertIn('Борис Петров', mine.toolTip(0))
         self.assertFalse(reopened.bugzilla_page.columns[1].count())
         self.assertEqual(send.call_count, 2)
         send.assert_called_with(url, '42', 'Описание исправления',
@@ -1219,6 +1221,27 @@ class UITest(unittest.TestCase):
         with patch.object(reopened, 'open_bugzilla_card') as open_card:
             reopened.comment_bugzilla_bug('42')
         open_card.assert_called_once_with('42', focus_comment=True)
+
+        self.store.set_role(reopened.store.profile()['id'], 'employee')
+        reopened.refresh()
+        wait_for(lambda: not reopened.loading and not reopened.can_edit_bug())
+
+        def comment_as_employee(dialog):
+            wait_for(lambda: not dialog.pending)
+            self.assertTrue(dialog.can_comment)
+            self.assertFalse(dialog.ti.isEnabled())
+            self.assertTrue(dialog.save_button.isHidden())
+            dialog.comment.setPlainText('Комментарий сотрудника')
+            dialog.send_button.click()
+            wait_for(lambda: dialog.comment_status.text() == 'Комментарий отправлен.')
+            return QDialog.Rejected
+
+        with patch.object(QDialog, 'exec_', new=comment_as_employee), \
+             patch('kanban.bugzilla.read_bug_details', return_value=dict(bug, **edited)), \
+             patch('kanban.bugzilla.add_bug_comment', return_value=8) as send:
+            reopened.open_bugzilla_card('42')
+        send.assert_called_once_with(url, '42', 'Комментарий сотрудника',
+                                     login='colleague@example.test', password='пример-пароля')
 
     def test_remembered_integration_passwords_survive_restart_and_can_be_forgotten(self):
         from PyQt5.QtWidgets import QCheckBox

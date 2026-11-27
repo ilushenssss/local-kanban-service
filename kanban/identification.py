@@ -165,8 +165,9 @@ def project_card_column(title, delegate, minimum_width=240, list_type=QListWidge
     cards = list_type()
     cards.setObjectName('Cards')
     cards.setAccessibleName(title)
-    cards.setResizeMode(QListView.Adjust)
-    cards.setSpacing(10)
+    if isinstance(cards, QListView):
+        cards.setResizeMode(QListView.Adjust)
+        cards.setSpacing(10)
     cards.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
     cards.setItemDelegate(delegate(cards))
     stack.addWidget(cards, 1)

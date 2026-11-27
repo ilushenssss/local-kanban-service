@@ -1912,7 +1912,10 @@ class MainWindow(QMainWindow, Async):
 
     def can_comment_bug(self):
         return (self.store is not None and not self.access_restricted and self.board_id is not None
-                and self.board_id == self.project_sections_board and getattr(self, 'permissions', {}).get('create', False))
+                and self.board_id == self.project_sections_board)
+
+    def can_edit_bug(self):
+        return self.can_comment_bug() and getattr(self, 'permissions', {}).get('create', False)
 
     def open_bugzilla_page(self, number):
         if self.access_restricted:
@@ -1942,7 +1945,7 @@ class MainWindow(QMainWindow, Async):
         if credentials is None or self.access_restricted or self.store is not store:
             return
         _, password, remember = credentials
-        editable = self.can_comment_bug()
+        editable = self.can_edit_bug()
         base = self.redmine_config_base()
 
         def same_session():
@@ -1973,7 +1976,7 @@ class MainWindow(QMainWindow, Async):
 
         def save(dialog):
             fields = dialog.changes()
-            if not fields or dialog.pending or not same_session() or not self.can_comment_bug():
+            if not fields or dialog.pending or not same_session() or not self.can_edit_bug():
                 return
             def comparable(bug, field):
                 value = bug.get(field)
@@ -2081,7 +2084,9 @@ class MainWindow(QMainWindow, Async):
                 return
             self.bugzilla_session = (*scope, password)
             bug, choices = result
-            dialog.load(bug, choices, editable and self.can_comment_bug() and not bugzilla.is_closed(bug))
+            open_bug = not bugzilla.is_closed(bug)
+            dialog.load(bug, choices, editable and self.can_edit_bug() and open_bug,
+                        can_comment=self.can_comment_bug() and open_bug)
             if remember:
                 warning = self.remember_password('bugzilla', epoch, *scope, password)
                 if warning:

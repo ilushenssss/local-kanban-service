@@ -125,6 +125,8 @@ def card_fields(bug):
         card['assigned_to'] = assignee.strip()
     if isinstance(name, str) and name.strip():
         card['assigned_to_name'] = name.strip()
+    if bug.get('cf_time_limit'):
+        card['cf_time_limit'] = deadline_value(bug['cf_time_limit'])
     return card
 
 
@@ -365,7 +367,7 @@ def search_board_bugs(url, project, board, employees, *, login, password):
                 continue
             params = {'product': item['name'], 'version': version, 'limit': 0,
                       'include_fields': ['id', 'product', 'version', 'assigned_to', 'assigned_to.real_name', 'status',
-                                         'summary', 'cf_event_1', 'cf_cr_num']}
+                                         'summary', 'cf_event_1', 'cf_cr_num', 'cf_time_limit']}
             result = xml_request(parts, 'Bug.search', params, login, password, response_timeout=BULK_RESPONSE_TIMEOUT)
             for bug in response_list(result, 'bugs'):
                 if (not is_closed(bug) and project_key in str(bug.get('product') or '').casefold()
@@ -383,7 +385,7 @@ def refresh_board_bugs(url, numbers, employees, *, login, password, keep_unavail
         batch = numbers[offset:offset + 100]
         params = {'ids': batch, 'permissive': True,
                   'include_fields': ['id', 'assigned_to', 'assigned_to.real_name', 'status',
-                                     'summary', 'cf_event_1', 'cf_cr_num']}
+                                     'summary', 'cf_event_1', 'cf_cr_num', 'cf_time_limit']}
         response = xml_request(parts, 'Bug.get', params, login, password)
         for fault in response.get('faults', []):
             code = fault.get('faultCode')
