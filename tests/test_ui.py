@@ -1372,7 +1372,10 @@ class UITest(unittest.TestCase):
         window.redmine_url = 'https://redmine.example.test'
         client = window.redmine_client = Mock()
         client.user.get.return_value.id = 9
-        statuses = [{'id': 1, 'name': 'Кодирование'}, {'id': 2, 'name': 'Выполнено'}]
+        base = Path(self.tmp.name)
+        (base / 'kris_statuses.json').write_text('{"вЫполн": true}', encoding='utf-8')
+        statuses = [{'id': 1, 'name': 'Кодирование'}, {'id': 2, 'name': 'Выполнено'},
+                    {'id': 3, 'name': 'Чужой статус'}]
         client.issue_status.all.return_value = [SimpleNamespace(raw=lambda data=status: data) for status in statuses]
         child = {'id': 101, 'parent': {'id': 72}, 'status': statuses[0],
                  'subject': 'Приложение 1', 'assigned_to': {'id': 9, 'name': 'Петров Иван'}, 'due_date': None}
@@ -1405,7 +1408,8 @@ class UITest(unittest.TestCase):
             self.assertFalse(combo.view().isVisible())
             QTest.keyClick(combo, Qt.Key_Space)
             wait_for(combo.view().isVisible)
-            self.assertTrue(any('Показан справочник статусов' in label.text() for label in dialog.findChildren(QLabel)))
+            self.assertTrue(any('отфильтрованы по kris_statuses.json' in label.text()
+                                for label in dialog.findChildren(QLabel)))
             QTest.keyClick(combo.view(), Qt.Key_Escape)
             wait_for(lambda: not combo.view().isVisible())
             client.issue_status.all.assert_called_once()
@@ -1416,7 +1420,7 @@ class UITest(unittest.TestCase):
             dialog.hide()
             return QDialog.Accepted
 
-        with patch.object(QDialog, 'exec_', new=dialog_exec):
+        with patch.object(window, 'redmine_config_base', return_value=base), patch.object(QDialog, 'exec_', new=dialog_exec):
             window.open_task(window.card_lists[0].item(0).data(Qt.UserRole))
             wait_for(lambda: observed and not window.loading and not window.mutating)
         self.assertEqual(observed, [True])

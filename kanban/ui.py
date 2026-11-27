@@ -3332,10 +3332,11 @@ class MainWindow(QMainWindow, Async):
                         return
                     expected, options, from_catalog = result
                     if not options:
-                        finished(None, 'Для этой подзадачи нет доступных переходов.')
+                        finished(None, 'Нет статусов, совпадающих с kris_statuses.json.' if from_catalog
+                                 else 'Для этой подзадачи нет доступных переходов.')
                         return
                     combo.transition_context = (url, expected)
-                    hint = ('Показан справочник статусов. Redmine проверит переход при сохранении.'
+                    hint = ('Статусы отфильтрованы по kris_statuses.json. Redmine проверит переход при сохранении.'
                             if from_catalog else 'Доступные статусы загружены. Выберите статус в списке.')
                     combo.set_transitions(options)
                     finished(None, hint)
@@ -3440,10 +3441,12 @@ class MainWindow(QMainWindow, Async):
     def load_kris_status_options(self, dialog, task, parent_id, subtask_id, completed):
         board_id, ti_id = task['board_id'], task['issue_id']
         store = self.store
+        base = self.redmine_config_base()
 
         def read_options(client, rid, statuses):
             role, _ = store.kris_status_context(board_id, ti_id, subtask_id, parent_id)
-            return redmine.kris_status_options(client, subtask_id, parent_id, role), []
+            keywords = installation.load_kris_status_keywords(base)
+            return redmine.kris_status_options(client, subtask_id, parent_id, role, keywords=keywords), []
 
         return self.redmine_operation(read_options, 'Доступные статусы КРИС_ТИ загружены', completed=completed,
                                       busy_message='Загрузка доступных статусов…', owner=dialog, refresh_board=False)
@@ -3451,10 +3454,13 @@ class MainWindow(QMainWindow, Async):
     def save_kris_status(self, dialog, task, parent_id, subtask_id, expected, status_id, completed):
         board_id, ti_id = task['board_id'], task['issue_id']
         store = self.store
+        base = self.redmine_config_base()
 
         def apply(client, rid, statuses):
             role, revision = store.kris_status_context(board_id, ti_id, subtask_id, parent_id)
-            redmine.change_kris_status(client, ti_id, subtask_id, parent_id, role, expected, status_id)
+            keywords = installation.load_kris_status_keywords(base)
+            redmine.change_kris_status(client, ti_id, subtask_id, parent_id, role, expected, status_id,
+                                       keywords=keywords)
             try:
                 progress = redmine.read_kris_children(client, parent_id, {})
                 if store.save_kris_progress(board_id, ti_id, revision, progress, rid):

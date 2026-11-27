@@ -419,7 +419,7 @@ def read_kris_children(client, parent_id, assignee_cache, *, parent=None):
     return progress
 
 
-def kris_status_options(client, issue_id, parent_id, role):
+def kris_status_options(client, issue_id, parent_id, role, *, keywords=None):
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
     try:
@@ -436,8 +436,13 @@ def kris_status_options(client, issue_id, parent_id, role):
         statuses = data.get('allowed_statuses')
         from_catalog = statuses is None
         if from_catalog:
+            if keywords is None:
+                raise RedmineError('Redmine не вернул разрешённые переходы. Добавьте kris_statuses.json рядом с main.pyw.')
             statuses = (status.raw() for status in client.issue_status.all())
-        options = {status['id']: status['name'] for status in statuses if status['id'] != current_id}
+        fragments = tuple(status_key(keyword) for keyword in keywords or ())
+        options = {status['id']: status['name'] for status in statuses
+                   if status['id'] != current_id and (
+                       not fragments or any(fragment in status_key(status['name']) for fragment in fragments))}
         return current_id, options, from_catalog
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
@@ -449,10 +454,10 @@ def kris_status_options(client, issue_id, parent_id, role):
         raise RedmineError('Не удалось получить доступные статусы задачи КРИС_ТИ.') from None
 
 
-def change_kris_status(client, ti_id, issue_id, parent_id, role, expected_status, status_id):
+def change_kris_status(client, ti_id, issue_id, parent_id, role, expected_status, status_id, *, keywords=None):
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError, ValidationError
 
-    current, options, from_catalog = kris_status_options(client, issue_id, parent_id, role)
+    current, options, from_catalog = kris_status_options(client, issue_id, parent_id, role, keywords=keywords)
     if current != expected_status or status_id not in options:
         raise RedmineError('Статус или допустимые переходы изменились. Выберите статус заново.')
     try:

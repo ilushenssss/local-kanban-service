@@ -44,6 +44,18 @@ def load_redmine_employees(base):
     return employees
 
 
+def load_kris_status_keywords(base):
+    try:
+        entries = json.loads((base / 'kris_statuses.json').read_text(encoding='utf-8-sig'))
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError):
+        raise ValueError('Не удалось прочитать kris_statuses.json. Проверьте файл и его формат.') from None
+    if not isinstance(entries, dict) or not entries or any(not keyword.strip() for keyword in entries):
+        raise ValueError('В kris_statuses.json нужен непустой словарь с фрагментами названий в ключах.')
+    return tuple(entries)
+
+
 def save_folder(base, folder):
     path = None
     try:
