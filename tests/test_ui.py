@@ -1373,7 +1373,8 @@ class UITest(unittest.TestCase):
         client = window.redmine_client = Mock()
         client.user.get.return_value.id = 9
         statuses = [{'id': 1, 'name': 'Кодирование'}, {'id': 2, 'name': 'Выполнено'}]
-        child = {'id': 101, 'parent': {'id': 72}, 'status': statuses[0], 'allowed_statuses': statuses,
+        client.issue_status.all.return_value = [SimpleNamespace(raw=lambda data=status: data) for status in statuses]
+        child = {'id': 101, 'parent': {'id': 72}, 'status': statuses[0],
                  'subject': 'Приложение 1', 'assigned_to': {'id': 9, 'name': 'Петров Иван'}, 'due_date': None}
         other = dict(child, id=102, subject='Приложение 2', assigned_to={'id': 10, 'name': 'Сидоров Иван'})
         parent = {'children': [child, other], 'custom_fields': [{'name': 'Расположение ТИ', 'value': '#42'}]}
@@ -1400,6 +1401,7 @@ class UITest(unittest.TestCase):
             combo.setFocus()
             QTest.keyClick(combo, Qt.Key_Space)
             wait_for(combo.view().isVisible)
+            self.assertTrue(any('Показан справочник статусов' in label.text() for label in dialog.findChildren(QLabel)))
             QTest.keyClick(combo.view(), Qt.Key_Escape)
             wait_for(lambda: not combo.view().isVisible() and combo.count() == 1)
             client.issue.update.assert_not_called()

@@ -3323,12 +3323,14 @@ class MainWindow(QMainWindow, Async):
                     if error:
                         finished(None, error)
                         return
-                    expected, options = result
+                    expected, options, from_catalog = result
                     if not options:
                         finished(None, 'Для этой подзадачи нет доступных переходов.')
                         return
                     combo.transition_context = (url, expected)
-                    finished(None, '')
+                    hint = ('Показан справочник статусов. Redmine проверит переход при сохранении.'
+                            if from_catalog else '')
+                    finished(None, hint)
                     combo.show_transitions(options)
 
                 if not self.load_kris_status_options(dialog, current, parent_id, subtask['id'], loaded):

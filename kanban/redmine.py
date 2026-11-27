@@ -431,11 +431,14 @@ def kris_status_options(client, issue_id, parent_id, role):
             if not assignee_id or assignee_id != client.user.get('current').id:
                 raise RedmineError('Статус может менять администратор, менеджер или назначенный исполнитель.')
         current_id = (data.get('status') or {}).get('id')
-        if not current_id or 'allowed_statuses' not in data:
-            raise RedmineError('Redmine не вернул список разрешённых переходов для этой задачи КРИС_ТИ.')
-        options = {status['id']: status['name'] for status in data['allowed_statuses'] or []
-                   if status['id'] != current_id}
-        return current_id, options
+        if not current_id:
+            raise RedmineError('Redmine не вернул ID текущего статуса подзадачи КРИС_ТИ.')
+        statuses = data.get('allowed_statuses')
+        from_catalog = statuses is None
+        if from_catalog:
+            statuses = (status.raw() for status in client.issue_status.all())
+        options = {status['id']: status['name'] for status in statuses if status['id'] != current_id}
+        return current_id, options, from_catalog
     except AuthError:
         raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
     except (ForbiddenError, ResourceNotFoundError):
@@ -449,7 +452,7 @@ def kris_status_options(client, issue_id, parent_id, role):
 def change_kris_status(client, ti_id, issue_id, parent_id, role, expected_status, status_id):
     from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError, ValidationError
 
-    current, options = kris_status_options(client, issue_id, parent_id, role)
+    current, options, from_catalog = kris_status_options(client, issue_id, parent_id, role)
     if current != expected_status or status_id not in options:
         raise RedmineError('Статус или допустимые переходы изменились. Выберите статус заново.')
     try:
@@ -466,6 +469,18 @@ def change_kris_status(client, ti_id, issue_id, parent_id, role, expected_status
         raise
     except Exception:
         raise RedmineError('Redmine не подтвердил смену статуса. Проверьте текущий статус перед повтором.') from None
+    if from_catalog:
+        try:
+            actual = client.issue.get(issue_id).raw().get('status') or {}
+        except AuthError:
+            raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново и проверьте статус.') from None
+        except Exception:
+            raise RedmineError('Не удалось проверить сохранённый статус. Обновите карточку ТИ перед повтором.') from None
+        if not actual.get('id'):
+            raise RedmineError('Redmine не вернул сохранённый статус. Обновите карточку ТИ перед повтором.')
+        if actual['id'] != status_id:
+            raise RedmineError('Redmine не применил выбранный статус. Текущий статус: {}.'.format(
+                actual.get('name') or actual['id']))
 
 
 def read_kris_progress(client, issue_ids, project_id, *, cache=None, known_parents=None):

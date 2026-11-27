@@ -269,7 +269,7 @@ class RedmineTest(unittest.TestCase):
         parent = {'custom_fields': [{'name': 'Расположение ТИ', 'value': 'ТИ #42'}]}
         client.issue.get.side_effect = lambda issue_id, **_: Mock(raw=Mock(return_value={101: issue, 72: parent}[issue_id]))
         client.user.get.return_value.id = 9
-        self.assertEqual(redmine.kris_status_options(client, 101, 72, 'employee'), (1, {2: 'Выполнено'}))
+        self.assertEqual(redmine.kris_status_options(client, 101, 72, 'employee'), (1, {2: 'Выполнено'}, False))
         issue['assigned_to']['id'] = 10
         with self.assertRaisesRegex(redmine.RedmineError, 'назначенный исполнитель'):
             redmine.change_kris_status(client, 42, 101, 72, 'employee', 1, 2)
@@ -285,6 +285,33 @@ class RedmineTest(unittest.TestCase):
                 client.issue.update.reset_mock()
                 redmine.change_kris_status(client, 42, 101, 72, role, 1, 2)
                 client.issue.update.assert_called_once_with(101, status_id=2)
+
+    @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
+    def test_kris_status_uses_catalog_and_verifies_legacy_server_writes(self):
+        client = Mock()
+        statuses = [{'id': 1, 'name': 'Кодирование'}, {'id': 2, 'name': 'Выполнено'}]
+        issue = {'parent': {'id': 72}, 'status': statuses[0], 'allowed_statuses': []}
+        parent = {'custom_fields': [{'name': 'Расположение ТИ', 'value': '#42'}]}
+        client.issue.get.side_effect = lambda issue_id, **_: Mock(raw=Mock(return_value={101: issue, 72: parent}[issue_id]))
+        client.issue_status.all.return_value = [Mock(raw=Mock(return_value=status)) for status in statuses]
+        self.assertEqual(redmine.kris_status_options(client, 101, 72, 'manager'), (1, {}, False))
+        client.issue_status.all.assert_not_called()
+        del issue['allowed_statuses']
+        self.assertEqual(redmine.kris_status_options(client, 101, 72, 'manager'), (1, {2: 'Выполнено'}, True))
+        issue['allowed_statuses'] = None
+        self.assertEqual(redmine.kris_status_options(client, 101, 72, 'manager'), (1, {2: 'Выполнено'}, True))
+        with self.assertRaisesRegex(redmine.RedmineError, 'не применил выбранный статус'):
+            redmine.change_kris_status(client, 42, 101, 72, 'manager', 1, 2)
+        client.issue.update.assert_called_once_with(101, status_id=2)
+
+        def update(issue_id, status_id):
+            issue['status'] = statuses[status_id - 1]
+            return True
+
+        client.issue.update.side_effect = update
+        redmine.change_kris_status(client, 42, 101, 72, 'manager', 1, 2)
+        client.issue.get.assert_called_with(101)
+        self.assertEqual(issue['status']['id'], 2)
 
     def test_kris_coding_lines_group_equal_dates_and_list_different_dates(self):
         coding = [{'subject': 'Сервис', 'due_date': '2027-02-03'},
