@@ -21,6 +21,12 @@ class BugzillaAuthError(BugzillaError):
     pass
 
 
+class BugzillaFault(BugzillaError):
+    def __init__(self, code):
+        self.code = code
+        super().__init__(f'Bugzilla отклонила запрос XML-RPC (код {code}).')
+
+
 CONNECT_TIMEOUT = 10
 BULK_RESPONSE_TIMEOUT = 60
 
@@ -159,7 +165,7 @@ def read_xml_response(raw, number):
             raise BugzillaAuthError('Bugzilla не приняла логин или пароль. Проверьте учётные данные и доступ к API.') from None
         if number is not None and error.faultCode in (101, 102):
             raise BugzillaError(f'Баг #{number} не найден или недоступен в Bugzilla.') from None
-        raise BugzillaError('Bugzilla отклонила запрос XML-RPC.') from None
+        raise BugzillaFault(error.faultCode) from None
     except (client.ResponseError, ExpatError, ValueError, TypeError, LookupError):
         raise BugzillaError('Bugzilla вернула некорректный ответ XML-RPC. Проверьте базовый адрес сервера.') from None
     if not isinstance(payload, dict):
@@ -297,13 +303,43 @@ def update_bug_fields(url, bug_id, fields, *, login, password):
         raise BugzillaError('Выберите поля для изменения.')
     if fields.get('deadline'):
         try:
-            date.fromisoformat(fields['deadline'])
+            fields = dict(fields, deadline=date.fromisoformat(fields['deadline']).isoformat())
         except (TypeError, ValueError):
             raise BugzillaError('Укажите срок в формате ГГГГ-ММ-ДД.') from None
-    result = xml_request(parse_url(url), 'Bug.update', dict(fields, ids=[int(number)]),
-                         login, password, number)
-    if not any(str(bug.get('id')) == number for bug in response_list(result, 'bugs')):
-        raise BugzillaError('Bugzilla не подтвердила сохранение бага.')
+    try:
+        result = xml_request(parse_url(url), 'Bug.update', dict(fields, ids=[int(number)]),
+                             login, password, number)
+    except BugzillaFault as error:
+        if fields.keys() == {'deadline'}:
+            reason = {
+                50: 'Поле срока нельзя оставить пустым.',
+                56: 'Сервер отклонил дату в поле срока.',
+                104: 'Сервер не принимает поле deadline.',
+                108: 'Сервер не распознал поле deadline.',
+                109: 'У этой учётной записи нет права редактировать баг.',
+                115: 'У этой учётной записи нет права менять срок. Проверьте её доступ к учёту времени в Bugzilla.',
+            }.get(error.code)
+            if reason:
+                raise BugzillaError(f'{reason} Код Bugzilla {error.code}.') from None
+        raise
+    for bug in response_list(result, 'bugs'):
+        if str(bug.get('id')) == number:
+            return bug
+    raise BugzillaError('Bugzilla не подтвердила сохранение бага.')
+
+
+def deadline_value(value):
+    return str(value)[:10] if value else ''
+
+
+def require_deadline_confirmation(expected, response, current):
+    if 'deadline' in current:
+        if deadline_value(current['deadline']) == expected:
+            return
+        raise BugzillaError('Bugzilla вернула другой срок после сохранения. Проверьте поле «Срок» на странице бага.')
+    change = (response.get('changes') or {}).get('deadline') or {}
+    if 'added' not in change or deadline_value(change['added']) != expected:
+        raise BugzillaError('Bugzilla не подтвердила новый срок. Проверьте дату на странице бага перед повтором.')
 
 
 def search_board_bugs(url, project, board, employees, *, login, password):

@@ -1163,14 +1163,14 @@ class UITest(unittest.TestCase):
         self.assertEqual(reopened.bugzilla_page.snapshot, tuple(updated.values()))
         self.assertEqual(reopened.bugzilla_page.columns[2].count(), 0)
         from PyQt5.QtGui import QDesktopServices
-        bug = dict(updated['42'], deadline='2026-12-20', assigned_to='anna@example.test', status='Открыто')
+        bug = dict(updated['42'], assigned_to='anna@example.test', status='Открыто')
         edited = {'cf_event_1': 'Выпуск ТИ', 'deadline': '2026-12-31',
                   'cf_cr_num': 'ТИ-123', 'assigned_to': 'COLLEAGUE@example.test'}
         choices = (['Событие', 'Выпуск ТИ'], {'COLLEAGUE@example.test': 'Борис Петров'}, [])
 
         def edit(dialog):
             wait_for(lambda: not dialog.pending)
-            self.assertEqual(dialog.deadline.text(), '2026-12-20')
+            self.assertEqual(dialog.deadline.text(), '')
             self.assertFalse(dialog.save_button.isEnabled())
             self.assertFalse(dialog.comment_section.isHidden())
             self.assertFalse(dialog.send_button.isEnabled())
@@ -1199,7 +1199,7 @@ class UITest(unittest.TestCase):
         with patch.object(QDialog, 'exec_', new=edit), \
              patch.object(QDesktopServices, 'openUrl', return_value=True) as open_url, \
              patch('kanban.bugzilla.read_bug_details', side_effect=[
-                 bug, bug, dict(bug, **edited, assigned_to_detail={'real_name': 'Борис Петров'})]), \
+                 bug, dict(bug, deadline=''), dict(bug, **edited, assigned_to_detail={'real_name': 'Борис Петров'})]), \
              patch('kanban.bugzilla.bug_edit_choices', return_value=choices), \
              patch('kanban.bugzilla.add_bug_comment', side_effect=[OSError('Таймаут'), 7]) as send, \
              patch('kanban.bugzilla.update_bug_fields') as save:

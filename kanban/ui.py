@@ -1975,7 +1975,11 @@ class MainWindow(QMainWindow, Async):
             fields = dialog.changes()
             if not fields or dialog.pending or not same_session() or not self.can_comment_bug():
                 return
-            original = {field: dialog.original.get(field) for field in fields}
+            def comparable(bug, field):
+                value = bug.get(field)
+                return bugzilla.deadline_value(value) if field == 'deadline' else value
+
+            original = {field: comparable(dialog.original, field) for field in fields}
             dialog.set_pending(True)
             dialog.status.setText('Сохранение в Bugzilla…')
 
@@ -1984,12 +1988,18 @@ class MainWindow(QMainWindow, Async):
                 current = read()
                 if bugzilla.is_closed(current):
                     raise bugzilla.BugzillaError('Баг закрыт в Bugzilla.')
-                if any(current.get(field) != value for field, value in original.items()):
+                if any(comparable(current, field) != value for field, value in original.items()):
                     raise bugzilla.BugzillaError('Поля бага изменились в Bugzilla. Откройте карточку заново.')
-                bugzilla.update_bug_fields(config['url'], number, fields, login=login, password=password)
-                updated = dict(current, **fields)
+                response = bugzilla.update_bug_fields(config['url'], number, fields, login=login, password=password)
                 try:
                     updated = read()
+                except (OSError, ValueError):
+                    if 'deadline' in fields:
+                        bugzilla.require_deadline_confirmation(fields['deadline'], response, {})
+                    return dict(current, **fields), None
+                if 'deadline' in fields:
+                    bugzilla.require_deadline_confirmation(fields['deadline'], response, updated)
+                try:
                     store.save_bugzilla_cards(board_id, config, {number: updated}, revision=revision)
                     return updated, store.bugzilla_board_snapshot(board_id)
                 except (OSError, ValueError, Busy, sqlite3.Error):

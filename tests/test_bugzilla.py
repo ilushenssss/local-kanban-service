@@ -11,6 +11,28 @@ from kanban import bugzilla
 
 
 class BugzillaTest(unittest.TestCase):
+    @patch('kanban.bugzilla.request')
+    def test_deadline_update_reports_bugzilla_permission_error(self, request):
+        request.return_value = client.dumps(client.Fault(115, 'private server message')).encode()
+        with self.assertRaisesRegex(bugzilla.BugzillaError, 'учёту времени.*115') as error:
+            bugzilla.update_bug_fields('https://bugs.test', 42, {'deadline': '2026-12-30'},
+                                       login='user', password='secret')
+        self.assertNotIn('private server message', str(error.exception))
+        params, method = client.loads(request.call_args.args[4])
+        self.assertEqual(method, 'Bug.update')
+        self.assertEqual(params[0]['deadline'], '2026-12-30')
+
+    def test_deadline_requires_confirmation_from_upstream(self):
+        self.assertEqual(bugzilla.deadline_value(None), bugzilla.deadline_value(''))
+        date = '2026-12-30'
+        response = {'changes': {'deadline': {'added': date}}}
+        bugzilla.require_deadline_confirmation(date, response, {})
+        bugzilla.require_deadline_confirmation(date, {}, {'deadline': date})
+        with self.assertRaisesRegex(bugzilla.BugzillaError, 'не подтвердила'):
+            bugzilla.require_deadline_confirmation(date, {}, {})
+        with self.assertRaisesRegex(bugzilla.BugzillaError, 'вернула другой срок'):
+            bugzilla.require_deadline_confirmation(date, response, {'deadline': ''})
+
     @patch('kanban.bugzilla.xml_request')
     def test_bug_edit_fields_are_scoped_and_choices_follow_bugzilla(self, request):
         url = 'https://bugs.example.test/bugzilla'

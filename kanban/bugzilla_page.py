@@ -5,7 +5,7 @@ from PyQt5.QtGui import QColor, QFontMetrics, QTextLayout, QTextOption
 from PyQt5.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton,
                              QScrollArea, QVBoxLayout, QWidget)
-from .bugzilla import assignee_initials, is_assigned_to, is_closed, xml_value_to_json
+from .bugzilla import assignee_initials, deadline_value, is_assigned_to, is_closed, xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
 from .theme import STICKERS, TOKENS, symbol_icon
 from .widgets import DateField
@@ -308,7 +308,7 @@ class BugEditDialog(QDialog):
             for label, value in options:
                 if value != current:
                     widget.addItem(label, value)
-        self.deadline.set_value(str(bug['deadline'])[:10] if bug.get('deadline') else None)
+        self.deadline.set_value(deadline_value(bug.get('deadline')))
         ti = bug.get('cf_cr_num')
         self.ti.setText(field_text(ti) if ti is not None else '')
         if editable:
