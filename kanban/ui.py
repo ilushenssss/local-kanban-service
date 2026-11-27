@@ -65,26 +65,33 @@ class KrisStatusCombo(QComboBox):
     options_requested = pyqtSignal()
 
     def showPopup(self):
-        self.options_requested.emit()
+        if self.count() > 1:
+            super().showPopup()
+        else:
+            self.options_requested.emit()
 
-    def show_transitions(self, options):
+    def set_transitions(self, options):
         for status_id, name in options.items():
             self.addItem(name, status_id)
+
+    def open_transitions(self):
+        if not self.isVisible() or not self.isEnabled() or self.count() == 1:
+            return
         self.setFocus()
         super().showPopup()
 
-    def hidePopup(self):
-        super().hidePopup()
-        QTimer.singleShot(0, self.clear_transitions)
-
     def clear_transitions(self):
+        self.setCurrentIndex(0)
         while self.count() > 1:
             self.removeItem(self.count() - 1)
 
     def keyPressEvent(self, event):
-        if event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter):
+        if event.key() in (Qt.Key_Up, Qt.Key_Down, Qt.Key_Home, Qt.Key_End, Qt.Key_PageUp, Qt.Key_PageDown,
+                          Qt.Key_Space, Qt.Key_Return, Qt.Key_Enter, Qt.Key_F4):
             self.showPopup()
             event.accept()
+        elif event.text() and event.text().isprintable():
+            event.ignore()
         else:
             super().keyPressEvent(event)
 
@@ -3329,9 +3336,10 @@ class MainWindow(QMainWindow, Async):
                         return
                     combo.transition_context = (url, expected)
                     hint = ('Показан справочник статусов. Redmine проверит переход при сохранении.'
-                            if from_catalog else '')
+                            if from_catalog else 'Доступные статусы загружены. Выберите статус в списке.')
+                    combo.set_transitions(options)
                     finished(None, hint)
-                    combo.show_transitions(options)
+                    QTimer.singleShot(0, combo.open_transitions)
 
                 if not self.load_kris_status_options(dialog, current, parent_id, subtask['id'], loaded):
                     finished(None, self.status.text())
@@ -3340,7 +3348,7 @@ class MainWindow(QMainWindow, Async):
                 status_id = combo.itemData(index)
                 if status_id is None:
                     return
-                combo.setCurrentIndex(0)
+                combo.clear_transitions()
                 url, expected = combo.transition_context
                 if self.redmine_url != url:
                     finished(None, 'Адрес Redmine изменился. Откройте список статусов заново.')
@@ -3438,7 +3446,7 @@ class MainWindow(QMainWindow, Async):
             return redmine.kris_status_options(client, subtask_id, parent_id, role), []
 
         return self.redmine_operation(read_options, 'Доступные статусы КРИС_ТИ загружены', completed=completed,
-                                      busy_message='Загрузка доступных статусов…', owner=dialog)
+                                      busy_message='Загрузка доступных статусов…', owner=dialog, refresh_board=False)
 
     def save_kris_status(self, dialog, task, parent_id, subtask_id, expected, status_id, completed):
         board_id, ti_id = task['board_id'], task['issue_id']
@@ -3497,7 +3505,8 @@ class MainWindow(QMainWindow, Async):
         self.mutate(lambda rid: self.store.unlink_redmine_issue(board_id, issue_id, task['revision'], rid),
                     'Карточка ТИ убрана с доски')
 
-    def redmine_operation(self, operation, success, *, busy_message='Сохранение…', completed=None, owner=None):
+    def redmine_operation(self, operation, success, *, busy_message='Сохранение…', completed=None, owner=None,
+                          refresh_board=True):
         if completed is not None:
             self.status.clear()
         if self.access_restricted or self.mutating or self.pending_action:
@@ -3590,7 +3599,8 @@ class MainWindow(QMainWindow, Async):
             else:
                 completed(result['redmine_data'], '\n'.join(result['redmine_errors']))
 
-        self.mutate(apply, success, busy_message=busy_message, completed=done if completed is not None else None)
+        self.mutate(apply, success, busy_message=busy_message, completed=done if completed is not None else None,
+                    refresh_board=refresh_board)
         return True
 
     def redmine_project_id(self, project):
@@ -3926,7 +3936,8 @@ class MainWindow(QMainWindow, Async):
             return
         self.open_task({'board_id': self.board_id, 'column_id': self.columns_data[0]['id']})
 
-    def mutate(self, fn, success='Сохранено', retry=False, *, busy_message='Сохранение…', completed=None):
+    def mutate(self, fn, success='Сохранено', retry=False, *, busy_message='Сохранение…', completed=None,
+               refresh_board=True):
         if self.pending_action and not retry:
             self.status.setText('Результат прошлой записи неизвестен. Нажмите «Повторить запись»; новая операция пока недоступна.')
             return
@@ -3934,7 +3945,7 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Дождитесь текущей операции')
             return
         if not retry:
-            self.pending_action = (fn, success, uuid.uuid4().hex, completed)
+            self.pending_action = (fn, success, uuid.uuid4().hex, completed, refresh_board)
         rid = self.pending_action[2]
         self.generation += 1
         self.mutating = True
@@ -3966,28 +3977,32 @@ class MainWindow(QMainWindow, Async):
                     warning = ''
                     if not self.access_restricted:
                         self.redmine_client = result['redmine_client']
-                        if (self.redmine_login or self.store.login) != result['redmine_login']:
+                        login_changed = (self.redmine_login or self.store.login) != result['redmine_login']
+                        if login_changed:
                             self.reset_bugzilla_session()
                         self.redmine_login = result['redmine_login']
-                        self.render_bugzilla_cards()
+                        if login_changed or refresh_board:
+                            self.render_bugzilla_cards()
                         saved = result.get('remember_redmine')
                         if saved and saved[1] == self.redmine_url:
                             warning = self.remember_password('redmine', *saved)
                     success_message = ('\n'.join(result['redmine_errors']) or success) + warning
-                    self.redmine_refresh_message = success_message
+                    if refresh_board:
+                        self.redmine_refresh_message = success_message
                 else:
                     success_message = success
                 self.status.setText(success_message)
-                self.refresh()
-            self.update_board_controls()
             if completed is not None:
                 completed(result, error)
+            if not error and refresh_board:
+                self.refresh()
+            self.update_board_controls()
         self.work(lambda: fn(rid), done)
 
     def retry_mutation(self):
         if self.pending_action:
-            fn, success, _, completed = self.pending_action
-            self.mutate(fn, success, retry=True, completed=completed)
+            fn, success, _, completed, refresh_board = self.pending_action
+            self.mutate(fn, success, retry=True, completed=completed, refresh_board=refresh_board)
         else:
             self.status.setText('Нет незавершённой записи')
 
