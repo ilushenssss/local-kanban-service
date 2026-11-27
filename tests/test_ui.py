@@ -1098,7 +1098,8 @@ class UITest(unittest.TestCase):
         self.assertNotIn('пример-пароля'.encode(), self.store.db.read_bytes())
         self.assertIn('Событие'.encode(), self.store.db.read_bytes())
         self.assertEqual(window.bugzilla_page.snapshot, ({'id': 42, 'summary': 'Задача',
-                                                        'cf_event_1': 'Событие', 'cf_cr_num': 'КР-1'},))
+                                                        'cf_event_1': 'Событие', 'cf_cr_num': 'КР-1',
+                                                        'assigned_to': 'ANNA@example.test'},))
         column = self.store.columns(board)[0]['name']
         self.store.link_redmine_issue(board, 27001, 'ТИ со ссылкой', column, column,
                                       issue_references={'bugs': ['142', 'BZ #00042']})
@@ -1160,11 +1161,12 @@ class UITest(unittest.TestCase):
         refresh.assert_called_once_with(url, 'Разработка', 'Версия 1', ['anna'],
                                         login='colleague@example.test', password='пример-пароля')
         self.assertEqual(reopened.bugzilla_page.snapshot, tuple(updated.values()))
+        self.assertEqual(reopened.bugzilla_page.columns[2].count(), 0)
         from PyQt5.QtGui import QDesktopServices
         bug = dict(updated['42'], deadline='2026-12-20', assigned_to='anna@example.test', status='Открыто')
         edited = {'cf_event_1': 'Выпуск ТИ', 'deadline': '2026-12-31',
-                  'cf_cr_num': 'ТИ-123', 'assigned_to': 'bob@example.test'}
-        choices = (['Событие', 'Выпуск ТИ'], {'bob@example.test': 'Боб'}, [])
+                  'cf_cr_num': 'ТИ-123', 'assigned_to': 'COLLEAGUE@example.test'}
+        choices = (['Событие', 'Выпуск ТИ'], {'COLLEAGUE@example.test': 'Борис Петров'}, [])
 
         def edit(dialog):
             wait_for(lambda: not dialog.pending)
@@ -1175,7 +1177,7 @@ class UITest(unittest.TestCase):
             dialog.action.setCurrentIndex(dialog.action.findData('Выпуск ТИ'))
             dialog.deadline.set_value('2026-12-31')
             dialog.ti.setText('ТИ-123')
-            dialog.assignee.setCurrentIndex(dialog.assignee.findData('bob@example.test'))
+            dialog.assignee.setCurrentIndex(dialog.assignee.findData('COLLEAGUE@example.test'))
             next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Открыть в Bugzilla').click()
             draft = '  Описание исправления  '
             dialog.comment.setPlainText(draft)
@@ -1196,7 +1198,8 @@ class UITest(unittest.TestCase):
         card_list = next(cards for cards in reopened.bugzilla_page.columns if cards.count())
         with patch.object(QDialog, 'exec_', new=edit), \
              patch.object(QDesktopServices, 'openUrl', return_value=True) as open_url, \
-             patch('kanban.bugzilla.read_bug_details', side_effect=[bug, bug, dict(bug, **edited)]), \
+             patch('kanban.bugzilla.read_bug_details', side_effect=[
+                 bug, bug, dict(bug, **edited, assigned_to_detail={'real_name': 'Борис Петров'})]), \
              patch('kanban.bugzilla.bug_edit_choices', return_value=choices), \
              patch('kanban.bugzilla.add_bug_comment', side_effect=[OSError('Таймаут'), 7]) as send, \
              patch('kanban.bugzilla.update_bug_fields') as save:
@@ -1205,6 +1208,11 @@ class UITest(unittest.TestCase):
         save.assert_called_once_with(url, '42', edited, login='colleague@example.test', password='пример-пароля')
         shared = self.store.bugzilla_board_snapshot(board)['cards']['42']
         self.assertEqual((shared['cf_event_1'], shared['cf_cr_num']), ('Выпуск ТИ', 'ТИ-123'))
+        mine = reopened.bugzilla_page.columns[2].item(0)
+        self.assertEqual(mine.data(Qt.UserRole)[0::2], ('42', True))
+        self.assertEqual(mine.data(Qt.UserRole)[3], 'БП')
+        self.assertIn('Борис Петров', mine.toolTip())
+        self.assertFalse(reopened.bugzilla_page.columns[1].count())
         self.assertEqual(send.call_count, 2)
         send.assert_called_with(url, '42', 'Описание исправления',
                                 login='colleague@example.test', password='пример-пароля')

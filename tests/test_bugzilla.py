@@ -57,7 +57,7 @@ class BugzillaTest(unittest.TestCase):
         cards = bugzilla.refresh_board_bugs('https://bugs.example.test', ['42', '7', '8', '9'], ['anna'],
                                            login='user@example.test', password='sample')
         self.assertEqual(cards, {'42': {'id': 42, 'summary': 'Обновлённый заголовок',
-                                        'cf_event_1': None, 'cf_cr_num': None}})
+                                        'cf_event_1': None, 'cf_cr_num': None, 'assigned_to': 'Anna@example.test'}})
         args = request.call_args.args
         self.assertEqual(args[1], 'Bug.get')
         self.assertEqual(args[2]['ids'], ['42', '7', '8', '9'])
@@ -72,17 +72,24 @@ class BugzillaTest(unittest.TestCase):
         raw = json.dumps({'bugs': [
             {'id': 41, 'assigned_to': 'anna@example.test'},
             {'id': 42, 'assigned_to': 'ANNA.IVANOVA@example.test', 'cf_event_1': ['A', 'B'],
-             'cf_cr_num': 0, 'summary': 'Проверка'},
+             'cf_cr_num': 0, 'summary': 'Проверка', 'assigned_to_detail': {'real_name': 'Анна Иванова'}},
             {'id': 43, 'assigned_to': 'other@example.test'},
             {'id': 44, 'assigned_to': None},
             {'id': 45, 'assigned_to': 'anna@example.test', 'status': ' ЗАКРЫТО '},
         ]})
         self.assertEqual(bugzilla.board_card(raw, '42', [' anna.ivanova ']), {
             'id': 42, 'cf_event_1': ['A', 'B'], 'cf_cr_num': 0, 'summary': 'Проверка',
+            'assigned_to': 'ANNA.IVANOVA@example.test', 'assigned_to_name': 'Анна Иванова',
         })
         for number in ('43', '44', '45', '142'):
             self.assertIsNone(bugzilla.board_card(raw, number, ['anna']))
         self.assertIsNone(bugzilla.board_card(raw, '42', []))
+        login = bugzilla.bugzilla_login('WORK\\Anna.Ivanova', 'example.test')
+        self.assertTrue(bugzilla.is_assigned_to({'assigned_to': 'anna.ivanova'}, login))
+        self.assertTrue(bugzilla.is_assigned_to({'assigned_to': 'ANNA.IVANOVA@example.test'}, login))
+        self.assertFalse(bugzilla.is_assigned_to({'assigned_to': 'anna.ivanova@other.test'}, login))
+        self.assertFalse(bugzilla.is_assigned_to({'assigned_to': 'new.anna.ivanova@example.test'}, login))
+        self.assertEqual(bugzilla.assignee_initials({'assigned_to': login}), 'AI')
 
     @patch('kanban.bugzilla.HTTPSConnection')
     def test_bulk_search_resolves_exact_products_and_versions_and_verifies_all_substrings(self, connect):
@@ -105,7 +112,8 @@ class BugzillaTest(unittest.TestCase):
         cards = bugzilla.search_board_bugs('https://bugs.example.test/bugzilla', 'Проект', '2.0-218', ['anna', 'BOB'],
                                           login='user@example.test', password='sample')
         self.assertEqual(set(cards), {'42', '46'})
-        self.assertEqual(cards['42'], {'id': 42, 'summary': 'Подходящий', 'cf_event_1': 'Проверить', 'cf_cr_num': 7})
+        self.assertEqual(cards['42'], {'id': 42, 'summary': 'Подходящий', 'cf_event_1': 'Проверить', 'cf_cr_num': 7,
+                                       'assigned_to': 'ANNA@example.test'})
         calls = []
         for request in connect.return_value.request.call_args_list:
             self.assertEqual(request.args, ('POST', '/bugzilla/xmlrpc.cgi'))
@@ -120,6 +128,7 @@ class BugzillaTest(unittest.TestCase):
             self.assertEqual(params['limit'], 0)
             self.assertIn('cf_cr_num', params['include_fields'])
             self.assertIn('status', params['include_fields'])
+            self.assertIn('assigned_to.real_name', params['include_fields'])
             versions.append(params['version'])
         self.assertEqual(versions, ['2.0-218 И-01', '2.0-218 И-02'])
         self.assertEqual(connect.return_value.connect.call_count, len(replies))

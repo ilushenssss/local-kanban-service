@@ -1833,8 +1833,7 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
             return
         source_login = self.redmine_login or store.login
-        username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
-        login = f"{username}@{config['domain']}"
+        login = bugzilla.bugzilla_login(source_login, config['domain'])
         scope = (config['url'], login)
         session = self.bugzilla_session
         password = session[2] if session and session[:2] == scope else None
@@ -1926,8 +1925,7 @@ class MainWindow(QMainWindow, Async):
         if board_id is None or not config['url'] or not config['domain']:
             return
         source_login = self.redmine_login or store.login
-        username = source_login.rsplit('\\', 1)[-1].partition('@')[0]
-        login = f"{username}@{config['domain']}"
+        login = bugzilla.bugzilla_login(source_login, config['domain'])
         scope = config['url'], login
         session = self.bugzilla_session
         credentials = self.prompt_bugzilla_export(login, session[2] if session and session[:2] == scope else None,
@@ -2131,7 +2129,9 @@ class MainWindow(QMainWindow, Async):
     def render_bugzilla_cards(self):
         board_id = self.project_sections_board
         cards = self.load_bugzilla_cards(board_id)
-        self.bugzilla_page.show_cards(cards.values(), self.bugzilla_links.get(board_id, ()))
+        source_login = (self.redmine_login or self.store.login) if self.store else ''
+        login = bugzilla.bugzilla_login(source_login, self.bugzilla_config['domain'])
+        self.bugzilla_page.show_cards(cards.values(), self.bugzilla_links.get(board_id, ()), login)
 
     def bugzilla_cache_path(self, board_id):
         local = QStandardPaths.writableLocation(QStandardPaths.GenericDataLocation)
@@ -3684,6 +3684,7 @@ class MainWindow(QMainWindow, Async):
                         if (self.redmine_login or self.store.login) != result['redmine_login']:
                             self.reset_bugzilla_session()
                         self.redmine_login = result['redmine_login']
+                        self.render_bugzilla_cards()
                     success_message = '\n'.join(result['redmine_errors']) or success
                     self.redmine_refresh_message = success_message
                 else:

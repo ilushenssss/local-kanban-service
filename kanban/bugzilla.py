@@ -86,8 +86,40 @@ def matches_employee(bug, names):
     return any(name in assignee for name in names)
 
 
+def bugzilla_login(login, domain):
+    username = login.strip().rsplit('\\', 1)[-1].partition('@')[0]
+    return f'{username}@{domain}' if username and domain else username
+
+
+def is_assigned_to(bug, login):
+    assignee = str(bug.get('assigned_to') or '').strip().casefold()
+    login = login.strip().casefold()
+    if not assignee or not login:
+        return False
+    if '@' not in assignee:
+        assignee = bugzilla_login(assignee, login.partition('@')[2])
+    return assignee == login
+
+
+def assignee_initials(bug):
+    name = bug.get('assigned_to_name') or ''
+    if not name:
+        name = bugzilla_login(bug.get('assigned_to') or '', '')
+    return ''.join(part[0].upper() for part in re.findall(r'[^\W\d_]+', name)[:2])
+
+
 def card_fields(bug):
-    return {key: bug.get(key) for key in ('id', 'summary', 'cf_event_1', 'cf_cr_num')}
+    card = {key: bug.get(key) for key in ('id', 'summary', 'cf_event_1', 'cf_cr_num')}
+    detail = bug.get('assigned_to_detail')
+    if not isinstance(detail, dict):
+        detail = {}
+    assignee = bug.get('assigned_to') or detail.get('name')
+    name = detail.get('real_name') or bug.get('assigned_to_name')
+    if isinstance(assignee, str) and assignee.strip():
+        card['assigned_to'] = assignee.strip()
+    if isinstance(name, str) and name.strip():
+        card['assigned_to_name'] = name.strip()
+    return card
 
 
 def board_card(raw, number, employees):
@@ -296,7 +328,7 @@ def search_board_bugs(url, project, board, employees, *, login, password):
             if board_key not in version.casefold():
                 continue
             params = {'product': item['name'], 'version': version, 'limit': 0,
-                      'include_fields': ['id', 'product', 'version', 'assigned_to', 'status',
+                      'include_fields': ['id', 'product', 'version', 'assigned_to', 'assigned_to.real_name', 'status',
                                          'summary', 'cf_event_1', 'cf_cr_num']}
             result = xml_request(parts, 'Bug.search', params, login, password, response_timeout=BULK_RESPONSE_TIMEOUT)
             for bug in response_list(result, 'bugs'):
@@ -314,7 +346,8 @@ def refresh_board_bugs(url, numbers, employees, *, login, password, keep_unavail
     for offset in range(0, len(numbers), 100):
         batch = numbers[offset:offset + 100]
         params = {'ids': batch, 'permissive': True,
-                  'include_fields': ['id', 'assigned_to', 'status', 'summary', 'cf_event_1', 'cf_cr_num']}
+                  'include_fields': ['id', 'assigned_to', 'assigned_to.real_name', 'status',
+                                     'summary', 'cf_event_1', 'cf_cr_num']}
         response = xml_request(parts, 'Bug.get', params, login, password)
         for fault in response.get('faults', []):
             code = fault.get('faultCode')

@@ -5,7 +5,7 @@ from PyQt5.QtGui import QColor, QFontMetrics, QTextLayout, QTextOption
 from PyQt5.QtWidgets import (QComboBox, QDialog, QFormLayout, QHBoxLayout, QLabel, QLineEdit,
                              QListWidget, QListWidgetItem, QMenu, QPlainTextEdit, QPushButton,
                              QScrollArea, QVBoxLayout, QWidget)
-from .bugzilla import is_closed, xml_value_to_json
+from .bugzilla import assignee_initials, is_assigned_to, is_closed, xml_value_to_json
 from .identification import ProjectCardDelegate, project_card_column
 from .theme import STICKERS, TOKENS, symbol_icon
 from .widgets import DateField
@@ -53,7 +53,7 @@ class BugzillaCard(ProjectCardDelegate):
         return QSize(max(1, grid.gridSize().width() - grid.gap), grid.card_height)
 
     def paint(self, painter, option, index):
-        number, (title, ti, action), linked = index.data(Qt.UserRole)
+        number, (title, ti, action), linked, initials = index.data(Qt.UserRole)
         painter.save()
         box = self.paint_surface(painter, option, linked)
         left, top = box.x() + 8, box.y() + 9
@@ -95,11 +95,19 @@ class BugzillaCard(ProjectCardDelegate):
                          metrics.elidedText(title[offset:], Qt.ElideRight, title_width))
 
         badge_y = box.bottom() - 25
+        badges_width = width
+        if initials:
+            size = min(width // 3, max(22, metrics.horizontalAdvance(initials) + 8))
+            rect = QRect(left + width - size, badge_y, size, 20)
+            self.paint_badge_background(painter, rect, TOKENS['selection'])
+            painter.setPen(QColor(TOKENS['selected_text']))
+            painter.drawText(rect, Qt.AlignCenter, metrics.elidedText(initials, Qt.ElideRight, size))
+            badges_width -= size + 5
         ti_colors = STICKERS[0] if ti == '—' else (TOKENS['secondary'], TOKENS['hover'])
-        ti_width = min(metrics.horizontalAdvance(ti) + 12, width // 2)
+        ti_width = min(metrics.horizontalAdvance(ti) + 12, badges_width // 2)
         for value, x, available, (foreground, background), border in (
             (ti, left, ti_width, ti_colors, None),
-            (action, left + ti_width + 5, width - ti_width - 5,
+            (action, left + ti_width + 5, badges_width - ti_width - 5,
              (TOKENS['secondary'], TOKENS['properties']), TOKENS['field_border']),
         ):
             span = min(available, metrics.horizontalAdvance(value) + 12)
@@ -117,6 +125,7 @@ class BugzillaPage(QWidget):
         self.open_in_browser = open_in_browser
         self.snapshot = None
         self.linked = frozenset()
+        self.login = ''
         self.loading = False
         layout = QVBoxLayout(self)
         layout.setContentsMargins(20, 16, 20, 12)
@@ -143,7 +152,7 @@ class BugzillaPage(QWidget):
         columns.setContentsMargins(0, 0, 0, 0)
         columns.setSpacing(18)
         self.columns = []
-        for title in ('Не привязаны', 'Привязаны'):
+        for title in ('Не привязаны', 'Привязаны', 'Мои баги'):
             panel, cards = project_card_column(title, BugzillaCard, minimum_width=150, list_type=BugzillaGrid)
             cards.setSpacing(0)
             cards.itemClicked.connect(lambda item: self.open_bug(item.data(Qt.UserRole)[0]))
@@ -173,13 +182,14 @@ class BugzillaPage(QWidget):
             menu.addAction('Написать комментарий…', lambda: self.comment_bug(number))
         menu.exec_(cards.viewport().mapToGlobal(point))
 
-    def show_cards(self, cards, linked=()):
+    def show_cards(self, cards, linked=(), login=''):
         snapshot = tuple(card for card in cards if not is_closed(card))
         linked = frozenset(linked)
-        if snapshot == self.snapshot and linked == self.linked:
+        if snapshot == self.snapshot and linked == self.linked and login == self.login:
             return
         self.snapshot = snapshot
         self.linked = linked
+        self.login = login
         scroll_positions = [column.verticalScrollBar().value() for column in self.columns]
         for column in self.columns:
             column.clear()
@@ -192,12 +202,15 @@ class BugzillaPage(QWidget):
             lines = [title,
                      field_text(bug['cf_cr_num']),
                      field_text(bug['cf_event_1'])]
-            item = QListWidgetItem(self.columns[int(is_linked)])
-            item.setData(Qt.UserRole, (number, lines, is_linked))
+            column = 2 if is_assigned_to(bug, login) else int(is_linked)
+            item = QListWidgetItem(self.columns[column])
+            item.setData(Qt.UserRole, (number, lines, is_linked, assignee_initials(bug)))
             summary = '\n'.join([number, *lines])
             item.setData(Qt.AccessibleTextRole, summary)
-            item.setToolTip(summary + '\nНажмите, чтобы открыть карточку. Действия доступны в контекстном меню.')
-            item.setData(Qt.AccessibleDescriptionRole, 'Enter — открыть карточку. Действия доступны в контекстном меню.')
+            assignee = bug.get('assigned_to_name') or bug.get('assigned_to')
+            description = f'Исполнитель: {assignee}. ' if assignee else ''
+            item.setToolTip(summary + '\n' + description + 'Нажмите, чтобы открыть карточку. Действия доступны в контекстном меню.')
+            item.setData(Qt.AccessibleDescriptionRole, description + 'Enter — открыть карточку. Действия доступны в контекстном меню.')
         for column, position in zip(self.columns, scroll_positions):
             column.verticalScrollBar().setValue(position)
 
