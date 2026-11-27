@@ -1212,6 +1212,28 @@ class UITest(unittest.TestCase):
             reopened.comment_bugzilla_bug('42')
         open_card.assert_called_once_with('42', focus_comment=True)
 
+    def test_bugzilla_deadline_calendar_opens_without_deadline_in_response(self):
+        from kanban.bugzilla_page import BugEditDialog
+
+        saved = []
+        for editable in (True, False):
+            dialog = BugEditDialog('42', lambda: None, lambda form: saved.append(form.changes()),
+                                   lambda _: None, None)
+            self.windows.append(dialog)
+            dialog.load({'id': 42, 'summary': 'Баг без срока в ответе'}, ([], {}, []), editable)
+            dialog.show()
+            editor = dialog.deadline.editor
+            self.assertEqual(editor.isEnabled(), editable)
+            if not editable:
+                continue
+            self.assertFalse(dialog.save_button.isEnabled())
+            QTest.mouseClick(editor, Qt.LeftButton, pos=editor.rect().center())
+            wait_for(editor.calendarWidget().isVisible)
+            QTest.keyClick(editor.calendarWidget(), Qt.Key_Escape)
+            dialog.deadline.set_value('2026-12-31')
+            dialog.save_button.click()
+        self.assertEqual(saved, [{'deadline': '2026-12-31'}])
+
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu
         from kanban.installation import save_folder

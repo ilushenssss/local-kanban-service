@@ -300,12 +300,13 @@ class BugEditDialog(QDialog):
         self.ti.setText(field_text(ti) if ti is not None else '')
         if editable:
             self.editable = {field for field in self.fields if field in bug}
+            self.editable.add('deadline')
             if not actions:
                 self.editable.discard('cf_event_1')
             if not assignees:
                 self.editable.discard('assigned_to')
             if 'deadline' not in bug:
-                warnings = [*warnings, 'Bugzilla не предоставила доступ к полю срока.']
+                warnings = [*warnings, 'Bugzilla не вернула текущий срок. Можно выбрать новую дату.']
         self.initial = self.values()
         self.status.setText('\n'.join(warnings) if editable else 'Просмотр')
         self.save_button.setVisible(editable)
