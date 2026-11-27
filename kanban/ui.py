@@ -29,6 +29,7 @@ from .private_chat import PrivateChats
 from .notifications import Notifications
 from .board_badges import BoardBadgeDelegate
 from .avatars import avatar_image, avatar_resources
+from .credentials import PasswordStore
 from .spellcheck import SpellTextEdit, SpellLineEdit, spell_engine
 from .stickers import MAX_SOURCE
 from .sticker_pack import StickerPackDialog
@@ -1283,6 +1284,9 @@ class MainWindow(QMainWindow, Async):
         self.redmine_login = None
         self.bugzilla_config = {'url': '', 'domain': ''}
         self.bugzilla_session = None
+        self.saved_passwords = PasswordStore()
+        self.password_epochs = {'redmine': 0, 'bugzilla': 0}
+        self.saved_bugzilla_login = ''
         self.bugzilla_cards = {}
         self.bugzilla_links = {}
         self.bugzilla_loading = False
@@ -1742,6 +1746,12 @@ class MainWindow(QMainWindow, Async):
         status = QuietStatus()
         status.setWordWrap(True)
         layout.addWidget(status)
+        if self.saved_passwords.available:
+            for service, label in (('redmine', 'Redmine'), ('bugzilla', 'Bugzilla')):
+                forget = QPushButton(f'Забыть пароль {label}')
+                forget.clicked.connect(lambda checked=False, service=service, label=label:
+                                       status.setText(self.forget_password(service, label)))
+                layout.addWidget(forget)
         close = QDialogButtonBox(QDialogButtonBox.Close)
         close.rejected.connect(dialog.reject)
         layout.addWidget(close)
@@ -1833,14 +1843,13 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Администратору нужно указать адрес и домен Bugzilla в «Настройки → Подключение…».')
             return
         source_login = self.redmine_login or store.login
-        login = bugzilla.bugzilla_login(source_login, config['domain'])
+        login = self.bugzilla_login_for(config)
         scope = (config['url'], login)
-        session = self.bugzilla_session
-        password = session[2] if session and session[:2] == scope else None
-        export = self.prompt_bugzilla_export(login, password, mode)
+        epoch = self.password_epochs['bugzilla']
+        export = self.prompt_bugzilla_export(login, self.bugzilla_password(scope), mode)
         if export is None or self.access_restricted or self.store is not store:
             return
-        number, password = export
+        number, password, remember = export
 
         def done(result, error):
             nonlocal password
@@ -1853,23 +1862,24 @@ class MainWindow(QMainWindow, Async):
                 return
             if error:
                 if isinstance(error, bugzilla.BugzillaAuthError):
-                    self.reset_bugzilla_session()
+                    self.reject_bugzilla_password(scope, used_password)
                 elif isinstance(error, AccessRestricted):
                     self.set_access_restricted(True)
                 self.status.setText(error_text(error))
                 return
             self.bugzilla_session = (*scope, used_password)
+            warning = self.remember_password('bugzilla', epoch, *scope, used_password) if remember else ''
             if mode != 'single':
                 if board_id in self.board_items and result is not None:
                     self.bugzilla_cards[board_id] = result['cards']
                     self.render_bugzilla_cards()
-                    self.status.setText(f'Выгружено багов из Bugzilla: {len(result["cards"])}')
+                    self.status.setText(f'Выгружено багов из Bugzilla: {len(result["cards"])}' + warning)
                 return
             raw, snapshot, notice = result
             if board_id in self.board_items and snapshot is not None:
                 self.bugzilla_cards[board_id] = snapshot['cards']
                 self.render_bugzilla_cards()
-            self.status.setText(f'Баг #{number} загружен из Bugzilla')
+            self.status.setText(f'Баг #{number} загружен из Bugzilla' + warning)
             self.show_bugzilla_json(number, raw, notice)
 
         def load():
@@ -1925,14 +1935,13 @@ class MainWindow(QMainWindow, Async):
         if board_id is None or not config['url'] or not config['domain']:
             return
         source_login = self.redmine_login or store.login
-        login = bugzilla.bugzilla_login(source_login, config['domain'])
+        login = self.bugzilla_login_for(config)
         scope = config['url'], login
-        session = self.bugzilla_session
-        credentials = self.prompt_bugzilla_export(login, session[2] if session and session[:2] == scope else None,
-                                                   'comment')
+        epoch = self.password_epochs['bugzilla']
+        credentials = self.prompt_bugzilla_export(login, self.bugzilla_password(scope), 'comment')
         if credentials is None or self.access_restricted or self.store is not store:
             return
-        password = credentials[1]
+        _, password, remember = credentials
         editable = self.can_comment_bug()
         base = self.redmine_config_base()
 
@@ -1958,7 +1967,7 @@ class MainWindow(QMainWindow, Async):
             dialog.set_pending(False)
             dialog.status.setText(error_text(error))
             if isinstance(error, bugzilla.BugzillaAuthError):
-                self.reset_bugzilla_session()
+                self.reject_bugzilla_password(scope, password)
             elif isinstance(error, AccessRestricted):
                 self.set_access_restricted(True)
 
@@ -2014,11 +2023,13 @@ class MainWindow(QMainWindow, Async):
             comment = dialog.comment.toPlainText().strip()
             if not comment or not dialog.can_comment or dialog.pending or not same_session() or not self.can_comment_bug():
                 return
+            remember_comment = False
+            comment_epoch = self.password_epochs['bugzilla']
             if self.bugzilla_session is None or self.bugzilla_session[:2] != scope:
                 credentials = self.prompt_bugzilla_export(login, None, 'comment')
                 if credentials is None or not same_session():
                     return
-                password = credentials[1]
+                _, password, remember_comment = credentials
             dialog.set_pending(True)
             dialog.comment_status.setText('Отправка…')
 
@@ -2033,14 +2044,17 @@ class MainWindow(QMainWindow, Async):
                     dialog.set_pending(False)
                     dialog.comment_status.setText(error_text(error) + ' Текст сохранён. Перед повтором проверьте страницу бага.')
                     if isinstance(error, bugzilla.BugzillaAuthError):
-                        self.reset_bugzilla_session()
+                        self.reject_bugzilla_password(scope, password)
                     elif isinstance(error, AccessRestricted):
                         self.set_access_restricted(True)
                     return
+                warning = ''
                 if same_session():
                     self.bugzilla_session = (*scope, password)
+                    if remember_comment:
+                        warning = self.remember_password('bugzilla', comment_epoch, *scope, password)
                 dialog.comment.clear()
-                dialog.comment_status.setText('Комментарий отправлен.')
+                dialog.comment_status.setText('Комментарий отправлен.' + warning)
                 dialog.set_pending(False)
 
             self.work(submit, done)
@@ -2058,6 +2072,10 @@ class MainWindow(QMainWindow, Async):
             self.bugzilla_session = (*scope, password)
             bug, choices = result
             dialog.load(bug, choices, editable and self.can_comment_bug() and not bugzilla.is_closed(bug))
+            if remember:
+                warning = self.remember_password('bugzilla', epoch, *scope, password)
+                if warning:
+                    dialog.status.setText((dialog.status.text() + '\n' + warning.strip()).strip())
             if focus_comment and dialog.can_comment:
                 dialog.comment.setFocus()
 
@@ -2072,7 +2090,7 @@ class MainWindow(QMainWindow, Async):
 
     def prompt_bugzilla_export(self, login, password, mode):
         if mode != 'single' and password is not None:
-            return None, password
+            return None, password, False
         dialog = QDialog(self)
         dialog.setWindowTitle({'single': 'Выгрузить баг из Bugzilla', 'bulk': 'Выгрузить баги по фильтрам',
                                'comment': 'Вход в Bugzilla'}[mode])
@@ -2086,10 +2104,12 @@ class MainWindow(QMainWindow, Async):
         login_label.setTextFormat(Qt.PlainText)
         form.addRow('Логин Bugzilla', login_label)
         password_input = None
+        remember = None
         if password is None:
             password_input = QLineEdit()
             password_input.setEchoMode(QLineEdit.Password)
             form.addRow('Пароль Bugzilla', password_input)
+            remember = self.remember_password_checkbox(form)
         style_form(form)
         layout.addLayout(form)
         error_label = QLabel()
@@ -2117,6 +2137,7 @@ class MainWindow(QMainWindow, Async):
         actions.rejected.connect(dialog.reject)
         layout.addWidget(actions)
         accepted = dialog.exec_() == QDialog.Accepted
+        remember_password = bool(remember and remember.isChecked())
         if accepted:
             number = bugzilla.bug_number(bug_id.text()) if bug_id is not None else None
             if password_input is not None:
@@ -2124,13 +2145,12 @@ class MainWindow(QMainWindow, Async):
         if password_input is not None:
             password_input.clear()
         dialog.deleteLater()
-        return (number, password) if accepted else None
+        return (number, password, remember_password) if accepted else None
 
     def render_bugzilla_cards(self):
         board_id = self.project_sections_board
         cards = self.load_bugzilla_cards(board_id)
-        source_login = (self.redmine_login or self.store.login) if self.store else ''
-        login = bugzilla.bugzilla_login(source_login, self.bugzilla_config['domain'])
+        login = self.bugzilla_login_for(self.bugzilla_config)
         self.bugzilla_page.show_cards(cards.values(), self.bugzilla_links.get(board_id, ()), login)
 
     def bugzilla_cache_path(self, board_id):
@@ -2151,6 +2171,61 @@ class MainWindow(QMainWindow, Async):
 
     def reset_bugzilla_session(self):
         self.bugzilla_session = None
+
+    def remember_password_checkbox(self, form):
+        if not self.saved_passwords.available:
+            return None
+        remember = QCheckBox('Запомнить пароль на этом компьютере')
+        form.addRow(remember)
+        return remember
+
+    def remember_password(self, service, epoch, url, login, password):
+        if epoch != self.password_epochs[service] or not self.saved_passwords.available:
+            return ''
+        try:
+            self.saved_passwords.save(service, url, login, password)
+        except OSError:
+            return ' Не удалось сохранить пароль на этом компьютере.'
+        if service == 'bugzilla':
+            self.saved_bugzilla_login = login
+        return ''
+
+    def forget_password(self, service, label):
+        self.password_epochs[service] += 1
+        try:
+            self.saved_passwords.forget(service)
+        except OSError:
+            return f'Не удалось удалить сохранённые пароли {label}.'
+        if service == 'bugzilla':
+            self.saved_bugzilla_login = ''
+        return f'Сохранённые пароли {label} удалены.'
+
+    def forget_rejected_password(self, service, url, login, password):
+        try:
+            self.saved_passwords.forget_rejected(service, url, login, password)
+        except OSError:
+            pass
+
+    def reject_bugzilla_password(self, scope, password):
+        self.reset_bugzilla_session()
+        self.forget_rejected_password('bugzilla', *scope, password)
+
+    def bugzilla_login_for(self, config):
+        if self.redmine_login:
+            return bugzilla.bugzilla_login(self.redmine_login, config['domain'])
+        session = self.bugzilla_session
+        if session and session[0] == config['url']:
+            return session[1]
+        if self.saved_bugzilla_login and self.saved_bugzilla_login.partition('@')[2].casefold() == config['domain'].casefold():
+            return self.saved_bugzilla_login
+        return bugzilla.bugzilla_login(self.store.login if self.store else '', config['domain'])
+
+    def bugzilla_password(self, scope):
+        session = self.bugzilla_session
+        if session and session[:2] == scope:
+            return session[2]
+        saved = self.saved_passwords.load('bugzilla', *scope)
+        return saved[1] if saved else None
 
     def show_bugzilla_json(self, number, raw, notice=''):
         dialog = QDialog(self)
@@ -2359,6 +2434,8 @@ class MainWindow(QMainWindow, Async):
         if settings != self.bugzilla_config:
             self.bugzilla_config = settings
             self.reset_bugzilla_session()
+            saved = self.saved_passwords.load('bugzilla', settings['url']) if settings['url'] else None
+            self.saved_bugzilla_login = saved[0] if saved else ''
             self.bugzilla_cards.clear()
             self.render_bugzilla_cards()
 
@@ -3262,17 +3339,22 @@ class MainWindow(QMainWindow, Async):
         login_name = self.redmine_login or self.store.login
         url = self.redmine_url
         statuses = self.redmine_statuses
+        epoch = self.password_epochs['redmine']
         credentials = None
+        remember = False
         if client is None:
+            credentials = self.saved_passwords.load('redmine', url, self.redmine_login)
+        if client is None and credentials is None:
             dialog = QDialog(self)
             dialog.setWindowTitle('Вход в Redmine')
             layout = QVBoxLayout(dialog)
             form = QFormLayout()
-            login = QLineEdit(self.store.login)
+            login = QLineEdit(login_name)
             password = QLineEdit()
             password.setEchoMode(QLineEdit.Password)
             form.addRow('Логин Redmine', login)
             form.addRow('Пароль Redmine', password)
+            checkbox = self.remember_password_checkbox(form)
             layout.addLayout(form)
             server = QLabel(url)
             server.setTextFormat(Qt.PlainText)
@@ -3288,6 +3370,7 @@ class MainWindow(QMainWindow, Async):
             password.setFocus()
             if dialog.exec_() == QDialog.Accepted:
                 credentials = login.text().strip(), password.text()
+                remember = bool(checkbox and checkbox.isChecked())
             password.clear()
             dialog.deleteLater()
             if credentials is None:
@@ -3295,6 +3378,7 @@ class MainWindow(QMainWindow, Async):
             if not all(credentials):
                 self.status.setText('Введите логин и пароль Redmine')
                 return
+        if credentials:
             login_name = credentials[0]
 
         def apply(rid):
@@ -3303,17 +3387,26 @@ class MainWindow(QMainWindow, Async):
             if current is not None and (current['url'] != url or current['statuses'] != statuses):
                 credentials = None
                 raise redmine.RedmineError('Настройки Redmine изменились. Повторите операцию после обновления доски.')
+            saved = None
             if client is None:
+                login, password = credentials
                 try:
-                    client = redmine.connect(url, *credentials)
+                    client = redmine.connect(url, login, password)
+                    if remember:
+                        saved = epoch, url, login, password
+                except redmine.RedmineAuthError:
+                    self.forget_rejected_password('redmine', url, login, password)
+                    raise
                 finally:
                     credentials = None
             try:
-                return {'redmine_client': client, 'redmine_login': login_name, 'redmine_errors': operation(client, rid, statuses)}
+                errors = operation(client, rid, statuses)
             except redmine.RedmineAuthError:
                 raise
             except ValueError as error:
-                return {'redmine_client': client, 'redmine_login': login_name, 'redmine_errors': [str(error)]}
+                errors = [str(error)]
+            return {'redmine_client': client, 'redmine_login': login_name, 'redmine_errors': errors,
+                    'remember_redmine': saved}
 
         self.mutate(apply, success, busy_message=busy_message)
 
@@ -3679,13 +3772,17 @@ class MainWindow(QMainWindow, Async):
                     self.board_id = result['select_board']
                     self.pages.setCurrentIndex(0)
                 if isinstance(result, dict) and 'redmine_client' in result:
+                    warning = ''
                     if not self.access_restricted:
                         self.redmine_client = result['redmine_client']
                         if (self.redmine_login or self.store.login) != result['redmine_login']:
                             self.reset_bugzilla_session()
                         self.redmine_login = result['redmine_login']
                         self.render_bugzilla_cards()
-                    success_message = '\n'.join(result['redmine_errors']) or success
+                        saved = result.get('remember_redmine')
+                        if saved and saved[1] == self.redmine_url:
+                            warning = self.remember_password('redmine', *saved)
+                    success_message = ('\n'.join(result['redmine_errors']) or success) + warning
                     self.redmine_refresh_message = success_message
                 else:
                     success_message = success

@@ -1153,7 +1153,7 @@ class UITest(unittest.TestCase):
         self.assertIsNone(reopened.bugzilla_session)
 
         updated = {'42': dict(bulk['42'], summary='Обновлённый заголовок')}
-        with patch.object(reopened, 'prompt_bugzilla_export', return_value=(None, 'пример-пароля')) as prompt, \
+        with patch.object(reopened, 'prompt_bugzilla_export', return_value=(None, 'пример-пароля', False)) as prompt, \
              patch('kanban.bugzilla.search_board_bugs', return_value=updated) as refresh:
             reopened.bugzilla_page.refresh_button.click()
             wait_for(lambda: not reopened.bugzilla_loading)
@@ -1219,6 +1219,73 @@ class UITest(unittest.TestCase):
         with patch.object(reopened, 'open_bugzilla_card') as open_card:
             reopened.comment_bugzilla_bug('42')
         open_card.assert_called_once_with('42', focus_comment=True)
+
+    def test_remembered_integration_passwords_survive_restart_and_can_be_forgotten(self):
+        from PyQt5.QtWidgets import QCheckBox
+        from kanban.credentials import PasswordStore
+        from kanban.redmine import RedmineAuthError
+
+        redmine_url, bugzilla_url = 'https://redmine.test', 'https://bugs.test'
+        self.store.set_redmine_settings(redmine_url, {})
+        self.store.set_connection_settings(bugzilla_config={'url': bugzilla_url, 'domain': 'work.test'})
+        folder = Path(self.tmp.name) / 'local-credentials'
+
+        def create_window():
+            vault = PasswordStore()
+            vault.folder = folder
+            with patch('kanban.ui.Store', return_value=self.store), patch('kanban.ui.PasswordStore', return_value=vault):
+                window = MainWindow(str(self.store.folder))
+                self.windows.append(window)
+                window.show()
+                wait_for(lambda: not window.jobs and window.redmine_url == redmine_url
+                         and window.bugzilla_config['url'] == bugzilla_url)
+            return window
+
+        def sign_in(dialog):
+            fields = dialog.findChildren(QLineEdit)
+            remember = dialog.findChild(QCheckBox)
+            self.assertFalse(remember.isChecked())
+            remember.setChecked(True)
+            if dialog.windowTitle() == 'Вход в Redmine':
+                fields[0].setText('custom-login')
+                fields[1].setText('пароль redmine')
+            else:
+                fields[0].setText('42')
+                fields[1].setText('пароль bugzilla')
+            dialog.findChild(QDialogButtonBox).button(QDialogButtonBox.Ok).click()
+            return dialog.result()
+
+        with patch('kanban.credentials.dpapi', side_effect=lambda data, **kwargs: bytes(value ^ 193 for value in data)):
+            first = create_window()
+            with patch.object(QDialog, 'exec_', new=sign_in), patch('kanban.redmine.connect') as connect:
+                first.redmine_operation(lambda *args: [], 'Готово')
+                wait_for(lambda: not first.mutating and first.redmine_client is not None)
+                connect.assert_called_once_with(redmine_url, 'custom-login', 'пароль redmine')
+            with patch.object(QDialog, 'exec_', new=sign_in), patch('kanban.bugzilla.read_bug', return_value='{}') as read, \
+                 patch.object(first, 'show_bugzilla_json'):
+                first.export_bugzilla_bug()
+                wait_for(lambda: not first.bugzilla_loading and first.bugzilla_session is not None)
+                read.assert_called_once_with(bugzilla_url, '42', login='custom-login@work.test', password='пароль bugzilla')
+            wait_for(lambda: not first.jobs)
+            self.assertTrue(first.close())
+
+            reopened = create_window()
+            with patch.object(QDialog, 'exec_') as prompt, patch('kanban.redmine.connect', side_effect=RedmineAuthError('Вход отклонён')) as connect:
+                reopened.redmine_operation(lambda *args: [], 'Готово')
+                wait_for(lambda: not reopened.mutating)
+                prompt.assert_not_called()
+                connect.assert_called_once_with(redmine_url, 'custom-login', 'пароль redmine')
+            self.assertIsNone(reopened.saved_passwords.load('redmine', redmine_url))
+            self.assertEqual(reopened.bugzilla_password((bugzilla_url, 'custom-login@work.test')), 'пароль bugzilla')
+
+            def forget(dialog):
+                next(button for button in dialog.findChildren(QPushButton) if button.text() == 'Забыть пароль Bugzilla').click()
+                return QDialog.Rejected
+
+            with patch.object(QDialog, 'exec_', new=forget):
+                reopened.profile_button.click()
+            self.assertIsNone(reopened.saved_passwords.load('bugzilla', bugzilla_url))
+            self.assertEqual(reopened.bugzilla_login_for(reopened.bugzilla_config), 'tester@work.test')
 
     def test_bugzilla_deadline_calendar_opens_without_deadline_in_response(self):
         from kanban.bugzilla_page import BugEditDialog
