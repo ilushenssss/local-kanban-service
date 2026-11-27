@@ -277,9 +277,14 @@ class RedmineTest(unittest.TestCase):
             redmine.change_kris_status(client, 42, 101, 72, 'manager', 1, 3)
         with self.assertRaisesRegex(redmine.RedmineError, 'Связь КРИС_ТИ'):
             redmine.change_kris_status(client, 420, 101, 72, 'manager', 1, 2)
+        with self.assertRaisesRegex(redmine.RedmineError, 'не относится'):
+            redmine.change_kris_status(client, 42, 72, 72, 'admin', 1, 2)
         client.issue.update.assert_not_called()
-        redmine.change_kris_status(client, 42, 101, 72, 'manager', 1, 2)
-        client.issue.update.assert_called_once_with(101, status_id=2)
+        for role in ('admin', 'manager'):
+            with self.subTest(role=role):
+                client.issue.update.reset_mock()
+                redmine.change_kris_status(client, 42, 101, 72, role, 1, 2)
+                client.issue.update.assert_called_once_with(101, status_id=2)
 
     def test_kris_coding_lines_group_equal_dates_and_list_different_dates(self):
         coding = [{'subject': 'Сервис', 'due_date': '2027-02-03'},

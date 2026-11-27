@@ -424,12 +424,12 @@ def kris_status_options(client, issue_id, parent_id, role):
 
     try:
         data = client.issue.get(issue_id, include='allowed_statuses').raw()
-        if issue_id != parent_id and (data.get('parent') or {}).get('id') != parent_id:
+        if issue_id == parent_id or (data.get('parent') or {}).get('id') != parent_id:
             raise RedmineError('Подзадача больше не относится к этой КРИС_ТИ. Обновите карточку ТИ.')
-        if role != 'manager':
+        if role not in ('admin', 'manager'):
             assignee_id = (data.get('assigned_to') or {}).get('id')
             if not assignee_id or assignee_id != client.user.get('current').id:
-                raise RedmineError('Статус может менять менеджер или назначенный исполнитель.')
+                raise RedmineError('Статус может менять администратор, менеджер или назначенный исполнитель.')
         current_id = (data.get('status') or {}).get('id')
         if not current_id or 'allowed_statuses' not in data:
             raise RedmineError('Redmine не вернул список разрешённых переходов для этой задачи КРИС_ТИ.')

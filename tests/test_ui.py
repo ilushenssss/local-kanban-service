@@ -1345,11 +1345,11 @@ class UITest(unittest.TestCase):
             dialog.save_button.click()
         self.assertEqual(saved, [{'deadline': '2026-12-31'}])
 
-    def test_assigned_employee_changes_kris_status_from_ti_card(self):
+    def test_assigned_employee_changes_kris_status_from_table_dropdown(self):
         from importlib.util import find_spec
         from types import SimpleNamespace
-        from unittest.mock import Mock, call
-        from PyQt5.QtWidgets import QComboBox, QLabel
+        from unittest.mock import Mock
+        from PyQt5.QtWidgets import QLabel
 
         if not find_spec('redminelib'):
             self.skipTest('python-redmine is optional')
@@ -1358,8 +1358,9 @@ class UITest(unittest.TestCase):
         self.store.set_role(member.profile()['id'], 'employee')
         self.grant_all(board)
         self.store.link_redmine_issue(board, 42, 'Карточка ТИ', 'Проект ТИ', 'Проект ТИ', kris_progress={
-            'parent_id': 72, 'done': 0, 'total': 1,
-            'subtasks': [{'id': 101, 'title': 'Приложение', 'assignee': 'Петров Иван', 'status': 'Кодирование'}],
+            'parent_id': 72, 'done': 0, 'total': 2,
+            'subtasks': [{'id': 101, 'title': 'Приложение 1', 'assignee': 'Петров Иван', 'status': 'Кодирование'},
+                         {'id': 102, 'title': 'Приложение 2', 'assignee': 'Сидоров Иван', 'status': 'Кодирование'}],
         })
         with patch('kanban.ui.Store', return_value=member):
             window = MainWindow(str(self.store.folder), 'https://redmine.example.test')
@@ -1373,52 +1374,50 @@ class UITest(unittest.TestCase):
         client.user.get.return_value.id = 9
         statuses = [{'id': 1, 'name': 'Кодирование'}, {'id': 2, 'name': 'Выполнено'}]
         child = {'id': 101, 'parent': {'id': 72}, 'status': statuses[0], 'allowed_statuses': statuses,
-                 'subject': 'Приложение', 'assigned_to': {'id': 9, 'name': 'Петров Иван'}}
-        parent_statuses = [{'id': 3, 'name': 'В работе'}, {'id': 4, 'name': 'Согласовано'}]
-        parent = {'children': [child], 'custom_fields': [{'name': 'Расположение ТИ', 'value': '#42'}],
-                  'status': parent_statuses[0], 'allowed_statuses': parent_statuses, 'assigned_to': {'id': 9}}
-        client.issue.get.side_effect = lambda issue_id, **_: SimpleNamespace(raw=lambda: {101: child, 72: parent}[issue_id])
+                 'subject': 'Приложение 1', 'assigned_to': {'id': 9, 'name': 'Петров Иван'}, 'due_date': None}
+        other = dict(child, id=102, subject='Приложение 2', assigned_to={'id': 10, 'name': 'Сидоров Иван'})
+        parent = {'children': [child, other], 'custom_fields': [{'name': 'Расположение ТИ', 'value': '#42'}]}
+        client.issue.get.side_effect = lambda issue_id, **_: SimpleNamespace(raw=lambda: {101: child, 102: other, 72: parent}[issue_id])
         client.user.get.return_value.raw.return_value = {'lastname': 'Петров', 'firstname': 'Иван'}
 
         def update(issue_id, status_id):
-            if issue_id == 101:
-                child['status'] = statuses[status_id - 1]
-            else:
-                parent['status'] = parent_statuses[status_id - 3]
+            child['status'] = statuses[status_id - 1]
             return True
 
         client.issue.update.side_effect = update
         observed = []
 
         def dialog_exec(dialog):
-            if dialog.windowTitle() == 'Изменить статус КРИС_ТИ':
-                combo = dialog.findChild(QComboBox)
-                observed.append((combo.count(), combo.currentData()))
-                return QDialog.Accepted
             dialog.show()
             table = dialog.findChild(QTableWidget)
-            table.setCurrentCell(0, 2)
-            action = next(widget for widget in dialog.findChildren(QPushButton) if widget.text() == 'Изменить статус…')
-            action.click()
-            wait_for(lambda: table.item(0, 2).text() == 'Выполнено')
-            observed.append(any(label.text() == '100% (1/1)' for label in dialog.findChildren(QLabel)))
-            change_parent = next(widget for widget in dialog.findChildren(QPushButton)
-                                 if widget.text() == 'Изменить статус КРИС_ТИ…')
-            change_parent.click()
-            wait_for(lambda: any(label.text() == 'Согласовано' for label in dialog.findChildren(QLabel)))
+            other_combo = table.cellWidget(1, 2)
+            QTest.mouseClick(other_combo, Qt.LeftButton)
+            wait_for(lambda: any('назначенный исполнитель' in field.text() for field in dialog.findChildren(QLabel)))
+            self.assertFalse(other_combo.view().isVisible())
+            client.issue.update.assert_not_called()
+            combo = table.cellWidget(0, 2)
+            self.assertEqual(combo.currentText(), 'Кодирование')
+            combo.setFocus()
+            QTest.keyClick(combo, Qt.Key_Space)
+            wait_for(combo.view().isVisible)
+            QTest.keyClick(combo.view(), Qt.Key_Escape)
+            wait_for(lambda: not combo.view().isVisible() and combo.count() == 1)
+            client.issue.update.assert_not_called()
+            choose_option(combo, 2)
+            wait_for(lambda: table.cellWidget(0, 2).currentText() == 'Выполнено')
+            observed.append(any(label.text().startswith('50% (1/2)') for label in dialog.findChildren(QLabel)))
             dialog.hide()
             return QDialog.Accepted
 
         with patch.object(QDialog, 'exec_', new=dialog_exec):
             window.open_task(window.card_lists[0].item(0).data(Qt.UserRole))
-            wait_for(lambda: len(observed) == 3 and not window.loading and not window.mutating)
-        self.assertEqual(observed, [(1, 2), True, (1, 4)])
-        self.assertEqual(client.issue.update.call_args_list, [call(101, status_id=2), call(72, status_id=4)])
+            wait_for(lambda: observed and not window.loading and not window.mutating)
+        self.assertEqual(observed, [True])
+        client.issue.update.assert_called_once_with(101, status_id=2)
         current = self.store.redmine_tasks(board)[0]
         self.assertEqual(current['kris_progress']['done'], 1)
-        self.assertEqual(current['kris_progress']['parent_status'], 'Согласовано')
         self.assertEqual(current['status'], 'Проект ТИ')
-        self.assertIn('100% (1/1)', window.card_lists[0].item(0).toolTip())
+        self.assertIn('50% (1/2)', window.card_lists[0].item(0).toolTip())
 
     def test_redmine_import_and_shared_refresh(self):
         from PyQt5.QtWidgets import QInputDialog, QLineEdit, QMenu

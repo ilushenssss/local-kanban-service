@@ -1369,8 +1369,8 @@ class Store:
             row = c.execute('SELECT revision,kris_progress FROM redmine_links WHERE board_id=? AND issue_id=?',
                             (board_id, ti_id)).fetchone()
             progress = (json.loads(row['kris_progress']) or {}) if row else {}
-            belongs_to_ti = parent_id and progress.get('parent_id') == parent_id and (
-                kris_id == parent_id or any(task.get('id') == kris_id for task in progress.get('subtasks', ())))
+            belongs_to_ti = parent_id and progress.get('parent_id') == parent_id and any(
+                task.get('id') == kris_id for task in progress.get('subtasks', ()))
             if not belongs_to_ti:
                 raise ValueError('Связь с КРИС_ТИ изменилась. Откройте карточку ТИ заново.')
             return actor['role'], row['revision']
