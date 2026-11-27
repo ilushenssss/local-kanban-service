@@ -3236,7 +3236,66 @@ class MainWindow(QMainWindow, Async):
                 field.setTextFormat(Qt.PlainText)
                 field.setWordWrap(True)
                 form.addRow(label, field)
-            subtasks = (progress or {}).get('subtasks')
+                if label == 'КРИС ТИ':
+                    kris_summary = field
+            dialog_open = True
+            parent_id = (progress or {}).get('parent_id')
+            subtasks = (progress or {}).get('subtasks') or []
+            table = None
+            change_status = None
+            changing_status = False
+            message = QuietStatus()
+            message.setWordWrap(True)
+            message.setTextFormat(Qt.PlainText)
+            message.clear()
+
+            def selection_changed():
+                if parent_id:
+                    change_parent.setEnabled(not changing_status)
+                if table is not None:
+                    row = table.currentRow()
+                    subtask = subtasks[row] if 0 <= row < len(subtasks) else {}
+                    change_status.setEnabled(bool(parent_id and subtask.get('id') and not changing_status))
+
+            def render_subtasks():
+                if table is None:
+                    return
+                with QSignalBlocker(table):
+                    table.setRowCount(len(subtasks))
+                    for row, subtask in enumerate(subtasks):
+                        for column, key in enumerate(('title', 'assignee', 'status')):
+                            table.setItem(row, column, QTableWidgetItem(subtask[key] or '—'))
+
+            def finished(updated, error):
+                nonlocal changing_status, progress, subtasks
+                if not dialog_open or self.access_restricted:
+                    return
+                changing_status = False
+                if updated is not None:
+                    progress, subtasks = updated, updated['subtasks']
+                    parent_status.setText(progress.get('parent_status') or '—')
+                    kris_summary.setText('\n'.join([redmine.kris_progress_text(progress),
+                                                   *redmine.kris_coding_lines(progress)]))
+                    render_subtasks()
+                message.setText(error or ('Статус обновлён.' if updated is not None else ''))
+                selection_changed()
+
+            def edit_status(kris_id):
+                nonlocal changing_status
+                changing_status = True
+                selection_changed()
+                message.setText('Загрузка доступных статусов…')
+                if not self.edit_kris_status(dialog, current, parent_id, kris_id, finished, lambda: dialog_open):
+                    finished(None, self.status.text())
+
+            if parent_id:
+                parent_status = QLabel(progress.get('parent_status') or '—')
+                parent_status.setTextFormat(Qt.PlainText)
+                parent_actions = QHBoxLayout()
+                parent_actions.addWidget(parent_status)
+                change_parent = button('Изменить статус КРИС_ТИ…', lambda: edit_status(parent_id), parent_actions)
+                parent_actions.addStretch()
+                form.addRow('Статус КРИС_ТИ', parent_actions)
             if subtasks:
                 table = QTableWidget(len(subtasks), 3)
                 table.setAccessibleName('Согласование приложений')
@@ -3258,10 +3317,6 @@ class MainWindow(QMainWindow, Async):
                 vertical.hide()
                 vertical.setSectionResizeMode(QHeaderView.ResizeToContents)
                 vertical.sectionResized.connect(table.updateGeometry)
-                for row, subtask in enumerate(subtasks):
-                    for column, key in enumerate(('title', 'assignee', 'status')):
-                        table.setItem(row, column, QTableWidgetItem(subtask[key] or '—'))
-
                 def scroll_to_subtask(item, _previous):
                     if item is not None:
                         rect = table.visualItemRect(item)
@@ -3277,14 +3332,24 @@ class MainWindow(QMainWindow, Async):
                 caption.setObjectName('fieldLabel')
                 section_layout.addWidget(caption)
                 section_layout.addWidget(table)
+                actions = QHBoxLayout()
+                change_status = button('Изменить статус…',
+                                       lambda: edit_status(subtasks[table.currentRow()]['id']), actions)
+                actions.addStretch()
+                section_layout.addLayout(actions)
+                if not parent_id:
+                    message.setText('Обновите карточку ТИ, чтобы получить идентификаторы подзадач.')
+                table.itemSelectionChanged.connect(selection_changed)
+                render_subtasks()
+                selection_changed()
                 centered = QHBoxLayout()
                 centered.addStretch()
                 centered.addWidget(section, 1)
                 centered.addStretch()
                 form.addRow(centered)
             else:
-                message = 'Обновите ТИ по #ID, чтобы загрузить подзадачи.' if progress and subtasks is None else '—'
-                message_label = QLabel(message)
+                empty_text = 'Обновите ТИ по #ID, чтобы загрузить подзадачи.' if progress and 'subtasks' not in progress else '—'
+                message_label = QLabel(empty_text)
                 message_label.setWordWrap(True)
                 form.addRow('Согласование приложений', message_label)
             form.addRow('Приложения', QLabel('—'))
@@ -3303,6 +3368,7 @@ class MainWindow(QMainWindow, Async):
             scroll.setWidgetResizable(True)
             scroll.setWidget(content)
             layout.addWidget(scroll, 1)
+            layout.addWidget(message)
             if self.can_unlink_redmine_task(current):
                 button('Убрать с доски', lambda: self.unlink_redmine_task(current, dialog), layout)
             if self.can_archive_ti(current):
@@ -3311,10 +3377,70 @@ class MainWindow(QMainWindow, Async):
             button('Закрыть', dialog.accept, layout)
             dialog.resize(width, height)
             dialog.exec_()
+            dialog_open = False
             dialog.deleteLater()
 
         self.work(lambda: self.store.redmine_tasks(task['board_id'], issue_id=task['redmine_id'],
                                                    include_archived=True), done)
+
+    def edit_kris_status(self, dialog, task, parent_id, kris_id, finished, is_open):
+        board_id, ti_id = task['board_id'], task['issue_id']
+        store = self.store
+        url = self.redmine_url
+
+        def read_options(client, rid, statuses):
+            role, _ = store.kris_status_context(board_id, ti_id, kris_id, parent_id)
+            return redmine.kris_status_options(client, kris_id, parent_id, role), []
+
+        def choose(result, error):
+            if not is_open() or not dialog.isVisible() or self.access_restricted:
+                return
+            if error:
+                finished(None, error)
+                return
+            expected, options = result
+            if not options:
+                finished(None, 'Для этой задачи КРИС_ТИ нет доступных переходов.')
+                return
+            picker = QDialog(dialog)
+            picker.setWindowTitle('Изменить статус КРИС_ТИ')
+            layout = QVBoxLayout(picker)
+            form = QFormLayout()
+            combo = QComboBox()
+            for status_id, name in options.items():
+                combo.addItem(name, status_id)
+            form.addRow('Новый статус', combo)
+            layout.addLayout(form)
+            actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+            actions.button(QDialogButtonBox.Save).setText('Сохранить')
+            actions.button(QDialogButtonBox.Cancel).setText('Отмена')
+            actions.accepted.connect(picker.accept)
+            actions.rejected.connect(picker.reject)
+            layout.addWidget(actions)
+            if picker.exec_() != QDialog.Accepted:
+                finished(None, '')
+                return
+            if self.redmine_url != url:
+                finished(None, 'Адрес Redmine изменился. Запросите доступные статусы заново.')
+                return
+            status_id = combo.currentData()
+
+            def apply(client, rid, statuses):
+                role, revision = store.kris_status_context(board_id, ti_id, kris_id, parent_id)
+                redmine.change_kris_status(client, ti_id, kris_id, parent_id, role, expected, status_id)
+                try:
+                    progress = redmine.read_kris_children(client, parent_id, {})
+                    if store.save_kris_progress(board_id, ti_id, revision, progress, rid):
+                        return progress, []
+                    return progress, ['Статус изменён в Redmine. Данные на доске изменились, обновите карточку ТИ.']
+                except Exception:
+                    return None, ['Статус изменён в Redmine. Не удалось обновить данные на доске. Обновите карточку ТИ.']
+
+            if not self.redmine_operation(apply, 'Статус КРИС_ТИ обновлён', completed=finished):
+                finished(None, 'Не удалось начать смену статуса.')
+
+        return self.redmine_operation(read_options, 'Доступные статусы КРИС_ТИ загружены', completed=choose,
+                                      busy_message='Загрузка доступных статусов…', owner=dialog)
 
     def can_unlink_redmine_task(self, task):
         return (not self.access_restricted and task['board_id'] == self.board_id
@@ -3356,7 +3482,9 @@ class MainWindow(QMainWindow, Async):
         self.mutate(lambda rid: self.store.unlink_redmine_issue(board_id, issue_id, task['revision'], rid),
                     'Карточка ТИ убрана с доски')
 
-    def redmine_operation(self, operation, success, *, busy_message='Сохранение…'):
+    def redmine_operation(self, operation, success, *, busy_message='Сохранение…', completed=None, owner=None):
+        if completed is not None:
+            self.status.clear()
         if self.access_restricted or self.mutating or self.pending_action:
             self.status.setText('Дождитесь завершения текущей операции')
             return
@@ -3373,7 +3501,7 @@ class MainWindow(QMainWindow, Async):
         if client is None:
             credentials = self.saved_passwords.load('redmine', url, self.redmine_login)
         if client is None and credentials is None:
-            dialog = QDialog(self)
+            dialog = QDialog(owner or self)
             dialog.setWindowTitle('Вход в Redmine')
             layout = QVBoxLayout(dialog)
             form = QFormLayout()
@@ -3427,16 +3555,28 @@ class MainWindow(QMainWindow, Async):
                     raise
                 finally:
                     credentials = None
+            data = None
             try:
-                errors = operation(client, rid, statuses)
+                outcome = operation(client, rid, statuses)
+                if completed is None:
+                    errors = outcome
+                else:
+                    data, errors = outcome
             except redmine.RedmineAuthError:
                 raise
             except ValueError as error:
                 errors = [str(error)]
             return {'redmine_client': client, 'redmine_login': login_name, 'redmine_errors': errors,
-                    'remember_redmine': saved}
+                    'remember_redmine': saved, 'redmine_data': data}
 
-        self.mutate(apply, success, busy_message=busy_message)
+        def done(result, error):
+            if error:
+                completed(None, error_text(error))
+            else:
+                completed(result['redmine_data'], '\n'.join(result['redmine_errors']))
+
+        self.mutate(apply, success, busy_message=busy_message, completed=done if completed is not None else None)
+        return True
 
     def redmine_project_id(self, project):
         return installation.load_redmine_project_id(self.redmine_config_base(), project)
@@ -3649,8 +3789,16 @@ class MainWindow(QMainWindow, Async):
 
     def prepare_ti_updates(self, client, board_id, project, statuses, linked, issues, *, columns,
                            parent_status=None, kris_options=None, basis_options=None):
+        known_parents = {}
+        for issue_id, _ in issues:
+            saved_parent = (linked.get(issue_id, {}).get('kris_progress') or {}).get('parent_id')
+            if saved_parent:
+                known_parents[issue_id] = saved_parent
+        options = dict(kris_options or {})
+        if known_parents:
+            options['known_parents'] = known_parents
         progress, warnings = self.read_project_kris_progress(
-            client, (issue_id for issue_id, _ in issues), project, **(kris_options or {}))
+            client, (issue_id for issue_id, _ in issues), project, **options)
         basis_project, basis_statuses, basis_warnings = self.read_project_basis_statuses(
             client, board_id, (issue for _, issue in issues), **(basis_options or {}))
         updates = []
@@ -3763,7 +3911,7 @@ class MainWindow(QMainWindow, Async):
             return
         self.open_task({'board_id': self.board_id, 'column_id': self.columns_data[0]['id']})
 
-    def mutate(self, fn, success='Сохранено', retry=False, *, busy_message='Сохранение…'):
+    def mutate(self, fn, success='Сохранено', retry=False, *, busy_message='Сохранение…', completed=None):
         if self.pending_action and not retry:
             self.status.setText('Результат прошлой записи неизвестен. Нажмите «Повторить запись»; новая операция пока недоступна.')
             return
@@ -3771,7 +3919,7 @@ class MainWindow(QMainWindow, Async):
             self.status.setText('Дождитесь текущей операции')
             return
         if not retry:
-            self.pending_action = (fn, success, uuid.uuid4().hex)
+            self.pending_action = (fn, success, uuid.uuid4().hex, completed)
         rid = self.pending_action[2]
         self.generation += 1
         self.mutating = True
@@ -3817,11 +3965,14 @@ class MainWindow(QMainWindow, Async):
                 self.status.setText(success_message)
                 self.refresh()
             self.update_board_controls()
+            if completed is not None:
+                completed(result, error)
         self.work(lambda: fn(rid), done)
 
     def retry_mutation(self):
         if self.pending_action:
-            self.mutate(self.pending_action[0], self.pending_action[1], retry=True)
+            fn, success, _, completed = self.pending_action
+            self.mutate(fn, success, retry=True, completed=completed)
         else:
             self.status.setText('Нет незавершённой записи')
 

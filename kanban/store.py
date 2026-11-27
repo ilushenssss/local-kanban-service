@@ -421,7 +421,8 @@ class Store:
             self.require(c, 'manage', payload)
         elif operation in ('team_message', 'team_sticker', 'team_read'):
             self.chat_board(c, payload[0])
-        elif operation in ('redmine_link', 'redmine_unlink', 'redmine_archive', 'redmine_refresh', 'redmine_identification', 'bugzilla_cards'):
+        elif operation in ('redmine_link', 'redmine_unlink', 'redmine_archive', 'redmine_refresh', 'redmine_identification',
+                           'redmine_kris_progress', 'bugzilla_cards'):
             permission = {'redmine_link': 'create_task', 'redmine_unlink': 'archive_task',
                           'redmine_archive': 'archive_task'}.get(operation, 'read')
             self.require(c, permission, payload[0])
@@ -1359,6 +1360,28 @@ class Store:
             return [dict(self.redmine_entry(row, basis_project), archived=row['issue_id'] in archived)
                     for row in c.execute(query + ' ORDER BY issue_id', args)
                     if include_archived or row['issue_id'] not in archived]
+
+    def kris_status_context(self, board_id, ti_id, kris_id, parent_id):
+        with self.connection() as c:
+            c.execute('BEGIN')
+            actor = self.require(c, 'read', board_id)
+            self.active_board(c, board_id)
+            row = c.execute('SELECT revision,kris_progress FROM redmine_links WHERE board_id=? AND issue_id=?',
+                            (board_id, ti_id)).fetchone()
+            progress = (json.loads(row['kris_progress']) or {}) if row else {}
+            belongs_to_ti = parent_id and progress.get('parent_id') == parent_id and (
+                kris_id == parent_id or any(task.get('id') == kris_id for task in progress.get('subtasks', ())))
+            if not belongs_to_ti:
+                raise ValueError('Связь с КРИС_ТИ изменилась. Откройте карточку ТИ заново.')
+            return actor['role'], row['revision']
+
+    def save_kris_progress(self, board_id, ti_id, revision, progress, request_id=None):
+        def apply(c, uid):
+            return bool(c.execute('''UPDATE redmine_links SET kris_progress=?, revision=revision+1
+                                     WHERE board_id=? AND issue_id=? AND revision=?''',
+                                  (json.dumps(progress), board_id, ti_id, revision)).rowcount)
+
+        return self.write('redmine_kris_progress', [board_id, ti_id, revision, progress], apply, request_id)
 
     @staticmethod
     def redmine_entry(row, basis_project):

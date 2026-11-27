@@ -156,6 +156,26 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(totals, {columns[1]['id']: 1})
         self.assertEqual(member.board_snapshot(board, {'query': 'Основная задача КРИС'}, 'board')[3], tasks)
 
+    def test_kris_status_progress_respects_board_access_and_revision(self):
+        board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ'])
+        member = Store(self.s.folder, 'bob')
+        self.s.set_board_access(board, [member.profile()['id']], self.s.profile()['id'])
+        progress = {'parent_id': 72, 'done': 0, 'total': 1, 'subtasks': [{'id': 101}]}
+        self.s.link_redmine_issue(board, 42, 'ТИ', 'Проект ТИ', 'Проект ТИ', kris_progress=progress)
+        role, revision = member.kris_status_context(board, 42, 101, 72)
+        self.assertEqual(role, member.profile()['role'])
+        with self.assertRaises(ValueError):
+            member.kris_status_context(board, 42, 102, 72)
+        updated = dict(progress, done=1)
+        self.assertTrue(member.save_kris_progress(board, 42, revision, updated))
+        self.assertFalse(member.save_kris_progress(board, 42, revision, progress))
+        self.assertEqual(self.s.redmine_tasks(board)[0]['kris_progress'], updated)
+        self.s.set_board_access(board, [], self.s.profile()['id'])
+        with self.assertRaises(AccessDenied):
+            member.kris_status_context(board, 42, 101, 72)
+        with self.assertRaises(AccessDenied):
+            member.save_kris_progress(board, 42, revision + 1, progress)
+
     def test_redmine_cards_sort_by_ti_number_and_numeric_revision_in_each_column(self):
         board = self.s.board_action('Проект / ТИ', column_names=['Проект ТИ', 'ТИ открыто'])
         for issue_id, tracker, subject in (

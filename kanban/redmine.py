@@ -1,4 +1,4 @@
-"""Read-only Redmine access. The client and its credentials live in one TeamSync session."""
+"""Redmine access through the current TeamSync session."""
 from datetime import date
 
 import re
@@ -35,7 +35,7 @@ def connect(url, login, password):
     except ImportError:
         raise RedmineError('Установите компоненты из requirements/redmine.txt.') from None
 
-    class ReadEngine(SyncEngine):
+    class RequestEngine(SyncEngine):
         @staticmethod
         def construct_request_kwargs(method, headers, params, data):
             options = SyncEngine.construct_request_kwargs(method, headers, params, data)
@@ -43,7 +43,7 @@ def connect(url, login, password):
 
     try:
         client = Redmine(url.rstrip('/'), username=login, password=password,
-                         engine=ReadEngine)
+                         engine=RequestEngine)
         client.auth()
     except AuthError:
         raise RedmineAuthError('Redmine не принял логин или пароль.') from None
@@ -332,6 +332,12 @@ def read_identification_cards(client, project_id):
 TI_LOCATION_FIELD = 'расположение ти'
 
 
+def kris_ti_ids(issue):
+    return {number for field in issue.get('custom_fields') or []
+            if status_key(field.get('name') or '') == TI_LOCATION_FIELD
+            for number in re.findall(r'[0-9]+', str(field.get('value') or ''))}
+
+
 def find_kris_issues(client, issue_ids, project_id, *, cache=None):
     pending = {str(issue_id) for issue_id in issue_ids}
     matches = {}
@@ -339,13 +345,10 @@ def find_kris_issues(client, issue_ids, project_id, *, cache=None):
         return matches
     candidates = project_issues(client, project_id, cache, status_id='open', parent_id='!*')
     for candidate in candidates:
-        for field in candidate.raw().get('custom_fields') or []:
-            if status_key(field.get('name') or '') != TI_LOCATION_FIELD:
-                continue
-            linked = pending.intersection(re.findall(r'[0-9]+', str(field.get('value') or '')))
-            for issue_id in linked:
-                matches[int(issue_id)] = candidate.id
-            pending.difference_update(linked)
+        linked = pending.intersection(kris_ti_ids(candidate.raw()))
+        for issue_id in linked:
+            matches[int(issue_id)] = candidate.id
+        pending.difference_update(linked)
         if not pending:
             break
     return matches
@@ -372,8 +375,9 @@ def kris_assignee_name(client, assignee, cache):
     return cache.get(user_id) or assignee.get('name') or ''
 
 
-def read_kris_children(client, parent_id, assignee_cache):
-    parent = client.issue.get(parent_id, include='children').raw()
+def read_kris_children(client, parent_id, assignee_cache, *, parent=None):
+    if parent is None:
+        parent = client.issue.get(parent_id, include='children').raw()
     subject = (parent.get('subject') or '').strip()
     parent_title = ' '.join(subject.split())
     children = parent.get('children') or []
@@ -397,14 +401,17 @@ def read_kris_children(client, parent_id, assignee_cache):
         if parent_title and parent_title in title:
             title = title.replace(parent_title, '', 1).strip(' :–—·-')
         assignee = kris_assignee_name(client, child.get('assigned_to') or {}, assignee_cache)
-        subtasks.append({'title': title, 'assignee': assignee, 'status': status.strip()})
+        subtasks.append({'id': child['id'], 'title': title, 'assignee': assignee, 'status': status.strip()})
         total += 1
         done += 'выполнено' in key
         if key == 'кодирование':
             coding.append(coding_deadline(child))
-    if not coding and status_key((parent.get('status') or {}).get('name') or '') == 'кодирование':
+    parent_status = (parent.get('status') or {}).get('name') or ''
+    if not coding and status_key(parent_status) == 'кодирование':
         coding.append(coding_deadline(parent))
-    progress = {'done': done, 'total': total, 'subtasks': subtasks}
+    progress = {'parent_id': parent_id, 'done': done, 'total': total, 'subtasks': subtasks}
+    if parent_status:
+        progress['parent_status'] = parent_status
     if subject:
         progress['subject'] = subject
     if coding:
@@ -412,8 +419,57 @@ def read_kris_children(client, parent_id, assignee_cache):
     return progress
 
 
-def read_kris_progress(client, issue_ids, project_id, *, cache=None):
-    from redminelib.exceptions import AuthError
+def kris_status_options(client, issue_id, parent_id, role):
+    from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
+
+    try:
+        data = client.issue.get(issue_id, include='allowed_statuses').raw()
+        if issue_id != parent_id and (data.get('parent') or {}).get('id') != parent_id:
+            raise RedmineError('Подзадача больше не относится к этой КРИС_ТИ. Обновите карточку ТИ.')
+        if role != 'manager':
+            assignee_id = (data.get('assigned_to') or {}).get('id')
+            if not assignee_id or assignee_id != client.user.get('current').id:
+                raise RedmineError('Статус может менять менеджер или назначенный исполнитель.')
+        current_id = (data.get('status') or {}).get('id')
+        if not current_id or 'allowed_statuses' not in data:
+            raise RedmineError('Redmine не вернул список разрешённых переходов для этой задачи КРИС_ТИ.')
+        options = {status['id']: status['name'] for status in data['allowed_statuses'] or []
+                   if status['id'] != current_id}
+        return current_id, options
+    except AuthError:
+        raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+    except (ForbiddenError, ResourceNotFoundError):
+        raise RedmineError('Задача КРИС_ТИ не найдена или недоступна в Redmine.') from None
+    except RedmineError:
+        raise
+    except Exception:
+        raise RedmineError('Не удалось получить доступные статусы задачи КРИС_ТИ.') from None
+
+
+def change_kris_status(client, ti_id, issue_id, parent_id, role, expected_status, status_id):
+    from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError, ValidationError
+
+    current, options = kris_status_options(client, issue_id, parent_id, role)
+    if current != expected_status or status_id not in options:
+        raise RedmineError('Статус или допустимые переходы изменились. Выберите статус заново.')
+    try:
+        parent = client.issue.get(parent_id).raw()
+        if str(ti_id) not in kris_ti_ids(parent):
+            raise RedmineError('Связь КРИС_ТИ с этой ТИ изменилась. Обновите карточку ТИ.')
+        if not client.issue.update(issue_id, status_id=status_id):
+            raise RedmineError('Redmine не подтвердил изменение статуса.')
+    except AuthError:
+        raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+    except (ForbiddenError, ResourceNotFoundError, ValidationError):
+        raise RedmineError('Redmine отклонил смену статуса. Проверьте права и обязательные поля перехода.') from None
+    except RedmineError:
+        raise
+    except Exception:
+        raise RedmineError('Redmine не подтвердил смену статуса. Проверьте текущий статус перед повтором.') from None
+
+
+def read_kris_progress(client, issue_ids, project_id, *, cache=None, known_parents=None):
+    from redminelib.exceptions import AuthError, ForbiddenError, ResourceNotFoundError
 
     progress = dict.fromkeys(issue_ids)
     try:
@@ -438,6 +494,20 @@ def read_kris_progress(client, issue_ids, project_id, *, cache=None):
             del progress[issue_id]
         else:
             progress[issue_id] = children[parent_id]
+    for issue_id, parent_id in (known_parents or {}).items():
+        if issue_id not in progress or issue_id in matches:
+            continue
+        try:
+            parent = client.issue.get(parent_id, include='children').raw()
+            if (parent.get('project') or {}).get('id') == project_id and str(issue_id) in kris_ti_ids(parent):
+                progress[issue_id] = read_kris_children(client, parent_id, assignee_cache, parent=parent)
+        except AuthError:
+            raise RedmineAuthError('Сеанс Redmine недействителен. Войдите заново.') from None
+        except (ForbiddenError, ResourceNotFoundError):
+            continue
+        except Exception:
+            del progress[issue_id]
+            errors.append('Не удалось прочитать подзадачи КРИС_ТИ #{}.'.format(parent_id))
     return progress, errors
 
 

@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, call
 
 from kanban.installation import load_redmine_project_id
+from kanban import redmine
 from kanban.redmine import (APPROVAL_COLORS, department_approvals, issue_references, kris_coding_count, kris_coding_deadline, kris_coding_lines,
                             kris_progress_text, read_basis_statuses, read_identification_card, read_identification_cards, read_issue,
                             iter_sppi_issues, read_kris_progress, status_key)
@@ -227,12 +228,13 @@ class RedmineTest(unittest.TestCase):
         client.user.get.return_value.raw.return_value = {'firstname': 'Иван', 'lastname': 'Петров'}
         progress, errors = read_kris_progress(client, iter([42, 43, 44, 45]), 73)
         self.assertEqual(progress, {
-            42: {'done': 2, 'total': 3, 'subject': 'ТИ-1157 · КРИС',
-                 'subtasks': [{'title': 'Схема', 'assignee': 'Петров Иван', 'status': 'Выполнено (проверено)'},
-                              {'title': 'Комплект', 'assignee': 'Петров Иван', 'status': 'ВЫПОЛНЕНО'},
-                              {'title': 'Сервис', 'assignee': '', 'status': 'Кодирование'}],
+            42: {'parent_id': 72, 'done': 2, 'total': 3, 'subject': 'ТИ-1157 · КРИС',
+                 'subtasks': [{'id': 101, 'title': 'Схема', 'assignee': 'Петров Иван', 'status': 'Выполнено (проверено)'},
+                              {'id': 102, 'title': 'Комплект', 'assignee': 'Петров Иван', 'status': 'ВЫПОЛНЕНО'},
+                              {'id': 103, 'title': 'Сервис', 'assignee': '', 'status': 'Кодирование'}],
                  'coding': [{'subject': 'Сервис', 'due_date': '2027-02-03'}]},
-            43: {'done': 0, 'total': 0, 'subtasks': [], 'coding': [{'subject': '#73', 'due_date': '2027-02-07'}]},
+            43: {'parent_id': 73, 'parent_status': 'Кодирование', 'done': 0, 'total': 0, 'subtasks': [],
+                 'coding': [{'subject': '#73', 'due_date': '2027-02-07'}]},
             45: None,
         })
         self.assertEqual(errors, ['Не удалось прочитать подзадачи КРИС_ТИ #74.'])
@@ -245,6 +247,39 @@ class RedmineTest(unittest.TestCase):
         self.assertEqual(client.issue.get.call_args_list,
                          [call(72, include='children'), call(102), call(103), call(73, include='children'), call(105),
                           call(74, include='children')])
+
+    @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
+    def test_kris_progress_retains_previously_linked_closed_parent(self):
+        client = Mock()
+        client.issue.filter.return_value = []
+        client.issue.get.return_value.raw.return_value = {
+            'project': {'id': 73}, 'status': {'name': 'Закрыта'},
+            'custom_fields': [{'name': 'Расположение ТИ', 'value': '#42'}],
+        }
+        progress, errors = read_kris_progress(client, [42, 43], 73, known_parents={42: 72, 43: 72})
+        self.assertEqual(errors, [])
+        self.assertEqual(progress[42]['parent_status'], 'Закрыта')
+        self.assertIsNone(progress[43])
+
+    @unittest.skipUnless(find_spec('redminelib'), 'python-redmine is optional')
+    def test_kris_status_checks_live_assignee_and_workflow_before_writing(self):
+        client = Mock()
+        issue = {'parent': {'id': 72}, 'assigned_to': {'id': 9}, 'status': {'id': 1},
+                 'allowed_statuses': [{'id': 1, 'name': 'Кодирование'}, {'id': 2, 'name': 'Выполнено'}]}
+        parent = {'custom_fields': [{'name': 'Расположение ТИ', 'value': 'ТИ #42'}]}
+        client.issue.get.side_effect = lambda issue_id, **_: Mock(raw=Mock(return_value={101: issue, 72: parent}[issue_id]))
+        client.user.get.return_value.id = 9
+        self.assertEqual(redmine.kris_status_options(client, 101, 72, 'employee'), (1, {2: 'Выполнено'}))
+        issue['assigned_to']['id'] = 10
+        with self.assertRaisesRegex(redmine.RedmineError, 'назначенный исполнитель'):
+            redmine.change_kris_status(client, 42, 101, 72, 'employee', 1, 2)
+        with self.assertRaisesRegex(redmine.RedmineError, 'допустимые переходы'):
+            redmine.change_kris_status(client, 42, 101, 72, 'manager', 1, 3)
+        with self.assertRaisesRegex(redmine.RedmineError, 'Связь КРИС_ТИ'):
+            redmine.change_kris_status(client, 420, 101, 72, 'manager', 1, 2)
+        client.issue.update.assert_not_called()
+        redmine.change_kris_status(client, 42, 101, 72, 'manager', 1, 2)
+        client.issue.update.assert_called_once_with(101, status_id=2)
 
     def test_kris_coding_lines_group_equal_dates_and_list_different_dates(self):
         coding = [{'subject': 'Сервис', 'due_date': '2027-02-03'},
