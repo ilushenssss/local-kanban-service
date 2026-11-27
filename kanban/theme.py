@@ -82,6 +82,22 @@ def paint_refresh_glyph(painter, center):
 
 
 def symbol_icon(name):
+    if name == 'private_chat':
+        pixmap = QPixmap(48, 48)
+        pixmap.setDevicePixelRatio(2)
+        pixmap.fill(Qt.transparent)
+        painter = QPainter(pixmap)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(QPen(QColor(TOKENS['text']), 1.7, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        plane = QPainterPath(QPointF(3, 10))
+        plane.lineTo(21, 3)
+        plane.lineTo(17, 21)
+        plane.lineTo(10, 14)
+        plane.closeSubpath()
+        painter.drawPath(plane)
+        painter.drawLine(QPointF(10, 14), QPointF(21, 3))
+        painter.end()
+        return QIcon(pixmap)
     if name == 'refresh':
         pixmap = QPixmap(40, 40)
         pixmap.setDevicePixelRatio(2)
@@ -224,6 +240,7 @@ QWidget#side QLabel#appName { color: %(text)s; }
 QLabel#BoardName { font-size: 16px; font-weight: 600; }
 QLabel#Eyebrow { font-size: 11px; color: %(muted)s; letter-spacing: 1px; }
 QPushButton#Profile { text-align: left; font-size: 12px; padding: 7px 8px; }
+QPushButton#PrivateChatLauncher { padding: 0; }
 QLabel#CountBadge { background: %(hover)s; color: %(muted)s; border-radius: 9px; padding: 2px 6px; font-size: 12px; }
 QComboBox#ViewSwitch { background: %(hover)s; border: none; padding: 7px 36px 7px 10px; }
 QTextEdit#ChatTimeline { border: none; background: %(background)s; padding: 12px; }

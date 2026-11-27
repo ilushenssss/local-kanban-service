@@ -25,7 +25,7 @@ from .my_tasks import MyTasksPage
 from .board_views import BoardView
 from .messenger import Messenger
 from .people import EmployeeList, open_employee_profile
-from .private_chat import PrivateChats
+from .private_chat import PrivateChatLauncher, PrivateChats
 from .notifications import Notifications
 from .board_badges import BoardBadgeDelegate
 from .avatars import avatar_image, avatar_resources
@@ -1386,10 +1386,21 @@ class MainWindow(QMainWindow, Async):
         self.profile_button.setAccessibleName('Мой профиль')
         self.profile_button.setToolTip('Открыть настройки профиля')
         self.profile_button.setEnabled(False)
+        self.profile_button.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.profile_button.clicked.connect(self.open_avatar_settings)
+        self.private_chat_button = PrivateChatLauncher()
+        self.private_chat_button.setEnabled(False)
+        self.private_chat_button.clicked.connect(self.private_chats.open_inbox)
+        self.private_chats.unread_changed.connect(self.private_chat_button.set_unread)
         self.profile_snapshot = None
+        footer = QWidget()
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(0, 0, 0, 0)
+        footer_layout.setSpacing(6)
+        footer_layout.addWidget(self.profile_button, 1)
+        footer_layout.addWidget(self.private_chat_button)
         side.addSpacing(14)
-        side.addWidget(self.profile_button)
+        side.addWidget(footer)
         root.addWidget(sidebar)
         surface = QWidget()
         surface.setObjectName('content')
@@ -1822,7 +1833,8 @@ class MainWindow(QMainWindow, Async):
             return
         self.profile_snapshot = (name, image)
         metrics = self.profile_button.fontMetrics()
-        display = metrics.elidedText(name, Qt.ElideRight, 150 if image else 185)
+        available_width = self.profile_button.width() - (51 if image else 18)
+        display = metrics.elidedText(name, Qt.ElideRight, max(0, available_width))
         self.profile_button.setText(display.replace('&', '&&'))
         self.profile_button.setToolTip(name + '\nОткрыть настройки профиля')
         self.profile_button.setIcon(QIcon(QPixmap.fromImage(avatar_image(image))) if image else QIcon())
@@ -2719,6 +2731,7 @@ class MainWindow(QMainWindow, Async):
                 return
             self.store = store
             self.private_chats.start(store)
+            self.private_chat_button.setEnabled(True)
             self.notifications.poll()
             self.refresh()
         def connect():

@@ -7,12 +7,13 @@ from collections import OrderedDict
 from math import ceil
 from uuid import uuid4
 
-from PyQt5.QtCore import QObject, Qt, QTime, QTimer, pyqtSignal
-from PyQt5.QtGui import QTextOption
+from PyQt5.QtCore import QEvent, QObject, QRect, QSize, Qt, QTime, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QPainter, QTextOption
 from PyQt5.QtWidgets import (QDialog, QFrame, QHBoxLayout, QLabel, QListWidget, QListWidgetItem,
                              QPushButton, QScrollArea, QStackedWidget, QTextEdit, QVBoxLayout, QWidget)
 
 from .widgets import MessageEdit
+from .theme import STICKERS, symbol_icon
 
 
 MAX_TEXT = 8192
@@ -324,7 +325,49 @@ class PrivateConversation(QWidget):
         self.update_send()
 
 
+class PrivateChatLauncher(QPushButton):
+    def __init__(self):
+        super().__init__()
+        self.setObjectName('PrivateChatLauncher')
+        self.setProperty('symbol', 'private_chat')
+        self.setIcon(symbol_icon('private_chat'))
+        self.setIconSize(QSize(22, 22))
+        self.setFixedSize(40, 40)
+        self.setCursor(Qt.PointingHandCursor)
+        self.set_unread(0)
+
+    def set_unread(self, count):
+        self.unread = count
+        label = 'Личные переписки'
+        if count:
+            label += f'. Непрочитанных сообщений: {count}'
+        self.setAccessibleName(label)
+        self.setToolTip(label)
+        self.update()
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if not self.unread:
+            return
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(STICKERS[0][0]))
+        text = str(self.unread) if self.unread <= 99 else '99+'
+        width = 24 if len(text) > 2 else 19
+        badge = QRect(self.width() - width - 1, 1, width, 16)
+        painter.drawRoundedRect(badge, 8, 8)
+        font = painter.font()
+        font.setPixelSize(9)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(Qt.white)
+        painter.drawText(badge, Qt.AlignCenter, text)
+
+
 class PrivateChatDialog(QDialog):
+    unread_changed = pyqtSignal(int)
+
     def __init__(self, new_chat, parent):
         super().__init__(parent)
         self.setWindowTitle('Личные переписки')
@@ -353,6 +396,11 @@ class PrivateChatDialog(QDialog):
         side.addWidget(self.peers, 1)
         layout.addWidget(sidebar)
         self.stack = QStackedWidget()
+        empty = QLabel('Пока нет личных переписок')
+        empty.setObjectName('Muted')
+        empty.setAlignment(Qt.AlignCenter)
+        empty.setWordWrap(True)
+        self.stack.addWidget(empty)
         layout.addWidget(self.stack, 1)
 
     def conversation(self, user_id, name, send):
@@ -373,26 +421,48 @@ class PrivateChatDialog(QDialog):
         user_id = item.data(Qt.UserRole)
         chat = self.conversations[user_id]
         self.stack.setCurrentWidget(chat)
-        self.unread.pop(user_id, None)
+        if self.isVisible() and not self.isMinimized():
+            self.mark_current_read()
+
+    def mark_current_read(self):
+        item = self.peers.currentItem()
+        if item is None or self.unread.pop(item.data(Qt.UserRole), None) is None:
+            return
         item.setText(item.data(Qt.UserRole + 1))
         item.setData(Qt.AccessibleDescriptionRole, None)
+        self.unread_changed.emit(sum(self.unread.values()))
 
-    def show_conversation(self, user_id):
-        self.peers.setCurrentItem(self.items[user_id])
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and self.isVisible() and self.isActiveWindow():
+            self.mark_current_read()
+
+    def show_conversation(self, user_id=None):
+        if user_id is not None:
+            self.peers.setCurrentItem(self.items[user_id])
+        elif self.peers.currentItem() is None and self.items:
+            self.peers.setCurrentRow(0)
+        if self.isMinimized():
+            self.showNormal()
         self.show()
         self.raise_()
         self.activateWindow()
-        self.conversations[user_id].input.setFocus()
+        self.mark_current_read()
+        item = self.peers.currentItem()
+        if item:
+            self.conversations[item.data(Qt.UserRole)].input.setFocus()
 
     def mark_unread(self, user_id):
         count = self.unread[user_id] = self.unread.get(user_id, 0) + 1
         item = self.items[user_id]
         item.setText('({}) {}'.format(count, item.data(Qt.UserRole + 1)))
         item.setData(Qt.AccessibleDescriptionRole, 'Непрочитанных сообщений: {}'.format(count))
+        self.unread_changed.emit(sum(self.unread.values()))
 
 
 class PrivateChats(QObject):
     delivered = pyqtSignal(object, 'qint64', str, str)
+    unread_changed = pyqtSignal(int)
 
     def __init__(self, window):
         super().__init__(window)
@@ -449,11 +519,20 @@ class PrivateChats(QObject):
             self.dialog.close()
             self.dialog.deleteLater()
             self.dialog = None
+        self.unread_changed.emit(0)
 
-    def conversation(self, user_id, name):
+    def window_dialog(self):
         if self.dialog is None:
             self.dialog = PrivateChatDialog(lambda: self.window.open_catalog('users'), self.window)
-        return self.dialog.conversation(user_id, name, lambda chat: self.send(user_id, chat))
+            self.dialog.unread_changed.connect(self.unread_changed.emit)
+        return self.dialog
+
+    def conversation(self, user_id, name):
+        return self.window_dialog().conversation(user_id, name, lambda chat: self.send(user_id, chat))
+
+    def open_inbox(self):
+        dialog = self.window_dialog()
+        dialog.show_conversation(next(iter(dialog.unread), None))
 
     def open(self, user_id, name):
         self.conversation(user_id, name)
@@ -462,9 +541,8 @@ class PrivateChats(QObject):
     def receive(self, transport, user_id, name, text):
         if self.transport is transport and not self.window.access_restricted:
             chat = self.conversation(user_id, name)
-            if not self.dialog.isVisible():
-                self.dialog.show_conversation(user_id)
-            elif self.dialog.stack.currentWidget() is not chat:
+            if (not self.dialog.isVisible() or self.dialog.isMinimized() or not self.dialog.isActiveWindow()
+                    or self.dialog.stack.currentWidget() is not chat):
                 self.dialog.mark_unread(user_id)
             chat.timeline.append_message(text, outgoing=False)
 
